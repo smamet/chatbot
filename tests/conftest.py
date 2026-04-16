@@ -3,13 +3,26 @@ from __future__ import annotations
 import uuid
 
 import pytest
-from pydantic_settings import SettingsConfigDict
+from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
 from chatbot.config.settings import Settings, reset_settings_cache_for_tests
 
 
 class TestSettings(Settings):
+    """App settings for tests: explicit kwargs only (never OS env for DATABASE_URL, etc.)."""
+
     model_config = SettingsConfigDict(env_file=None, extra="ignore")
+
+    @classmethod
+    def settings_customise_sources(
+        cls,
+        settings_cls: type[BaseSettings],
+        init_settings: PydanticBaseSettingsSource,
+        env_settings: PydanticBaseSettingsSource,
+        dotenv_settings: PydanticBaseSettingsSource,
+        file_secret_settings: PydanticBaseSettingsSource,
+    ) -> tuple[PydanticBaseSettingsSource, ...]:
+        return (init_settings,)
 
 
 @pytest.fixture(autouse=True)

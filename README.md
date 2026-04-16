@@ -34,10 +34,12 @@ streamlit run apps/streamlit_chat.py
 
 Point the sidebar API URL at `http://127.0.0.1:8000` if needed.
 
-## Ingest documents (RAG)
+## Sync documents (RAG)
+
+Reconcile a folder with the index: remove vectors and DB rows for files that were ingested under that root but no longer exist on disk, then (re)ingest every supported file there (unchanged files are skipped by hash). Supported types include **markdown** (`.md`), PDF, CSV, and Excel (`.xlsx`, `.xls`).
 
 ```bash
-python -m chatbot ingest path/to/file_or_dir
+python -m chatbot sync path/to/file_or_dir
 ```
 
 On PEP 668–managed Python (e.g. Homebrew), use a venv (`python3 -m venv .venv && source .venv/bin/activate`) or pyenv `chatbot` before `pip install`.

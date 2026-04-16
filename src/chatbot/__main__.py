@@ -8,15 +8,15 @@ import typer
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
-from chatbot.application.ingest_service import IngestService
+from chatbot.application.sync_service import IngestSyncService
 from chatbot.config.settings import get_settings
 
 app = typer.Typer(no_args_is_help=True, help="Customer chatbot CLI.")
 
 
-@app.command("ingest")
-def ingest_cmd(path: Annotated[Path, typer.Argument(exists=False, help="File or directory to ingest")]) -> None:
-    """Index supported documents (pdf, csv, xlsx, xls) into the vector store."""
+@app.command("sync")
+def sync_cmd(path: Annotated[Path, typer.Argument(exists=False, help="File or directory to reconcile with the index")]) -> None:
+    """Prune missing files under this root from the index, then (re)ingest supported documents."""
     settings = get_settings()
     settings.lancedb_path.mkdir(parents=True, exist_ok=True)
     engine = create_db_engine(settings)
@@ -24,8 +24,8 @@ def ingest_cmd(path: Annotated[Path, typer.Argument(exists=False, help="File or 
     embedder = GeminiEmbedder()
     store = LanceVectorStore(settings.lancedb_path)
     with factory() as session:
-        svc = IngestService(settings=settings, embedder=embedder, vector_store=store, session=session)
-        for line in svc.ingest_path(path):
+        svc = IngestSyncService(settings=settings, embedder=embedder, vector_store=store, session=session)
+        for line in svc.reconcile_root(path):
             typer.echo(line)
         session.commit()
 
