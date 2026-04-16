@@ -48,6 +48,7 @@ def get_chat_service(
             rewriter_llm=request.app.state.rewriter_llm,
             embedder=request.app.state.embedder,
             vector_store=request.app.state.vector_store,
+            rewrite_language_gate=getattr(request.app.state, "rewrite_language_gate", None),
         )
     return ChatService(
         settings=settings,

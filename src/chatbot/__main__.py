@@ -21,7 +21,7 @@ def ingest_cmd(path: Annotated[Path, typer.Argument(exists=False, help="File or 
     settings.lancedb_path.mkdir(parents=True, exist_ok=True)
     engine = create_db_engine(settings)
     factory = session_factory(engine)
-    embedder = GeminiEmbedder(api_key=settings.gemini_api_key, model=settings.embedding_model)
+    embedder = GeminiEmbedder()
     store = LanceVectorStore(settings.lancedb_path)
     with factory() as session:
         svc = IngestService(settings=settings, embedder=embedder, vector_store=store, session=session)

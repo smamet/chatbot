@@ -1,16 +1,31 @@
 from __future__ import annotations
 
+from typing import Literal
+
 from google import genai
 from google.genai import types
 
+from chatbot.config.settings import Settings, get_settings
 from chatbot.domain.contracts.llm_client import LlmResult, LlmUsage
 from chatbot.domain.models.message import ChatMessage, MessageRole
 
 
 class GeminiLlmClient:
-    def __init__(self, *, api_key: str, model: str) -> None:
-        self._model = model
-        self._client = genai.Client(api_key=api_key) if api_key else genai.Client()
+    """Reads model id and API key from ``get_settings()`` on each call so `.env` edits apply without restart."""
+
+    def __init__(self, *, model_attr: Literal["chat_model", "rewrite_model"]) -> None:
+        self._model_attr = model_attr
+        self._client: genai.Client | None = None
+        self._client_api_key: str | None = None
+
+    def _client_and_model(self) -> tuple[genai.Client, str]:
+        s: Settings = get_settings()
+        key = s.gemini_api_key or ""
+        if self._client is None or key != self._client_api_key:
+            self._client = genai.Client(api_key=key) if key else genai.Client()
+            self._client_api_key = key
+        model = getattr(s, self._model_attr)
+        return self._client, model
 
     def generate_chat(
         self,
@@ -18,6 +33,7 @@ class GeminiLlmClient:
         system_instruction: str,
         messages: list[ChatMessage],
     ) -> LlmResult:
+        client, model = self._client_and_model()
         contents: list[types.Content] = []
         for m in messages:
             if m.role == MessageRole.SYSTEM:
@@ -29,8 +45,8 @@ class GeminiLlmClient:
                     parts=[types.Part.from_text(text=m.content)],
                 )
             )
-        response = self._client.models.generate_content(
-            model=self._model,
+        response = client.models.generate_content(
+            model=model,
             contents=contents,
             config=types.GenerateContentConfig(
                 system_instruction=system_instruction,

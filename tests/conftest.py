@@ -5,7 +5,7 @@ import uuid
 import pytest
 from pydantic_settings import SettingsConfigDict
 
-from chatbot.config.settings import Settings, get_settings
+from chatbot.config.settings import Settings, reset_settings_cache_for_tests
 
 
 class TestSettings(Settings):
@@ -19,9 +19,9 @@ def _dummy_gemini_key(monkeypatch: pytest.MonkeyPatch) -> None:
 
 @pytest.fixture(autouse=True)
 def _clear_settings_cache() -> None:
-    get_settings.cache_clear()
+    reset_settings_cache_for_tests()
     yield
-    get_settings.cache_clear()
+    reset_settings_cache_for_tests()
 
 
 @pytest.fixture
