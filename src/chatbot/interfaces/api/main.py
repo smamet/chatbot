@@ -16,7 +16,7 @@ from chatbot.interfaces.api.routers import chat, whatsapp_webhook
 
 
 def _configure_rag_verbose_logging(enabled: bool) -> None:
-    """Console logs for RAG decisions (FastText gate, rewrite, retrieval)."""
+    """Console logs for RAG decisions (rewrite gate, retrieval)."""
     log = logging.getLogger("chatbot")
     marker = "_rag_verbose_stream_handler"
     log.handlers = [h for h in log.handlers if not getattr(h, marker, False)]
@@ -31,24 +31,19 @@ def _configure_rag_verbose_logging(enabled: bool) -> None:
 
 
 def _genai_service_signature(s: Settings) -> tuple[object, ...]:
-    fp = str(s.fasttext_lid_model_path) if s.fasttext_lid_model_path else ""
     return (
         s.chat_model,
         s.rewrite_model,
         s.embedding_model,
         s.gemini_api_key,
         s.rag_rewrite_lang_filter,
-        fp,
-        s.rag_rewrite_min_prob_en,
-        s.rag_rewrite_fr_max_prob_creole,
-        s.rag_rewrite_creole_labels,
         s.rag_verbose,
         str(s.lancedb_path),
     )
 
 
 def refresh_genai_clients_if_needed(app: FastAPI) -> None:
-    """Recreate Gemini clients / embedder / Lance store / lid gate when `.env` changes (mtime-based)."""
+    """Recreate Gemini clients / embedder / Lance store / rewrite gate when `.env` changes (mtime-based)."""
     s = get_settings()
     sig = _genai_service_signature(s)
     if getattr(app.state, "_genai_service_sig", None) == sig:

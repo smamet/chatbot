@@ -11,7 +11,7 @@ from chatbot.config.settings import Settings, reset_settings_cache_for_tests
 class TestSettings(Settings):
     """App settings for tests: explicit kwargs only (never OS env for DATABASE_URL, etc.)."""
 
-    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+    model_config = SettingsConfigDict(env_file=None, extra="ignore", populate_by_name=True)
 
     @classmethod
     def settings_customise_sources(

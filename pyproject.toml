@@ -23,7 +23,6 @@ dependencies = [
     "xlrd>=2.0.0",
     "lancedb>=0.14.0",
     "numpy>=1.26.0",
-    "fasttext>=0.9.3",
 ]
 
 [project.optional-dependencies]

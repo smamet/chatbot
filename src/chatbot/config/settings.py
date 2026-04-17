@@ -12,6 +12,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     dev_mode: bool = Field(default=False, validation_alias="DEV_MODE")
@@ -33,13 +34,6 @@ class Settings(BaseSettings):
     chunk_overlap: int = Field(default=100, validation_alias="CHUNK_OVERLAP")
 
     rag_rewrite_lang_filter: bool = Field(default=False, validation_alias="RAG_REWRITE_LANG_FILTER")
-    fasttext_lid_model_path: Path | None = Field(default=None, validation_alias="FASTTEXT_LID_MODEL_PATH")
-    rag_rewrite_min_prob_en: float = Field(default=0.20, validation_alias="RAG_REWRITE_MIN_PROB_EN")
-    rag_rewrite_fr_max_prob_creole: float = Field(
-        default=0.50,
-        validation_alias="RAG_REWRITE_FR_MAX_PROB_CREOLE",
-    )
-    rag_rewrite_creole_labels: str = Field(default="ht", validation_alias="RAG_REWRITE_CREOLE_LABELS")
     rag_verbose: bool = Field(default=False, validation_alias="RAG_VERBOSE")
 
     whatsapp_verify_token: str = Field(default="", validation_alias="WHATSAPP_VERIFY_TOKEN")

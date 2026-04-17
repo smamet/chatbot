@@ -20,3 +20,6 @@ htmlcov/
 .idea/
 *.swp
 *.swo
+# Local model weights (optional; not used by marker-only rewrite gate)
+models/*.bin
+models/*.ftz
