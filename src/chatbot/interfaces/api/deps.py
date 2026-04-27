@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import hmac
 from collections.abc import Generator
+from typing import Annotated
 
-from fastapi import Depends, Request
+from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
@@ -17,6 +19,22 @@ from chatbot.config.settings import Settings, get_settings
 
 def get_settings_dep() -> Settings:
     return get_settings()
+
+
+def require_chat_api_auth(
+    settings: Settings = Depends(get_settings_dep),
+    authorization: Annotated[str | None, Header()] = None,
+) -> None:
+    """When CHAT_API_SECRET is set, require ``Authorization: Bearer <secret>`` for /v1/chat."""
+    secret = settings.chat_api_secret.strip()
+    if not secret:
+        return
+    if authorization is None or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Unauthorized")
+    token = authorization.removeprefix("Bearer ").strip()
+    a, b = token.encode("utf-8"), secret.encode("utf-8")
+    if len(a) != len(b) or not hmac.compare_digest(a, b):
+        raise HTTPException(status_code=401, detail="Unauthorized")
 
 
 def get_session(request: Request) -> Generator[Session, None, None]:

@@ -17,6 +17,9 @@ class Settings(BaseSettings):
 
     dev_mode: bool = Field(default=False, validation_alias="DEV_MODE")
 
+    # When non-empty, POST /v1/chat requires Authorization: Bearer <this value>.
+    chat_api_secret: str = Field(default="", validation_alias="CHAT_API_SECRET")
+
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     chat_model: str = Field(default="gemini-2.0-flash", validation_alias="CHAT_MODEL")
     embedding_model: str = Field(default="gemini-embedding-001", validation_alias="EMBEDDING_MODEL")

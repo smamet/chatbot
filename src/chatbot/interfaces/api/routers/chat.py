@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, HTTPException
 
 from chatbot.application.chat_service import ChatService
 from chatbot.config.settings import Settings
-from chatbot.interfaces.api.deps import get_chat_service, get_settings_dep
+from chatbot.interfaces.api.deps import get_chat_service, get_settings_dep, require_chat_api_auth
 
 router = APIRouter()
 
@@ -30,6 +30,7 @@ class ChatResponse(BaseModel):
 @router.post("/chat", response_model=ChatResponse)
 def post_chat(
     body: ChatRequest,
+    _: None = Depends(require_chat_api_auth),
     service: ChatService = Depends(get_chat_service),
     settings: Settings = Depends(get_settings_dep),
 ) -> ChatResponse:

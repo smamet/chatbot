@@ -1,12 +1,46 @@
 from __future__ import annotations
 
 import json
+import os
 import uuid
+from pathlib import Path
 
 import httpx
 import streamlit as st
 
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _load_repo_dotenv() -> None:
+    """Streamlit does not load `.env` by default; the API does via pydantic-settings."""
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        return
+    load_dotenv(_REPO_ROOT / ".env", override=False)
+
+
+_load_repo_dotenv()
+
 DEFAULT_API = "http://127.0.0.1:8000"
+
+
+def _chat_api_secret() -> str:
+    v = (os.environ.get("CHAT_API_SECRET") or "").strip()
+    if v:
+        return v
+    try:
+        s = st.secrets["CHAT_API_SECRET"]
+        return str(s).strip() if s is not None else ""
+    except (FileNotFoundError, KeyError, TypeError, RuntimeError):
+        return ""
+
+
+def _chat_request_headers() -> dict[str, str]:
+    secret = _chat_api_secret()
+    if not secret:
+        return {}
+    return {"Authorization": f"Bearer {secret}"}
 
 
 def _human_error_message(body: object) -> str:
@@ -48,6 +82,10 @@ st.set_page_config(page_title="Chatbot test", layout="centered")
 st.title("Chatbot test client")
 
 api_base = st.sidebar.text_input("API base URL", value=DEFAULT_API)
+if not _chat_api_secret():
+    st.sidebar.caption(
+        "If the API uses CHAT_API_SECRET: set it in project `.env`, export it, or use `.streamlit/secrets.toml`."
+    )
 if "session_id" not in st.session_state:
     st.session_state.session_id = str(uuid.uuid4())
 st.sidebar.caption(f"session_id: {st.session_state.session_id}")
@@ -76,6 +114,7 @@ if prompt:
             r = client.post(
                 url,
                 json={"session_id": st.session_state.session_id, "message": prompt},
+                headers=_chat_request_headers(),
             )
             r.raise_for_status()
             data = r.json()

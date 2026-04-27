@@ -32,7 +32,7 @@ uvicorn chatbot.interfaces.api.main:app --reload
 streamlit run apps/streamlit_chat.py
 ```
 
-Point the sidebar API URL at `http://127.0.0.1:8000` if needed.
+Point the sidebar API URL at `http://127.0.0.1:8000` if needed. For **`CHAT_API_SECRET`**, the app loads the **repository root `.env`** at startup (then `os.environ`, then **`st.secrets`**) so the same `.env` as the API usually works locally.
 
 ## Sync documents (RAG)
 
@@ -188,10 +188,12 @@ Meta callback URLs use your public origin, e.g. `https://chatbot.example.com/web
 
 ### Security (what this repo does and does not do)
 
-- **`POST /v1/chat`** is **not** protected by an API key or login in the application code. Anyone who can reach that URL can send chat requests and **use your Gemini quota** unless you add controls (e.g. nginx **`auth_basic`**, **`limit_req`**, IP allowlist, mTLS, or a reverse-proxy check for a shared secret header). If that route should stay private, restrict it at the network or proxy layer.
+- **`POST /v1/chat`:** set **`CHAT_API_SECRET`** in `.env` to a long random value. When non-empty, the API requires **`Authorization: Bearer <same value>`**. Leave it empty for local dev without a header. The Streamlit test app reads **`CHAT_API_SECRET`** from the **repo root `.env`** (loaded on startup), then the process environment, then **`.streamlit/secrets.toml`**. Meta webhooks do **not** use this header; they use **`/webhooks/...`** with Meta’s own verification.
 - **`GET /healthz`** is intentionally open for probes.
-- **WhatsApp webhook:** `GET` verification compares `hub.verify_token` to **`WHATSAPP_VERIFY_TOKEN`**. **`POST`** payloads are checked against **`X-Hub-Signature-256`** using **`WHATSAPP_APP_SECRET`** when that secret is set — set both in production so only Meta can impersonate inbound events.
-- **Hardening baseline:** uvicorn bound to **127.0.0.1**; TLS on **nginx**; firewall; keep secrets only in `.env` with tight file permissions (`chmod 600 .env`).
+- **WhatsApp webhook:** `GET` verification compares `hub.verify_token` to **`WHATSAPP_VERIFY_TOKEN`**. **`POST`** payloads are checked against **`X-Hub-Signature-256`** using **`WHATSAPP_APP_SECRET`** when that secret is set — set both in production so only Meta can impersonate inbound events. Future Messenger/Instagram webhook routes should follow the same Meta patterns; they do not call `/v1/chat`.
+- **Hardening baseline:** uvicorn bound to **127.0.0.1**; TLS on **nginx**; firewall; keep secrets only in `.env` with tight file permissions (`chmod 600 .env`). Optional: nginx **`limit_req`** for extra abuse protection.
+
+Securing `/v1/chat` does **not** add a login to the Streamlit **browser UI**; restrict who can open Streamlit separately (private app, SSO, or nginx) if needed.
 
 ## WhatsApp (dev)
 
