@@ -3,12 +3,13 @@ from __future__ import annotations
 from collections.abc import Callable
 from pathlib import Path
 
-from chatbot.adapters.rag.parsers import markdown_parser, pdf_parser, spreadsheet_parser
+from chatbot.adapters.rag.parsers import docx_parser, markdown_parser, pdf_parser, spreadsheet_parser
 
 ParserFn = Callable[[Path], str]
 
 _SUFFIXES: dict[str, ParserFn] = {
     ".md": markdown_parser.parse_markdown,
+    ".docx": docx_parser.parse_docx,
     ".pdf": pdf_parser.parse_pdf,
     ".csv": spreadsheet_parser.parse_csv,
     ".xlsx": spreadsheet_parser.parse_xlsx,

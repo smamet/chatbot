@@ -118,3 +118,79 @@ def test_chat_service_includes_rag_context(test_settings, tmp_path: Path) -> Non
     assert cap.last_system is not None
     assert "Retrieved context" in cap.last_system
     assert "42 EUR" in cap.last_system
+    assert "/tmp/price.csv" not in cap.last_system
+    assert "Do not mention internal file names" in cap.last_system
+
+
+def test_chat_service_rag_includes_source_paths_when_dev_mode(test_settings, tmp_path: Path) -> None:
+    from chatbot.domain.contracts.vector_store import RetrievedChunk, VectorRecord
+
+    class FakeEmbedder:
+        def embed_texts(self, texts: list[str]) -> list[list[float]]:
+            return [[0.0, 0.0, 1.0] for _ in texts]
+
+    class FakeStore:
+        def delete_by_source_path(self, source_path: str) -> None:
+            _ = source_path
+
+        def upsert(self, records: list[VectorRecord]) -> None:
+            _ = records
+
+        def search(self, query_vector: list[float], *, top_k: int) -> list[RetrievedChunk]:
+            _ = query_vector
+            _ = top_k
+            return [
+                RetrievedChunk(
+                    chunk_id="c1",
+                    text="Widget price is 42 EUR",
+                    source_path="/tmp/price.csv",
+                    score=0.1,
+                )
+            ]
+
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text("You are support.", encoding="utf-8")
+    settings = test_settings.model_copy(
+        update={
+            "prompt_path": prompt_file,
+            "rag_enabled": True,
+            "rag_rewrite_enabled": False,
+            "dev_mode": True,
+        }
+    )
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+
+    class CaptureLlm:
+        def __init__(self) -> None:
+            self.last_system: str | None = None
+
+        def generate_chat(
+            self,
+            *,
+            system_instruction: str,
+            messages: list[ChatMessage],
+        ) -> LlmResult:
+            self.last_system = system_instruction
+            return LlmResult(text="ok", usage=LlmUsage())
+
+    rewriter = FakeLlm("unused")
+    rag = RagPipeline(
+        settings=settings,
+        rewriter_llm=rewriter,
+        embedder=FakeEmbedder(),
+        vector_store=FakeStore(),
+    )
+    cap = CaptureLlm()
+    session = factory()
+    try:
+        repo = SqlAlchemyConversationRepository(session)
+        svc = ChatService(settings=settings, llm=cap, repo=repo, rag=rag, prompt_path=prompt_file)
+        svc.handle_user_message("s3", "How much?")
+        session.commit()
+    finally:
+        session.close()
+    assert cap.last_system is not None
+    assert "/tmp/price.csv" in cap.last_system
+    assert "chunk c1" in cap.last_system
+    assert "Do not mention internal file names" not in cap.last_system

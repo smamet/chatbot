@@ -40,6 +40,12 @@ class ChatService:
             ctx = self._rag.build_retrieval_context(user_message)
             if ctx:
                 system = f"{system}\n\n--- Retrieved context ---\n{ctx}"
+                if not self._settings.dev_mode:
+                    system = (
+                        f"{system}\n\n"
+                        "Do not mention internal file names, paths, or parenthetical "
+                        "source citations such as (Source: …) in your reply to the customer."
+                    )
         result = self._llm.generate_chat(system_instruction=system, messages=history)
         self._repo.append_message(
             session_id,

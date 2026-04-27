@@ -107,7 +107,10 @@ class RagPipeline:
 
         lines: list[str] = []
         for h in hits:
-            lines.append(f"[{h.source_path} | chunk {h.chunk_id}]\n{h.text}")
+            if self._settings.dev_mode:
+                lines.append(f"[{h.source_path} | chunk {h.chunk_id}]\n{h.text}")
+            else:
+                lines.append(h.text)
         return "\n\n---\n\n".join(lines)
 
     def _rewrite_query(self, user_query: str) -> str:
