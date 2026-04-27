@@ -65,6 +65,134 @@ Set **`RAG_VERBOSE=true`** to log marker hits and rewrite decisions. Restart the
 pytest
 ```
 
+## Production setup (Ubuntu)
+
+Example layout: app code under `/home/YOUR_LINUX_USER/chatbot`, systemd runs **uvicorn on `127.0.0.1:8000` only**, **nginx** terminates TLS and proxies to that socket. Replace `YOUR_LINUX_USER` and `chatbot.example.com` with your values.
+
+### Python 3.12 next to system Python (e.g. Ubuntu 22.04)
+
+The project needs **Python ≥ 3.12** ([`pyproject.toml`](pyproject.toml)). Installing 3.12 does not replace the system `python3` (often 3.10); use a **dedicated venv** for this app:
+
+```bash
+sudo apt update
+sudo apt install -y software-properties-common git build-essential
+sudo add-apt-repository -y ppa:deadsnakes/ppa
+sudo apt install -y python3.12 python3.12-venv python3.12-dev
+```
+
+### Clone, venv, install
+
+```bash
+sudo mkdir -p /home/YOUR_LINUX_USER/chatbot
+sudo chown YOUR_LINUX_USER:YOUR_LINUX_USER /home/YOUR_LINUX_USER/chatbot
+# as YOUR_LINUX_USER:
+cd /home/YOUR_LINUX_USER/chatbot
+git clone <your-repo-url> .
+python3.12 -m venv .venv --prompt chatbot
+source .venv/bin/activate
+pip install -U pip setuptools wheel
+pip install -e .
+mkdir -p data
+cp .env.example .env
+# edit .env (GEMINI_API_KEY, DATABASE_URL, WHATSAPP_*, RAG flags, etc.)
+```
+
+### nginx and Certbot (HTTPS)
+
+```bash
+sudo apt install -y nginx certbot python3-certbot-nginx
+```
+
+Create `/etc/nginx/sites-available/chatbot` (HTTP first; Certbot will add TLS):
+
+```nginx
+server {
+    listen 80;
+    listen [::]:80;
+    server_name chatbot.example.com;
+
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_connect_timeout 60s;
+        proxy_send_timeout 60s;
+        proxy_read_timeout 60s;
+    }
+}
+```
+
+Enable, test, obtain certificates:
+
+```bash
+sudo ln -sf /etc/nginx/sites-available/chatbot /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+sudo certbot --nginx -d chatbot.example.com
+```
+
+After Certbot, confirm the **443** server still `proxy_pass`es to `http://127.0.0.1:8000`. Optional: add `client_max_body_size 20m;` inside `server { }` if you expect large webhooks or uploads.
+
+**Firewall:** allow **80** and **443**; do **not** expose port **8000** publicly if nginx is the front door (`sudo ufw allow 'Nginx Full'` or equivalent).
+
+### systemd (start on boot)
+
+`/etc/systemd/system/chatbot.service`:
+
+```ini
+[Unit]
+Description=Chatbot FastAPI (uvicorn)
+After=network.target
+
+[Service]
+Type=simple
+User=YOUR_LINUX_USER
+Group=YOUR_LINUX_USER
+WorkingDirectory=/home/YOUR_LINUX_USER/chatbot
+Environment=PATH=/home/YOUR_LINUX_USER/chatbot/.venv/bin
+ExecStart=/home/YOUR_LINUX_USER/chatbot/.venv/bin/uvicorn chatbot.interfaces.api.main:app --host 127.0.0.1 --port 8000
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+```
+
+`WorkingDirectory` must be the repo root so `.env` and relative paths like `./data/` resolve the same way as locally (see [`.env.example`](.env.example)).
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now chatbot.service
+sudo systemctl status chatbot.service
+journalctl -u chatbot.service -f
+```
+
+### Reload and stop (operations)
+
+| Goal | Command |
+|------|---------|
+| **Apply code or dependency changes** (after `git pull`, `pip install`, edits under `src/`) | `sudo systemctl restart chatbot.service` |
+| **After editing the `.service` unit file** | `sudo systemctl daemon-reload` then `sudo systemctl restart chatbot.service` |
+| **Many `.env` changes** (models, keys, RAG flags) | Save `.env`; the app reloads clients on the **next request** when the file mtime changes. **Exception:** changing **`DATABASE_URL`** still needs **`sudo systemctl restart chatbot.service`**. |
+| **Stop the API** | `sudo systemctl stop chatbot.service` |
+| **Start the API** | `sudo systemctl start chatbot.service` |
+| **nginx config change** | `sudo nginx -t && sudo systemctl reload nginx` |
+
+Meta callback URLs use your public origin, e.g. `https://chatbot.example.com/webhooks/whatsapp`.
+
+### Security (what this repo does and does not do)
+
+- **`POST /v1/chat`** is **not** protected by an API key or login in the application code. Anyone who can reach that URL can send chat requests and **use your Gemini quota** unless you add controls (e.g. nginx **`auth_basic`**, **`limit_req`**, IP allowlist, mTLS, or a reverse-proxy check for a shared secret header). If that route should stay private, restrict it at the network or proxy layer.
+- **`GET /healthz`** is intentionally open for probes.
+- **WhatsApp webhook:** `GET` verification compares `hub.verify_token` to **`WHATSAPP_VERIFY_TOKEN`**. **`POST`** payloads are checked against **`X-Hub-Signature-256`** using **`WHATSAPP_APP_SECRET`** when that secret is set — set both in production so only Meta can impersonate inbound events.
+- **Hardening baseline:** uvicorn bound to **127.0.0.1**; TLS on **nginx**; firewall; keep secrets only in `.env` with tight file permissions (`chmod 600 .env`).
+
 ## WhatsApp (dev)
 
 **Meta ([developers.facebook.com](https://developers.facebook.com/))**
