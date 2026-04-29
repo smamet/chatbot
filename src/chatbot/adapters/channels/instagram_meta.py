@@ -4,6 +4,7 @@ import json
 from typing import Any
 
 import httpx
+from chatbot.adapters.channels.text_format import format_for_instagram
 
 GRAPH_API_VERSION = "v25.0"
 
@@ -37,6 +38,7 @@ def send_instagram_text(
     text: str,
     timeout: float = 30.0,
 ) -> None:
+    body_text = format_for_instagram(text)
     url = f"https://graph.instagram.com/{GRAPH_API_VERSION}/{ig_user_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -44,7 +46,7 @@ def send_instagram_text(
     }
     body = {
         "recipient": {"id": recipient_igsid},
-        "message": {"text": text[:1000]},
+        "message": {"text": body_text[:1000]},
     }
     with httpx.Client(timeout=timeout) as client:
         r = client.post(url, headers=headers, content=json.dumps(body))

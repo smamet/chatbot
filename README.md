@@ -34,6 +34,15 @@ streamlit run apps/streamlit_chat.py
 
 Point the sidebar API URL at `http://127.0.0.1:8000` if needed. For **`CHAT_API_SECRET`**, the app loads the **repository root `.env`** at startup (then `os.environ`, then **`st.secrets`**) so the same `.env` as the API usually works locally.
 
+## Channel text rendering
+
+Meta channels (Messenger/Instagram) and WhatsApp do not render markdown the same way. To reduce client-to-client differences:
+
+- **Messenger/Instagram** outbound text is normalized to plain readable text (strip markdown markers, normalize bullets/spacing).
+- **WhatsApp** keeps simple emphasis-compatible text (e.g. `*bold*`, `_italic_`) while cleaning malformed marker patterns.
+
+You may still see minor visual differences between Messenger web and mobile clients, but raw markdown markers (for example `* *Title`) should no longer leak into outbound messages.
+
 ## Sync documents (RAG)
 
 Reconcile a folder with the index: remove vectors and DB rows for files that were ingested under that root but no longer exist on disk, then (re)ingest every supported file there (unchanged files are skipped by hash). Supported types include **markdown** (`.md`), Word (`.docx`), PDF, CSV, and Excel (`.xlsx`, `.xls`).

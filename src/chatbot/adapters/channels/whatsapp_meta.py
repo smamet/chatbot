@@ -5,6 +5,7 @@ from typing import Any
 
 import httpx
 from chatbot.adapters.channels.meta_signature import verify_signature
+from chatbot.adapters.channels.text_format import format_for_whatsapp
 
 
 def extract_first_text_message(payload: dict[str, Any]) -> tuple[str | None, str | None]:
@@ -36,6 +37,7 @@ def send_whatsapp_text(
     text: str,
     timeout: float = 30.0,
 ) -> None:
+    body_text = format_for_whatsapp(text)
     url = f"https://graph.facebook.com/v21.0/{phone_number_id}/messages"
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -45,7 +47,7 @@ def send_whatsapp_text(
         "messaging_product": "whatsapp",
         "to": to_wa_id,
         "type": "text",
-        "text": {"preview_url": False, "body": text[:4096]},
+        "text": {"preview_url": False, "body": body_text[:4096]},
     }
     with httpx.Client(timeout=timeout) as client:
         r = client.post(url, headers=headers, content=json.dumps(body))
