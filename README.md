@@ -184,13 +184,13 @@ journalctl -u chatbot.service -f
 | **Start the API** | `sudo systemctl start chatbot.service` |
 | **nginx config change** | `sudo nginx -t && sudo systemctl reload nginx` |
 
-Meta callback URLs use your public origin, e.g. `https://chatbot.example.com/webhooks/whatsapp`.
+Meta callback URLs use your public origin, e.g. `https://chatbot.example.com/webhooks/whatsapp`, `https://chatbot.example.com/webhooks/messenger`, and `https://chatbot.example.com/webhooks/instagram`.
 
 ### Security (what this repo does and does not do)
 
 - **`POST /v1/chat`:** set **`CHAT_API_SECRET`** in `.env` to a long random value. When non-empty, the API requires **`Authorization: Bearer <same value>`**. Leave it empty for local dev without a header. The Streamlit test app reads **`CHAT_API_SECRET`** from the **repo root `.env`** (loaded on startup), then the process environment, then **`.streamlit/secrets.toml`**. Meta webhooks do **not** use this header; they use **`/webhooks/...`** with Meta’s own verification.
 - **`GET /healthz`** is intentionally open for probes.
-- **WhatsApp webhook:** `GET` verification compares `hub.verify_token` to **`WHATSAPP_VERIFY_TOKEN`**. **`POST`** payloads are checked against **`X-Hub-Signature-256`** using **`WHATSAPP_APP_SECRET`** when that secret is set — set both in production so only Meta can impersonate inbound events. Future Messenger/Instagram webhook routes should follow the same Meta patterns; they do not call `/v1/chat`.
+- **Meta webhooks:** `GET` verification compares `hub.verify_token` with channel tokens (`WHATSAPP_VERIFY_TOKEN`, `MESSENGER_VERIFY_TOKEN`, `INSTAGRAM_VERIFY_TOKEN`; Messenger/Instagram fall back to `WHATSAPP_VERIFY_TOKEN` when blank). **`POST`** payloads are checked against **`X-Hub-Signature-256`** using **`WHATSAPP_APP_SECRET`** (Meta App Secret). These channels do not call `/v1/chat`.
 - **Hardening baseline:** uvicorn bound to **127.0.0.1**; TLS on **nginx**; firewall; keep secrets only in `.env` with tight file permissions (`chmod 600 .env`). Optional: nginx **`limit_req`** for extra abuse protection.
 
 Securing `/v1/chat` does **not** add a login to the Streamlit **browser UI**; restrict who can open Streamlit separately (private app, SSO, or nginx) if needed.
@@ -218,11 +218,11 @@ Use the **same** Meta app or a dedicated one; this is the **Messenger** product 
 
 1. **App** → add product **Messenger**.
 2. **Messenger → Settings / API Setup:** connect the **Facebook Page** the bot should use. Create or copy a **Page access token** (long-lived in production). You send replies with **`POST https://graph.facebook.com/v…/me/messages`** and that token — different from WhatsApp’s `phone_number_id` + WhatsApp token.
-3. **Messenger → Webhooks** (or **App → Webhooks** with Messenger fields): set **Callback URL** (e.g. `https://<host>/webhooks/messenger` — must match what you implement), **Verify token** (your string; same `hub.challenge` flow as WhatsApp on `GET`).
+3. **Messenger → Webhooks** (or **App → Webhooks** with Messenger fields): set **Callback URL** to `https://<host>/webhooks/messenger`, **Verify token** to `MESSENGER_VERIFY_TOKEN` (or `WHATSAPP_VERIFY_TOKEN` if you leave `MESSENGER_VERIFY_TOKEN` blank), same `hub.challenge` flow as WhatsApp on `GET`.
 4. **Subscribe** the **Page** to webhook fields: at minimum **`messages`** (and **`messaging_postbacks`** if you use buttons). **Activate** them like WhatsApp’s `messages` field — otherwise you only see verification `GET`s, not chat `POST`s.
 5. **App Review:** grant **`pages_messaging`** (and related Page permissions) for users who are not admins/testers of the app.
 
-Inbound `POST` bodies use **`messaging[]`** / `sender.id` (PSID), not WhatsApp’s JSON shape. Signature: **`X-Hub-Signature-256`** with the same **App secret** as in App Settings.
+Inbound `POST` bodies use **`messaging[]`** / `sender.id` (PSID), not WhatsApp’s JSON shape. Signature: **`X-Hub-Signature-256`** with the same **App secret** as in App Settings (`WHATSAPP_APP_SECRET` here). Replies are sent with **`MESSENGER_PAGE_ACCESS_TOKEN`** to `https://graph.facebook.com/v21.0/me/messages`.
 
 ## Instagram — DMs (Meta setup)
 
@@ -230,11 +230,11 @@ Instagram customer chat uses the **Instagram API with Instagram Login** (or lega
 
 1. The Instagram account is a **Professional** (Business/Creator) account **linked** to a **Facebook Page** you control.
 2. **App** → add **Instagram** product; complete **Instagram Login** / messaging configuration in the dashboard (scopes such as `instagram_manage_messages` where applicable — names change; check Meta’s checklist).
-3. **Webhooks:** register a **Callback URL** for **Instagram** object fields (e.g. **`messages`** for DMs). Same verify-token + challenge pattern; **subscribe** the fields you need or inbound events will not `POST`.
-4. Replies use the **Instagram messaging** Graph endpoints with the correct **page/IG user** identifiers (IGSID for conversations), not the WhatsApp send URL.
+3. **Webhooks:** register callback URL `https://<host>/webhooks/instagram` for **Instagram** object fields (e.g. **`messages`** for DMs). Verify token is `INSTAGRAM_VERIFY_TOKEN` (or `WHATSAPP_VERIFY_TOKEN` if blank), and you must subscribe the needed fields.
+4. Replies use `https://graph.instagram.com/v25.0/{INSTAGRAM_IG_USER_ID}/messages` with **`INSTAGRAM_ACCESS_TOKEN`** and the inbound `sender.id` (IGSID), not the WhatsApp send URL.
 
 Policies (24-hour session, human agent handoff, etc.) differ from WhatsApp; read Meta’s **Instagram messaging** policy pages before production.
 
 ---
 
-For **Messenger** and **Instagram**, implement separate FastAPI routes and adapters (parse their payloads, call `handle_user_message` with a distinct `session_id` prefix, send via the right Graph API). This repo currently includes **WhatsApp** only (`/webhooks/whatsapp`).
+Webhook routes implemented in this repo: `/webhooks/whatsapp`, `/webhooks/messenger`, `/webhooks/instagram`.

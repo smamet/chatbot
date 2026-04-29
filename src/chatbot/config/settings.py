@@ -43,6 +43,19 @@ class Settings(BaseSettings):
     whatsapp_app_secret: str = Field(default="", validation_alias="WHATSAPP_APP_SECRET")
     whatsapp_access_token: str = Field(default="", validation_alias="WHATSAPP_ACCESS_TOKEN")
     whatsapp_phone_number_id: str = Field(default="", validation_alias="WHATSAPP_PHONE_NUMBER_ID")
+    messenger_verify_token: str = Field(default="", validation_alias="MESSENGER_VERIFY_TOKEN")
+    messenger_page_access_token: str = Field(default="", validation_alias="MESSENGER_PAGE_ACCESS_TOKEN")
+    instagram_verify_token: str = Field(default="", validation_alias="INSTAGRAM_VERIFY_TOKEN")
+    instagram_access_token: str = Field(default="", validation_alias="INSTAGRAM_ACCESS_TOKEN")
+    instagram_ig_user_id: str = Field(default="", validation_alias="INSTAGRAM_IG_USER_ID")
+
+    @property
+    def messenger_effective_verify_token(self) -> str:
+        return self.messenger_verify_token.strip() or self.whatsapp_verify_token.strip()
+
+    @property
+    def instagram_effective_verify_token(self) -> str:
+        return self.instagram_verify_token.strip() or self.whatsapp_verify_token.strip()
 
 
 _lock = Lock()

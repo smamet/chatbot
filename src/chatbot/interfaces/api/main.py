@@ -12,7 +12,12 @@ from chatbot.adapters.rag.fasttext_language_gate import load_rewrite_language_ga
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.config.settings import Settings, get_settings
 from chatbot.interfaces.api.error_handlers import register_exception_handlers
-from chatbot.interfaces.api.routers import chat, whatsapp_webhook
+from chatbot.interfaces.api.routers import (
+    chat,
+    instagram_webhook,
+    messenger_webhook,
+    whatsapp_webhook,
+)
 
 
 def _configure_rag_verbose_logging(enabled: bool) -> None:
@@ -82,6 +87,8 @@ def create_app() -> FastAPI:
 
     app.include_router(chat.router, prefix="/v1", tags=["chat"])
     app.include_router(whatsapp_webhook.router, tags=["whatsapp"])
+    app.include_router(messenger_webhook.router, tags=["messenger"])
+    app.include_router(instagram_webhook.router, tags=["instagram"])
     return app
 
 
