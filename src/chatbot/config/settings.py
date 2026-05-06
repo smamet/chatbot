@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     whatsapp_app_secret: str = Field(default="", validation_alias="WHATSAPP_APP_SECRET")
     whatsapp_access_token: str = Field(default="", validation_alias="WHATSAPP_ACCESS_TOKEN")
     whatsapp_phone_number_id: str = Field(default="", validation_alias="WHATSAPP_PHONE_NUMBER_ID")
+    whatsapp_admin_wa_id: str = Field(default="", validation_alias="WHATSAPP_ADMIN_WA_ID")
+    order_modification_window_hours: int = Field(
+        default=6, validation_alias="ORDER_MODIFICATION_WINDOW_HOURS"
+    )
     messenger_verify_token: str = Field(default="", validation_alias="MESSENGER_VERIFY_TOKEN")
     messenger_page_access_token: str = Field(default="", validation_alias="MESSENGER_PAGE_ACCESS_TOKEN")
     instagram_verify_token: str = Field(default="", validation_alias="INSTAGRAM_VERIFY_TOKEN")

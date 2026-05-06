@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from chatbot.application.order_command_extractor import extract_order_command
+from chatbot.application.order_service import OrderService
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.config.settings import Settings
 from chatbot.domain.contracts.conversation_repository import ConversationRepository
@@ -17,12 +19,14 @@ class ChatService:
         llm: LlmClient,
         repo: ConversationRepository,
         rag: RagPipeline | None,
+        order_service: OrderService | None = None,
         prompt_path: Path | None = None,
     ) -> None:
         self._settings = settings
         self._llm = llm
         self._repo = repo
         self._rag = rag
+        self._order_service = order_service
         self._prompt_path = prompt_path or settings.prompt_path
 
     def _load_system_instruction(self) -> str:
@@ -47,8 +51,17 @@ class ChatService:
                         "source citations such as (Source: …) in your reply to the customer."
                     )
         result = self._llm.generate_chat(system_instruction=system, messages=history)
+        extracted = extract_order_command(result.text)
         self._repo.append_message(
             session_id,
-            ChatMessage(role=MessageRole.ASSISTANT, content=result.text),
+            ChatMessage(role=MessageRole.ASSISTANT, content=extracted.clean_reply),
         )
-        return result
+        if self._order_service and extracted.command:
+            context = self._repo.list_messages(session_id, limit=6)
+            self._order_service.append_command(
+                session_id=session_id,
+                command=extracted.command,
+                command_json=extracted.command_json,
+                conversation_context=context,
+            )
+        return LlmResult(text=extracted.clean_reply, usage=result.usage)

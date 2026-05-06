@@ -10,9 +10,13 @@ from sqlalchemy.orm import Session
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from chatbot.adapters.llm.gemini_client import GeminiLlmClient
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from chatbot.adapters.persistence.order_repository import SqlAlchemyOrderRepository
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
+from chatbot.adapters.system_clock import SystemClock
+from chatbot.application.admin_notifier import NullAdminNotifier, WhatsAppAdminNotifier
 from chatbot.application.chat_service import ChatService
+from chatbot.application.order_service import OrderService
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.config.settings import Settings, get_settings
 
@@ -54,10 +58,42 @@ def get_conversation_repo(session: Session = Depends(get_session)) -> SqlAlchemy
     return SqlAlchemyConversationRepository(session)
 
 
+def get_order_repo(session: Session = Depends(get_session)) -> SqlAlchemyOrderRepository:
+    return SqlAlchemyOrderRepository(session)
+
+
+def get_admin_notifier(settings: Settings = Depends(get_settings_dep)):
+    if (
+        settings.whatsapp_phone_number_id.strip()
+        and settings.whatsapp_access_token.strip()
+        and settings.whatsapp_admin_wa_id.strip()
+    ):
+        return WhatsAppAdminNotifier(
+            phone_number_id=settings.whatsapp_phone_number_id,
+            access_token=settings.whatsapp_access_token,
+            admin_wa_id=settings.whatsapp_admin_wa_id,
+        )
+    return NullAdminNotifier()
+
+
+def get_order_service(
+    settings: Settings = Depends(get_settings_dep),
+    repo: SqlAlchemyOrderRepository = Depends(get_order_repo),
+    notifier=Depends(get_admin_notifier),
+) -> OrderService:
+    return OrderService(
+        repository=repo,
+        notifier=notifier,
+        clock=SystemClock(),
+        modification_window_hours=settings.order_modification_window_hours,
+    )
+
+
 def get_chat_service(
     request: Request,
     settings: Settings = Depends(get_settings_dep),
     repo: SqlAlchemyConversationRepository = Depends(get_conversation_repo),
+    order_service: OrderService = Depends(get_order_service),
 ) -> ChatService:
     rag: RagPipeline | None = None
     if settings.rag_enabled:
@@ -73,5 +109,6 @@ def get_chat_service(
         llm=request.app.state.llm,
         repo=repo,
         rag=rag,
+        order_service=order_service,
         prompt_path=settings.prompt_path,
     )

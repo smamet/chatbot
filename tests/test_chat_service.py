@@ -5,10 +5,12 @@ from pathlib import Path
 
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from chatbot.application.order_service import OrderServiceResult
 from chatbot.application.chat_service import ChatService
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.domain.contracts.llm_client import LlmResult, LlmUsage
 from chatbot.domain.models.message import ChatMessage, MessageRole
+from chatbot.domain.models.order import OrderAction, OrderCommand
 
 
 class FakeLlm:
@@ -194,3 +196,94 @@ def test_chat_service_rag_includes_source_paths_when_dev_mode(test_settings, tmp
     assert "/tmp/price.csv" in cap.last_system
     assert "chunk c1" in cap.last_system
     assert "Do not mention internal file names" not in cap.last_system
+
+
+def test_chat_service_strips_marker_and_calls_order_service(test_settings, tmp_path: Path) -> None:
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text("You are support.", encoding="utf-8")
+    settings = test_settings.model_copy(update={"prompt_path": prompt_file})
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+
+    class FakeOrderService:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def append_command(self, **kwargs):
+            self.calls.append(kwargs)
+            return OrderServiceResult(
+                action=OrderAction.CREATE,
+                result="created",
+                order=None,
+                message="ok",
+            )
+
+    llm = FakeLlm(
+        'Thanks, confirmed.\n===JF030A===\n{"action":"create","name":"Ana","tel":"23057770000","products":[{"qty":2,"product":"Diffuser"}]}'
+    )
+    fake_order_service = FakeOrderService()
+    session = factory()
+    try:
+        repo = SqlAlchemyConversationRepository(session)
+        svc = ChatService(
+            settings=settings,
+            llm=llm,
+            repo=repo,
+            rag=None,
+            order_service=fake_order_service,  # type: ignore[arg-type]
+            prompt_path=prompt_file,
+        )
+        out = svc.handle_user_message("s-order", "I want 2 diffusers")
+        session.commit()
+        msgs = repo.list_messages("s-order", limit=10)
+    finally:
+        session.close()
+
+    assert out.text == "Thanks, confirmed."
+    assert msgs[-1].content == "Thanks, confirmed."
+    assert len(fake_order_service.calls) == 1
+    call = fake_order_service.calls[0]
+    assert call["session_id"] == "s-order"
+    assert isinstance(call["command"], OrderCommand)
+    assert len(call["conversation_context"]) == 2
+
+
+def test_chat_service_passes_only_last_six_messages_to_order_service(test_settings, tmp_path: Path) -> None:
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text("You are support.", encoding="utf-8")
+    settings = test_settings.model_copy(update={"prompt_path": prompt_file})
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+
+    class FakeOrderService:
+        def __init__(self) -> None:
+            self.calls: list[dict[str, object]] = []
+
+        def append_command(self, **kwargs):
+            self.calls.append(kwargs)
+            return OrderServiceResult(action=OrderAction.CREATE, result="created", order=None, message="ok")
+
+    session = factory()
+    try:
+        repo = SqlAlchemyConversationRepository(session)
+        for i in range(8):
+            repo.append_message("s6", ChatMessage(role=MessageRole.USER, content=f"old-{i}"))
+        llm = FakeLlm(
+            'Sure.\n===JF030A===\n{"action":"create","tel":"23057770000","products":[{"qty":1,"product":"Mist"}]}'
+        )
+        fake_order_service = FakeOrderService()
+        svc = ChatService(
+            settings=settings,
+            llm=llm,
+            repo=repo,
+            rag=None,
+            order_service=fake_order_service,  # type: ignore[arg-type]
+            prompt_path=prompt_file,
+        )
+        svc.handle_user_message("s6", "new-order")
+        session.commit()
+    finally:
+        session.close()
+
+    context = fake_order_service.calls[0]["conversation_context"]
+    assert len(context) == 6
