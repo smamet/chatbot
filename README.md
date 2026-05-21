@@ -51,6 +51,14 @@ Reconcile a folder with the index: remove vectors and DB rows for files that wer
 python -m chatbot sync path/to/file_or_dir
 ```
 
+To **replace the entire RAG index** (e.g. when switching from one client doc folder to another), clear all vectors and ingest metadata first, then ingest only the given path:
+
+```bash
+python -m chatbot sync --fresh docs/vdtech
+```
+
+This does not delete chat messages or orders in `app.db`—only LanceDB chunks and `ingested_files` rows. Restart the API after a sync if it was already running.
+
 On PEP 668–managed Python (e.g. Homebrew), use a venv (`python3 -m venv .venv && source .venv/bin/activate`) or pyenv `chatbot` before `pip install`.
 
 Enable RAG in `.env`: `RAG_ENABLED=true`.

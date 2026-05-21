@@ -22,9 +22,13 @@ class _FakeEmbedder:
 class _FakeVectorStore:
     def __init__(self) -> None:
         self.deleted_paths: list[str] = []
+        self.cleared = False
 
     def delete_by_source_path(self, source_path: str) -> None:
         self.deleted_paths.append(source_path)
+
+    def clear_all(self) -> None:
+        self.cleared = True
 
     def upsert(self, records: list[VectorRecord]) -> None:
         pass
@@ -87,6 +91,53 @@ def test_no_prior_when_no_rows_under_root(sync_session) -> None:
     logs = svc.prune_missing_under_root(root)
     assert "no prior ingested paths under root" in logs
     assert outside not in store.deleted_paths
+
+
+def test_clear_all_index_removes_all_rows_and_calls_vector_clear(sync_session) -> None:
+    test_settings, session, store, embedder = sync_session
+    root = _workspace_root(test_settings)
+    inside = str((root / "a.pdf").resolve())
+    outside = str((root.parent / f"outside_{uuid.uuid4().hex}.pdf").resolve())
+    session.add(IngestedFileRow(path=inside, content_hash="a"))
+    session.add(IngestedFileRow(path=outside, content_hash="b"))
+    session.flush()
+
+    svc = IngestSyncService(
+        settings=test_settings,
+        embedder=embedder,
+        vector_store=store,
+        session=session,
+    )
+    logs = svc.clear_all_index()
+    assert store.cleared
+    assert "cleared vector index" in logs
+    assert "cleared 2 ingested file records" in logs
+    assert list(session.scalars(select(IngestedFileRow)).all()) == []
+
+
+def test_reconcile_fresh_clears_outside_root_and_ingests(sync_session) -> None:
+    test_settings, session, store, embedder = sync_session
+    root = _workspace_root(test_settings)
+    outside = str((root.parent / f"outside_{uuid.uuid4().hex}.pdf").resolve())
+    session.add(IngestedFileRow(path=outside, content_hash="x"))
+    session.flush()
+
+    svc = IngestSyncService(
+        settings=test_settings,
+        embedder=embedder,
+        vector_store=store,
+        session=session,
+    )
+    svc._ingest.ingest_path = Mock(return_value=["ingest-stub"])
+    logs = svc.reconcile_root(root, fresh=True)
+    assert store.cleared
+    assert "cleared vector index" in logs
+    assert "ingest-stub" in logs
+    assert outside not in store.deleted_paths
+    assert session.scalar(select(IngestedFileRow).where(IngestedFileRow.path == outside)) is None
+    ingest_mock = svc._ingest.ingest_path
+    assert isinstance(ingest_mock, Mock)
+    ingest_mock.assert_called_once()
 
 
 def test_reconcile_calls_ingest_after_prune(sync_session) -> None:

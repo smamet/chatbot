@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from sqlalchemy import select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.orm import IngestedFileRow
@@ -60,9 +60,21 @@ class IngestSyncService:
         self._session.flush()
         return logs
 
-    def reconcile_root(self, root: Path) -> list[str]:
+    def clear_all_index(self) -> list[str]:
+        """Drop all vectors and ingested-file metadata (full RAG index reset)."""
+        n = self._session.scalar(select(func.count()).select_from(IngestedFileRow)) or 0
+        self._store.clear_all()
+        self._session.execute(delete(IngestedFileRow))
+        self._session.flush()
+        return ["cleared vector index", f"cleared {n} ingested file records"]
+
+    def reconcile_root(self, root: Path, *, fresh: bool = False) -> list[str]:
         """Prune missing ingested files under root, then run full ingest for that path."""
         logs: list[str] = []
+        if fresh:
+            logs.extend(self.clear_all_index())
+            logs.extend(self._ingest.ingest_path(root))
+            return logs
         logs.extend(self.prune_missing_under_root(root))
         logs.extend(self._ingest.ingest_path(root))
         return logs

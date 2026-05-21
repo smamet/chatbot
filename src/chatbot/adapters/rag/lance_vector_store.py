@@ -23,6 +23,10 @@ class LanceVectorStore:
         safe = source_path.replace("'", "''")
         tbl.delete(f"source_path == '{safe}'")
 
+    def clear_all(self) -> None:
+        if self._TABLE in self._db.table_names():
+            self._db.drop_table(self._TABLE)
+
     def upsert(self, records: list[VectorRecord]) -> None:
         if not records:
             return

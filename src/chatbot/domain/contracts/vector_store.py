@@ -26,6 +26,10 @@ class VectorStore(Protocol):
         """Remove all chunks for a logical source (e.g. before re-ingesting the same file)."""
         ...
 
+    def clear_all(self) -> None:
+        """Remove all indexed chunks (full index reset)."""
+        ...
+
     def upsert(self, records: list[VectorRecord]) -> None:
         ...
 

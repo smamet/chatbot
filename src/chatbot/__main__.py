@@ -15,7 +15,13 @@ app = typer.Typer(no_args_is_help=True, help="Customer chatbot CLI.")
 
 
 @app.command("sync")
-def sync_cmd(path: Annotated[Path, typer.Argument(exists=False, help="File or directory to reconcile with the index")]) -> None:
+def sync_cmd(
+    path: Annotated[Path, typer.Argument(exists=False, help="File or directory to reconcile with the index")],
+    fresh: Annotated[
+        bool,
+        typer.Option("--fresh", help="Clear entire RAG index before ingesting this path"),
+    ] = False,
+) -> None:
     """Prune missing files under this root from the index, then (re)ingest supported documents."""
     settings = get_settings()
     settings.lancedb_path.mkdir(parents=True, exist_ok=True)
@@ -25,7 +31,7 @@ def sync_cmd(path: Annotated[Path, typer.Argument(exists=False, help="File or di
     store = LanceVectorStore(settings.lancedb_path)
     with factory() as session:
         svc = IngestSyncService(settings=settings, embedder=embedder, vector_store=store, session=session)
-        for line in svc.reconcile_root(path):
+        for line in svc.reconcile_root(path, fresh=fresh):
             typer.echo(line)
         session.commit()
 
