@@ -1,19 +1,15 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from chatbot.application.chat_service import ChatService
 from chatbot.config.settings import Settings
+from chatbot.domain.models.attachment import Attachment
 from chatbot.interfaces.api.deps import get_chat_service, get_settings_dep, require_chat_api_auth
 
 router = APIRouter()
-
-
-class ChatRequest(BaseModel):
-    session_id: str = Field(..., min_length=1, max_length=256)
-    message: str = Field(..., min_length=1)
 
 
 class UsageOut(BaseModel):
@@ -28,14 +24,27 @@ class ChatResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatResponse)
-def post_chat(
-    body: ChatRequest,
+async def post_chat(
+    session_id: str = Form(..., min_length=1, max_length=256),
+    message: str = Form(..., min_length=1),
+    files: list[UploadFile] = File(default=[]),
     _: None = Depends(require_chat_api_auth),
     service: ChatService = Depends(get_chat_service),
     settings: Settings = Depends(get_settings_dep),
 ) -> ChatResponse:
+    attachments: list[Attachment] | None = None
+    if files:
+        attachments = []
+        for f in files:
+            data = await f.read()
+            mime = f.content_type or "application/octet-stream"
+            attachments.append(
+                Attachment(mime_type=mime, data=data, filename=f.filename)
+            )
     try:
-        result = service.handle_user_message(body.session_id, body.message)
+        result = service.handle_user_message(
+            session_id, message, attachments=attachments
+        )
     except Exception as e:
         if not settings.dev_mode:
             raise HTTPException(status_code=500, detail="Internal server error") from e

@@ -9,6 +9,7 @@ from chatbot.application.order_service import OrderServiceResult
 from chatbot.application.chat_service import ChatService
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.domain.contracts.llm_client import LlmResult, LlmUsage
+from chatbot.domain.models.attachment import Attachment
 from chatbot.domain.models.message import ChatMessage, MessageRole
 from chatbot.domain.models.order import OrderAction, OrderCommand
 
@@ -22,9 +23,11 @@ class FakeLlm:
         *,
         system_instruction: str,
         messages: list[ChatMessage],
+        attachments: list[Attachment] | None = None,
     ) -> LlmResult:
         _ = system_instruction
         _ = messages
+        _ = attachments
         return LlmResult(text=self._reply, usage=LlmUsage(prompt_tokens=1, candidates_tokens=2, total_tokens=3))
 
 
@@ -52,6 +55,59 @@ def test_chat_service_roundtrip(test_settings, tmp_path: Path) -> None:
     assert msgs[0].content == "Hi there"
     assert msgs[1].role == MessageRole.ASSISTANT
     assert msgs[1].content == "Thanks for your message."
+
+
+def test_chat_service_persists_attachment_notes_and_forwards_to_llm(
+    test_settings, tmp_path: Path
+) -> None:
+    prompt_file = tmp_path / "prompt.md"
+    prompt_file.write_text("You are a test bot.", encoding="utf-8")
+    settings = test_settings.model_copy(update={"prompt_path": prompt_file})
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+
+    class CaptureLlm(FakeLlm):
+        def __init__(self) -> None:
+            super().__init__("ok")
+            self.last_attachments: list[Attachment] | None = None
+
+        def generate_chat(
+            self,
+            *,
+            system_instruction: str,
+            messages: list[ChatMessage],
+            attachments: list[Attachment] | None = None,
+        ) -> LlmResult:
+            _ = system_instruction
+            _ = messages
+            self.last_attachments = attachments
+            return super().generate_chat(
+                system_instruction=system_instruction,
+                messages=messages,
+                attachments=attachments,
+            )
+
+    cap = CaptureLlm()
+    sid = f"sess-att-{uuid.uuid4().hex}"
+    att = Attachment(
+        mime_type="application/pdf",
+        data=b"%PDF-1.4",
+        filename="quote.pdf",
+    )
+    session = factory()
+    try:
+        repo = SqlAlchemyConversationRepository(session)
+        svc = ChatService(settings=settings, llm=cap, repo=repo, rag=None, prompt_path=prompt_file)
+        svc.handle_user_message(sid, "See attached", attachments=[att])
+        session.commit()
+        msgs = repo.list_messages(sid, limit=10)
+    finally:
+        session.close()
+
+    assert msgs[0].content == "See attached\n[Attached: quote.pdf]"
+    assert cap.last_attachments is not None
+    assert len(cap.last_attachments) == 1
+    assert cap.last_attachments[0].filename == "quote.pdf"
 
 
 def test_chat_service_includes_rag_context(test_settings, tmp_path: Path) -> None:
@@ -97,7 +153,9 @@ def test_chat_service_includes_rag_context(test_settings, tmp_path: Path) -> Non
             *,
             system_instruction: str,
             messages: list[ChatMessage],
+            attachments: list[Attachment] | None = None,
         ) -> LlmResult:
+            _ = attachments
             self.last_system = system_instruction
             return LlmResult(text="ok", usage=LlmUsage())
 
@@ -172,7 +230,9 @@ def test_chat_service_rag_includes_source_paths_when_dev_mode(test_settings, tmp
             *,
             system_instruction: str,
             messages: list[ChatMessage],
+            attachments: list[Attachment] | None = None,
         ) -> LlmResult:
+            _ = attachments
             self.last_system = system_instruction
             return LlmResult(text="ok", usage=LlmUsage())
 

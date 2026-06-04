@@ -26,7 +26,8 @@ def chat_secret_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     app = create_app()
 
     class _FakeChatService:
-        def handle_user_message(self, session_id: str, message: str):
+        def handle_user_message(self, session_id: str, message: str, *, attachments=None):
+            _ = attachments
             return SimpleNamespace(
                 text="ok",
                 usage=SimpleNamespace(
@@ -43,8 +44,12 @@ def chat_secret_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     reset_settings_cache_for_tests()
 
 
+def _chat_form(**fields: str) -> dict[str, str]:
+    return {"session_id": fields.get("session_id", "s1"), "message": fields.get("message", "hi")}
+
+
 def test_v1_chat_requires_bearer_when_secret_set(chat_secret_client: TestClient) -> None:
-    r = chat_secret_client.post("/v1/chat", json={"session_id": "s1", "message": "hi"})
+    r = chat_secret_client.post("/v1/chat", data=_chat_form())
     assert r.status_code == 401
     assert r.json().get("detail") == "Unauthorized"
 
@@ -52,7 +57,7 @@ def test_v1_chat_requires_bearer_when_secret_set(chat_secret_client: TestClient)
 def test_v1_chat_rejects_wrong_bearer(chat_secret_client: TestClient) -> None:
     r = chat_secret_client.post(
         "/v1/chat",
-        json={"session_id": "s1", "message": "hi"},
+        data=_chat_form(),
         headers={"Authorization": "Bearer wrong"},
     )
     assert r.status_code == 401
@@ -61,10 +66,20 @@ def test_v1_chat_rejects_wrong_bearer(chat_secret_client: TestClient) -> None:
 def test_v1_chat_accepts_bearer(chat_secret_client: TestClient) -> None:
     r = chat_secret_client.post(
         "/v1/chat",
-        json={"session_id": "s1", "message": "hi"},
+        data=_chat_form(),
         headers={"Authorization": "Bearer supersecret"},
     )
     assert r.status_code == 200
     body = r.json()
     assert body["reply"] == "ok"
     assert body["usage"]["total_tokens"] == 2
+
+
+def test_v1_chat_accepts_file_attachment(chat_secret_client: TestClient) -> None:
+    r = chat_secret_client.post(
+        "/v1/chat",
+        data=_chat_form(message="see file"),
+        files=[("files", ("doc.pdf", b"%PDF-1.4", "application/pdf"))],
+        headers={"Authorization": "Bearer supersecret"},
+    )
+    assert r.status_code == 200

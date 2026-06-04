@@ -8,6 +8,7 @@ from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.config.settings import Settings
 from chatbot.domain.contracts.conversation_repository import ConversationRepository
 from chatbot.domain.contracts.llm_client import LlmClient, LlmResult
+from chatbot.domain.models.attachment import Attachment
 from chatbot.domain.models.message import ChatMessage, MessageRole
 
 
@@ -35,8 +36,27 @@ class ChatService:
             return path.read_text(encoding="utf-8").strip()
         return "You are a helpful assistant."
 
-    def handle_user_message(self, session_id: str, user_message: str) -> LlmResult:
-        user_msg = ChatMessage(role=MessageRole.USER, content=user_message)
+    @staticmethod
+    def _content_with_attachment_notes(
+        user_message: str, attachments: list[Attachment] | None
+    ) -> str:
+        if not attachments:
+            return user_message
+        lines = [user_message] if user_message.strip() else []
+        for att in attachments:
+            label = att.filename or att.mime_type
+            lines.append(f"[Attached: {label}]")
+        return "\n".join(lines)
+
+    def handle_user_message(
+        self,
+        session_id: str,
+        user_message: str,
+        *,
+        attachments: list[Attachment] | None = None,
+    ) -> LlmResult:
+        content = self._content_with_attachment_notes(user_message, attachments)
+        user_msg = ChatMessage(role=MessageRole.USER, content=content)
         self._repo.append_message(session_id, user_msg)
         history = self._repo.list_messages(session_id, limit=50)
         system = self._load_system_instruction()
@@ -50,7 +70,11 @@ class ChatService:
                         "Do not mention internal file names, paths, or parenthetical "
                         "source citations such as (Source: …) in your reply to the customer."
                     )
-        result = self._llm.generate_chat(system_instruction=system, messages=history)
+        result = self._llm.generate_chat(
+            system_instruction=system,
+            messages=history,
+            attachments=attachments,
+        )
         extracted = extract_order_command(result.text)
         self._repo.append_message(
             session_id,

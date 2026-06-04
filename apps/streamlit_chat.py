@@ -106,14 +106,30 @@ for role, content in st.session_state.messages:
     with st.chat_message(role):
         st.markdown(content)
 
+uploaded_files = st.file_uploader(
+    "Attachments",
+    accept_multiple_files=True,
+    key="chat_attachments",
+)
+
 prompt = st.chat_input("Message")
 if prompt:
     url = f"{api_base.rstrip('/')}/v1/chat"
+    form_data = {
+        "session_id": st.session_state.session_id,
+        "message": prompt,
+    }
+    file_parts: list[tuple[str, tuple[str, bytes, str]]] = []
+    if uploaded_files:
+        for uf in uploaded_files:
+            mime = uf.type or "application/octet-stream"
+            file_parts.append(("files", (uf.name, uf.getvalue(), mime)))
     try:
         with httpx.Client(timeout=120.0) as client:
             r = client.post(
                 url,
-                json={"session_id": st.session_state.session_id, "message": prompt},
+                data=form_data,
+                files=file_parts or None,
                 headers=_chat_request_headers(),
             )
             r.raise_for_status()
@@ -127,6 +143,11 @@ if prompt:
         st.stop()
     reply = data.get("reply", "")
     st.session_state.last_usage = data.get("usage") or {}
-    st.session_state.messages.append(("user", prompt))
+    user_display = prompt
+    if uploaded_files:
+        names = ", ".join(uf.name for uf in uploaded_files)
+        user_display = f"{prompt}\n\n*(attachments: {names})*"
+    st.session_state.messages.append(("user", user_display))
     st.session_state.messages.append(("assistant", reply))
+    st.session_state.pop("chat_attachments", None)
     st.rerun()

@@ -7,6 +7,7 @@ from google.genai import types
 
 from chatbot.config.settings import Settings, get_settings
 from chatbot.domain.contracts.llm_client import LlmResult, LlmUsage
+from chatbot.domain.models.attachment import Attachment
 from chatbot.domain.models.message import ChatMessage, MessageRole
 
 
@@ -32,19 +33,29 @@ class GeminiLlmClient:
         *,
         system_instruction: str,
         messages: list[ChatMessage],
+        attachments: list[Attachment] | None = None,
     ) -> LlmResult:
         client, model = self._client_and_model()
+        last_user_idx = max(
+            (i for i, m in enumerate(messages) if m.role == MessageRole.USER),
+            default=-1,
+        )
         contents: list[types.Content] = []
-        for m in messages:
+        for i, m in enumerate(messages):
             if m.role == MessageRole.SYSTEM:
                 continue
             role = "user" if m.role == MessageRole.USER else "model"
-            contents.append(
-                types.Content(
-                    role=role,
-                    parts=[types.Part.from_text(text=m.content)],
-                )
-            )
+            parts: list[types.Part] = [types.Part.from_text(text=m.content)]
+            if (
+                m.role == MessageRole.USER
+                and i == last_user_idx
+                and attachments
+            ):
+                for att in attachments:
+                    parts.append(
+                        types.Part.from_bytes(data=att.data, mime_type=att.mime_type)
+                    )
+            contents.append(types.Content(role=role, parts=parts))
         response = client.models.generate_content(
             model=model,
             contents=contents,
