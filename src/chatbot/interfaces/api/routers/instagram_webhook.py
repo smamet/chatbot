@@ -3,14 +3,22 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy.orm import Session
 
 from chatbot.adapters.channels import instagram_meta
 from chatbot.adapters.channels.meta_signature import verify_signature
+from chatbot.application.channel_outbound import (
+    get_outbound_connector,
+    queue_pending_reply,
+    should_queue_for_validation,
+)
 from chatbot.application.chat_service import ChatService
 from chatbot.application.connector_service import ConnectorService
 from chatbot.config.settings import Settings
+from chatbot.domain.models.connector import ConnectorType
 from chatbot.interfaces.api.deps import (
     get_connector_service,
+    get_session,
     get_settings_dep,
     get_webhook_chat_service,
     get_webhook_tenant,
@@ -51,6 +59,7 @@ async def instagram_inbound(
     tenant=Depends(get_webhook_tenant),
     connectors: ConnectorService = Depends(get_connector_service),
     service: ChatService = Depends(get_webhook_chat_service),
+    session: Session = Depends(get_session),
 ):
     raw = await request.body()
     sig = request.headers.get("X-Hub-Signature-256")
@@ -65,7 +74,20 @@ async def instagram_inbound(
     ig_id, text = instagram_meta.extract_first_text_message(payload)
     if not ig_id or not text:
         return {"status": "ignored"}
-    result = service.handle_user_message(f"instagram:{ig_id}", text)
+    session_id = f"instagram:{ig_id}"
+    result = service.handle_user_message(session_id, text)
+    out_conn = get_outbound_connector(connectors, tenant.id, ConnectorType.INSTAGRAM)
+    if should_queue_for_validation(out_conn):
+        queue_pending_reply(
+            session,
+            tenant_id=tenant.id,
+            connector_id=out_conn.id,
+            session_id=session_id,
+            channel=ConnectorType.INSTAGRAM.value,
+            recipient_id=ig_id,
+            draft_text=result.text,
+        )
+        return {"status": "queued"}
     token = str(cfg.get("access_token", "")).strip() or settings.instagram_access_token
     ig_user = str(cfg.get("ig_user_id", "")).strip() or settings.instagram_ig_user_id
     if token and ig_user:

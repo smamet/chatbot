@@ -12,6 +12,7 @@ from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
 from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
+from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.bot_bundle_service import (
@@ -20,6 +21,7 @@ from chatbot.application.bot_bundle_service import (
     build_export,
     import_bundle,
 )
+from chatbot.application.channel_outbound import approve_pending_reply
 from chatbot.application.connector_service import ConnectorService
 from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_service import TenantService
@@ -28,7 +30,14 @@ from chatbot.application.user_service import UserService
 from chatbot.config.settings import Settings
 from chatbot.domain.constants import DEFAULT_HOOK_INSTRUCTIONS
 from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from chatbot.domain.models.connector_schema import (
+    EmailOutboundProvider,
+    connector_schemas_for_template,
+    fields_for,
+    secret_connector_keys,
+)
 from chatbot.domain.models.hook import HookStatus
+from chatbot.domain.models.pending_reply import PendingReplyStatus
 from chatbot.domain.models.tenant import Tenant, TenantConfig
 from chatbot.domain.models.user import User, UserRole
 from chatbot.interfaces.api.deps import (
@@ -41,37 +50,6 @@ from chatbot.interfaces.web.deps import get_user_service, require_admin, require
 from chatbot.interfaces.web.templates import templates
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
-
-_SECRET_CONNECTOR_KEYS = frozenset(
-    {
-        "access_token",
-        "app_secret",
-        "verify_token",
-        "page_access_token",
-        "password",
-    }
-)
-
-_CHANNEL_FORM_KEYS: dict[str, list[str]] = {
-    ConnectorType.WHATSAPP.value: [
-        "phone_number_id",
-        "access_token",
-        "app_secret",
-        "verify_token",
-        "admin_wa_id",
-    ],
-    ConnectorType.MESSENGER.value: ["page_access_token", "verify_token", "app_secret"],
-    ConnectorType.INSTAGRAM.value: ["access_token", "ig_user_id", "verify_token", "app_secret"],
-    ConnectorType.EMAIL.value: [
-        "imap_host",
-        "imap_port",
-        "smtp_host",
-        "smtp_port",
-        "username",
-        "password",
-        "from_addr",
-    ],
-}
 
 _WEBHOOK_CHANNELS = frozenset(
     {ConnectorType.WHATSAPP, ConnectorType.MESSENGER, ConnectorType.INSTAGRAM}
@@ -100,9 +78,10 @@ def _require_access(user: User, user_service: UserService, tenant: Tenant) -> No
 
 
 def _merge_connector_config(existing: dict | None, incoming: dict) -> dict:
+    secrets = secret_connector_keys()
     base = dict(existing or {})
     for key, value in incoming.items():
-        if key in _SECRET_CONNECTOR_KEYS and not str(value).strip():
+        if key in secrets and not str(value).strip():
             continue
         base[key] = value
     return base
@@ -111,23 +90,16 @@ def _merge_connector_config(existing: dict | None, incoming: dict) -> dict:
 def _connector_config_from_form(
     connector_type: str,
     direction: str,
-    **fields: str,
+    fields: dict[str, str],
+    *,
+    outbound_provider: str | None = None,
 ) -> dict:
-    keys = _CHANNEL_FORM_KEYS.get(connector_type, [])
-    raw = {k: fields.get(k, "").strip() for k in keys}
-    if connector_type == ConnectorType.EMAIL.value:
-        if direction == ConnectorDirection.IN.value:
-            return {
-                k: raw[k]
-                for k in ("imap_host", "imap_port", "username", "password")
-                if k in raw
-            }
-        return {
-            k: raw[k]
-            for k in ("smtp_host", "smtp_port", "username", "password", "from_addr")
-            if k in raw
-        }
-    return {k: v for k, v in raw.items() if v or k not in _SECRET_CONNECTOR_KEYS}
+    schema_fields = fields_for(
+        connector_type, direction, outbound_provider=outbound_provider
+    )
+    secrets = secret_connector_keys()
+    raw = {field.key: fields.get(field.key, "").strip() for field in schema_fields}
+    return {key: value for key, value in raw.items() if value or key not in secrets}
 
 
 def _list_documents(settings: Settings, slug: str) -> list[str]:
@@ -484,6 +456,7 @@ def bot_detail(
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     connectors = ConnectorService(SqlAlchemyConnectorRepository(session)).list_for_tenant(tenant.id)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
     hooks = SqlAlchemyHookEventRepository(session, tenant.id).list_by_tenant(limit=50)
     ctx: dict = {
         "user": user,
@@ -498,7 +471,12 @@ def bot_detail(
         "title": tenant.name,
         "connector_types": ConnectorType,
         "connector_directions": ConnectorDirection,
+        "connector_modes": ConnectorMode,
         "webhook_channels": _WEBHOOK_CHANNELS,
+        "connector_schemas": connector_schemas_for_template(),
+        "connector_schemas_json": json.dumps(connector_schemas_for_template()),
+        "pending_count": pending_repo.count_pending(tenant.id),
+        "has_validation_connectors": any(c.mode == ConnectorMode.VALIDATION for c in connectors),
     }
     if tab == "documents":
         ctx["documents"] = _list_documents(settings, slug)
@@ -518,6 +496,8 @@ def bot_detail(
         ctx["chat_messages_json"] = json.dumps(
             [{"role": m.role.value, "content": m.content} for m in messages]
         )
+    elif tab == "validation":
+        ctx["pending_replies"] = pending_repo.list_pending(tenant.id)
     return templates.TemplateResponse(request, "bots/detail.html", ctx)
 
 
@@ -737,26 +717,13 @@ def bot_sync_documents(
 
 
 @router.post("/bots/{slug}/connectors")
-def save_connector(
+async def save_connector(
+    request: Request,
     slug: str,
     connector_type: str = Form(...),
     direction: str = Form("in"),
     mode: str = Form("direct"),
     active: str = Form("on"),
-    phone_number_id: str = Form(""),
-    access_token: str = Form(""),
-    app_secret: str = Form(""),
-    verify_token: str = Form(""),
-    admin_wa_id: str = Form(""),
-    page_access_token: str = Form(""),
-    ig_user_id: str = Form(""),
-    imap_host: str = Form(""),
-    imap_port: str = Form(""),
-    smtp_host: str = Form(""),
-    smtp_port: str = Form(""),
-    username: str = Form(""),
-    password: str = Form(""),
-    from_addr: str = Form(""),
     user: User = Depends(require_editor),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -767,30 +734,34 @@ def save_connector(
     try:
         ctype = ConnectorType(connector_type)
         cdir = ConnectorDirection(direction)
-        cmode = ConnectorMode(mode)
+        cmode = (
+            ConnectorMode.DIRECT
+            if cdir == ConnectorDirection.IN
+            else ConnectorMode(mode)
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid connector") from exc
+    form = await request.form()
+    outbound_provider: str | None = None
+    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.OUT:
+        outbound_provider = (
+            str(form.get("outbound_provider", EmailOutboundProvider.SMTP.value)).strip()
+            or EmailOutboundProvider.SMTP.value
+        )
+    schema_fields = fields_for(
+        connector_type, direction, outbound_provider=outbound_provider
+    )
+    field_values = {
+        field.key: str(form.get(field.key, "")).strip() for field in schema_fields
+    }
     incoming = _connector_config_from_form(
-        connector_type,
-        direction,
-        phone_number_id=phone_number_id,
-        access_token=access_token,
-        app_secret=app_secret,
-        verify_token=verify_token,
-        admin_wa_id=admin_wa_id,
-        page_access_token=page_access_token,
-        ig_user_id=ig_user_id,
-        imap_host=imap_host,
-        imap_port=imap_port,
-        smtp_host=smtp_host,
-        smtp_port=smtp_port,
-        username=username,
-        password=password,
-        from_addr=from_addr,
+        connector_type, direction, field_values, outbound_provider=outbound_provider
     )
     svc = ConnectorService(SqlAlchemyConnectorRepository(session))
     existing = svc.find(tenant.id, direction=cdir, type=ctype)
     cfg = _merge_connector_config(existing.config if existing else None, incoming)
+    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.OUT:
+        cfg["outbound_provider"] = outbound_provider or EmailOutboundProvider.SMTP.value
     svc.upsert(
         tenant_id=tenant.id,
         direction=cdir,
@@ -841,6 +812,54 @@ def delete_connector(
     svc.delete(connector_id)
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/approve")
+def approve_validation_reply(
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.status != PendingReplyStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Reply is not pending")
+    conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    connector = conn_svc.get(reply.connector_id)
+    config = connector.config if connector else {}
+    approve_pending_reply(session, reply, config=config, settings=settings)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/reject")
+def reject_validation_reply(
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.status != PendingReplyStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Reply is not pending")
+    pending_repo.update_status(reply_id, PendingReplyStatus.REJECTED)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
 
 
 @router.post("/bots/{slug}/chat-test/reset")

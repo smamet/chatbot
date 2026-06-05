@@ -3,13 +3,20 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy.orm import Session
 
 from chatbot.adapters.channels import whatsapp_meta
+from chatbot.application.channel_outbound import (
+    get_outbound_connector,
+    queue_pending_reply,
+    should_queue_for_validation,
+)
 from chatbot.application.chat_service import ChatService
 from chatbot.application.connector_service import ConnectorService
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorType
+from chatbot.domain.models.connector import ConnectorType
 from chatbot.interfaces.api.deps import (
     get_connector_service,
+    get_session,
     get_settings_dep,
     get_webhook_chat_service,
     get_webhook_tenant,
@@ -51,6 +58,7 @@ async def whatsapp_inbound(
     tenant=Depends(get_webhook_tenant),
     connectors: ConnectorService = Depends(get_connector_service),
     service: ChatService = Depends(get_webhook_chat_service),
+    session: Session = Depends(get_session),
 ):
     raw = await request.body()
     sig = request.headers.get("X-Hub-Signature-256")
@@ -67,6 +75,18 @@ async def whatsapp_inbound(
         return {"status": "ignored"}
     session_id = f"whatsapp:{wa_id}"
     result = service.handle_user_message(session_id, text)
+    out_conn = get_outbound_connector(connectors, tenant.id, ConnectorType.WHATSAPP)
+    if should_queue_for_validation(out_conn):
+        queue_pending_reply(
+            session,
+            tenant_id=tenant.id,
+            connector_id=out_conn.id,
+            session_id=session_id,
+            channel=ConnectorType.WHATSAPP.value,
+            recipient_id=wa_id,
+            draft_text=result.text,
+        )
+        return {"status": "queued"}
     out_cfg = connectors.get_whatsapp_config(tenant.id, outbound=True) or cfg
     phone_id = str(out_cfg.get("phone_number_id", "")).strip()
     token = str(out_cfg.get("access_token", "")).strip()

@@ -166,6 +166,28 @@ class ConnectorRow(Base):
     )
 
 
+class PendingReplyRow(Base):
+    __tablename__ = "pending_replies"
+    __table_args__ = (Index("ix_pending_replies_tenant_status", "tenant_id", "status"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    connector_id: Mapped[int] = mapped_column(ForeignKey("connectors.id"))
+    session_id: Mapped[str] = mapped_column(String(256))
+    channel: Mapped[str] = mapped_column(String(32))
+    recipient_id: Mapped[str] = mapped_column(String(256))
+    draft_text: Mapped[str] = mapped_column(Text())
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class HookEventRow(Base):
     __tablename__ = "hook_events"
     __table_args__ = (

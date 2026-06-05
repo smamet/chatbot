@@ -8,7 +8,11 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
+from datetime import UTC, datetime
+
+from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.config.settings import reset_settings_cache_for_tests
+from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
 from chatbot.interfaces.api.deps import get_connector_service, get_webhook_chat_service, get_webhook_tenant
 from chatbot.interfaces.api.main import create_app
 
@@ -29,13 +33,38 @@ class _FakeConnectors:
             "access_token": "access-token",
         }
 
+    def find(
+        self,
+        tenant_id: int,
+        *,
+        direction: ConnectorDirection,
+        type: ConnectorType,
+    ) -> Connector:
+        _ = tenant_id, type
+        return Connector(
+            id=1,
+            tenant_id=1,
+            direction=direction,
+            type=ConnectorType.WHATSAPP,
+            mode=ConnectorMode.DIRECT,
+            config={},
+            active=True,
+            created_at=datetime.now(UTC),
+            updated_at=datetime.now(UTC),
+        )
+
 
 @pytest.fixture
 def whatsapp_client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> TestClient:
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'wa.db'}")
     monkeypatch.setenv("LANCEDB_ROOT", str(tmp_path / "lancedb"))
     reset_settings_cache_for_tests()
+    from chatbot.config.settings import get_settings
+
+    settings = get_settings()
+    engine = create_db_engine(settings, for_tests=True)
     app = create_app()
+    app.state.session_factory = session_factory(engine)
     fake_tenant = SimpleNamespace(id=1, slug=WEBHOOK_SLUG, active=True)
 
     class _FakeChatService:
@@ -54,6 +83,7 @@ def whatsapp_client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> TestClient:
     yield client
     app.dependency_overrides.clear()
     reset_settings_cache_for_tests()
+    engine.dispose()
 
 
 def test_whatsapp_post_sends_clean_reply(monkeypatch: pytest.MonkeyPatch, whatsapp_client: TestClient) -> None:

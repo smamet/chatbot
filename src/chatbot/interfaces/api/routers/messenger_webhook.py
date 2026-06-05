@@ -3,14 +3,22 @@ from __future__ import annotations
 import json
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy.orm import Session
 
 from chatbot.adapters.channels import messenger_meta
 from chatbot.adapters.channels.meta_signature import verify_signature
+from chatbot.application.channel_outbound import (
+    get_outbound_connector,
+    queue_pending_reply,
+    should_queue_for_validation,
+)
 from chatbot.application.chat_service import ChatService
 from chatbot.application.connector_service import ConnectorService
 from chatbot.config.settings import Settings
+from chatbot.domain.models.connector import ConnectorType
 from chatbot.interfaces.api.deps import (
     get_connector_service,
+    get_session,
     get_settings_dep,
     get_webhook_chat_service,
     get_webhook_tenant,
@@ -51,6 +59,7 @@ async def messenger_inbound(
     tenant=Depends(get_webhook_tenant),
     connectors: ConnectorService = Depends(get_connector_service),
     service: ChatService = Depends(get_webhook_chat_service),
+    session: Session = Depends(get_session),
 ):
     raw = await request.body()
     sig = request.headers.get("X-Hub-Signature-256")
@@ -65,7 +74,20 @@ async def messenger_inbound(
     psid, text = messenger_meta.extract_first_text_message(payload)
     if not psid or not text:
         return {"status": "ignored"}
-    result = service.handle_user_message(f"messenger:{psid}", text)
+    session_id = f"messenger:{psid}"
+    result = service.handle_user_message(session_id, text)
+    out_conn = get_outbound_connector(connectors, tenant.id, ConnectorType.MESSENGER)
+    if should_queue_for_validation(out_conn):
+        queue_pending_reply(
+            session,
+            tenant_id=tenant.id,
+            connector_id=out_conn.id,
+            session_id=session_id,
+            channel=ConnectorType.MESSENGER.value,
+            recipient_id=psid,
+            draft_text=result.text,
+        )
+        return {"status": "queued"}
     token = str(cfg.get("page_access_token", "")).strip() or settings.messenger_page_access_token
     if token:
         messenger_meta.send_messenger_text(page_access_token=token, recipient_psid=psid, text=result.text)

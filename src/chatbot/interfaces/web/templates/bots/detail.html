@@ -13,6 +13,9 @@
   <a href="?tab=config" class="{% if tab=='config' %}active{% endif %}">Config</a>
   <a href="?tab=documents" class="{% if tab=='documents' %}active{% endif %}">Documents</a>
   <a href="?tab=connectors" class="{% if tab=='connectors' %}active{% endif %}">Connectors</a>
+  {% if has_validation_connectors or pending_count %}
+  <a href="?tab=validation" class="{% if tab=='validation' %}active{% endif %}">Validation{% if pending_count %} <span class="tab-badge">{{ pending_count }}</span>{% endif %}</a>
+  {% endif %}
   <a href="?tab=history" class="{% if tab=='history' %}active{% endif %}">History</a>
   <a href="?tab=chat" class="{% if tab=='chat' %}active{% endif %}">Test chat</a>
   <a href="?tab=hooks" class="{% if tab=='hooks' %}active{% endif %}">Hooks</a>
@@ -184,14 +187,19 @@
 {% elif tab == 'connectors' %}
   <div class="table-wrap">
     <table class="data-table">
-      <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Mode</th><th>Status</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+      <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Provider</th><th>Mode</th><th>Status</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
       <tbody>
       {% for c in connectors %}
       <tr>
         <td>{{ c.id }}</td>
         <td>{{ c.direction.value }}</td>
         <td>{{ c.type.value }}</td>
-        <td>{{ c.mode.value }}</td>
+        <td>
+          {% if c.type.value == 'email' and c.direction.value == 'out' %}
+          <code>{{ c.config.get('outbound_provider', 'smtp') }}</code>
+          {% else %}—{% endif %}
+        </td>
+        <td>{% if c.direction.value == 'out' %}{{ c.mode.value }}{% else %}—{% endif %}</td>
         <td>{% if c.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}</td>
         <td>
           {% if c.type in webhook_channels and c.direction.value == 'in' %}
@@ -206,7 +214,7 @@
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="7" class="empty-state">No connectors</td></tr>
+      <tr><td colspan="8" class="empty-state">No connectors</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -215,82 +223,160 @@
   {% if can_edit %}
   <div class="card">
     <h2 class="card-title">Add / update connector</h2>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form">
+    <p class="text-muted">Saving updates the connector for the selected type and direction. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).</p>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form">
       <div class="form-grid">
         <label>Type
           <select name="connector_type" id="connector-type">
-            <option value="whatsapp">WhatsApp</option>
-            <option value="messenger">Messenger</option>
-            <option value="instagram">Instagram</option>
-            <option value="email">Email</option>
+            {% for t in connector_schemas.keys() %}
+            <option value="{{ t }}">{{ t|capitalize }}</option>
+            {% endfor %}
           </select>
         </label>
         <label>Direction
-          <select name="direction">
+          <select name="direction" id="connector-direction">
             <option value="in">in</option>
             <option value="out">out</option>
           </select>
         </label>
-        <label>Mode
-          <select name="mode">
-            <option value="direct">direct</option>
-            <option value="validation">validation</option>
+        <label id="connector-mode-wrap">
+          Mode
+          <select name="mode" id="connector-mode">
+            <option value="direct">direct — send replies immediately</option>
+            <option value="validation">validation — queue replies for human review</option>
           </select>
+          <small class="field-hint">Outbound only: use <strong>validation</strong> to review bot replies before they reach customers.</small>
         </label>
         <div class="checkbox-row" style="align-self:end">
           <input type="checkbox" name="active" id="conn-active" checked>
           <label for="conn-active">Active</label>
         </div>
       </div>
-      <div data-channel="whatsapp">
-        <input type="text" name="phone_number_id" placeholder="phone_number_id">
-        <input type="password" name="access_token" placeholder="access_token">
-        <input type="password" name="app_secret" placeholder="app_secret">
-        <input type="text" name="verify_token" placeholder="verify_token">
-        <input type="text" name="admin_wa_id" placeholder="admin_wa_id">
-      </div>
-      <div data-channel="messenger" hidden>
-        <input type="password" name="page_access_token" placeholder="page_access_token">
-        <input type="text" name="verify_token" placeholder="verify_token">
-        <input type="password" name="app_secret" placeholder="app_secret">
-      </div>
-      <div data-channel="instagram" hidden>
-        <input type="password" name="access_token" placeholder="access_token">
-        <input type="text" name="ig_user_id" placeholder="ig_user_id">
-        <input type="text" name="verify_token" placeholder="verify_token">
-        <input type="password" name="app_secret" placeholder="app_secret">
-      </div>
-      <div data-channel="email" hidden>
-        <input type="text" name="imap_host" placeholder="imap_host">
-        <input type="text" name="imap_port" placeholder="imap_port">
-        <input type="text" name="smtp_host" placeholder="smtp_host">
-        <input type="text" name="smtp_port" placeholder="smtp_port">
-        <input type="text" name="username" placeholder="username">
-        <input type="password" name="password" placeholder="password">
-        <input type="text" name="from_addr" placeholder="from_addr (outbound)">
-      </div>
+      <div id="connector-fields" class="form-grid connector-fields"></div>
+      <script type="application/json" id="connector-schemas-data">{{ connector_schemas_json|safe }}</script>
       <div class="form-actions">
         <button type="submit" class="btn-primary" data-loading="Saving…">Save connector</button>
       </div>
     </form>
     <script>
       (function () {
-        const sel = document.getElementById('connector-type');
-        const panels = document.querySelectorAll('[data-channel]');
-        function sync() {
-          const v = sel.value;
-          panels.forEach(p => {
-            const on = p.dataset.channel === v;
-            p.hidden = !on;
-            p.querySelectorAll('input,select,textarea').forEach(el => { el.disabled = !on; });
-          });
+        const schemas = JSON.parse(document.getElementById('connector-schemas-data').textContent);
+        const typeSel = document.getElementById('connector-type');
+        const dirSel = document.getElementById('connector-direction');
+        const modeWrap = document.getElementById('connector-mode-wrap');
+        const modeSel = document.getElementById('connector-mode');
+        const container = document.getElementById('connector-fields');
+
+        function currentProvider() {
+          const existing = container.querySelector('select[name="outbound_provider"]');
+          if (existing) return existing.value;
+          return 'smtp';
         }
-        sel.addEventListener('change', sync);
-        sync();
+
+        function fieldVisible(field, direction, provider) {
+          if (!field.directions.includes(direction)) return false;
+          if (field.providers && field.key !== 'outbound_provider') {
+            return field.providers.includes(provider);
+          }
+          return true;
+        }
+
+        function renderFields() {
+          const ctype = typeSel.value;
+          const direction = dirSel.value;
+          const outbound = direction === 'out';
+          modeWrap.hidden = !outbound;
+          modeSel.disabled = !outbound;
+
+          const allFields = schemas[ctype] || [];
+          const provider = ctype === 'email' && outbound ? currentProvider() : 'smtp';
+
+          container.replaceChildren();
+          const fields = allFields.filter((field) => fieldVisible(field, direction, provider));
+
+          for (const field of fields) {
+            const label = document.createElement('label');
+            label.className = 'connector-field';
+            label.appendChild(
+              document.createTextNode(field.label + (field.required ? ' *' : ''))
+            );
+            let control;
+            if (field.input_type === 'select' && field.options) {
+              control = document.createElement('select');
+              for (const opt of field.options) {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                if (field.key === 'outbound_provider' && opt.value === provider) {
+                  option.selected = true;
+                }
+                if (field.key === 'mailgun_region' && opt.value === 'us') {
+                  option.selected = true;
+                }
+                control.appendChild(option);
+              }
+            } else {
+              control = document.createElement('input');
+              control.type = field.input_type || 'text';
+              control.placeholder = field.placeholder || '';
+            }
+            control.name = field.key;
+            control.title = field.help || '';
+            if (field.required) control.required = true;
+            if (field.key === 'outbound_provider') {
+              control.addEventListener('change', renderFields);
+            }
+            label.appendChild(control);
+            const hint = document.createElement('small');
+            hint.className = 'field-hint';
+            hint.textContent = field.help || '';
+            label.appendChild(hint);
+            container.appendChild(label);
+          }
+        }
+
+        typeSel.addEventListener('change', renderFields);
+        dirSel.addEventListener('change', renderFields);
+        renderFields();
       })();
     </script>
   </div>
   {% endif %}
+
+{% elif tab == 'validation' %}
+<div class="card">
+  <h2 class="card-title">Pending replies</h2>
+  <p class="text-muted">Replies queued because an outbound connector is in <strong>validation</strong> mode. Approve to send to the customer, or reject to discard.</p>
+</div>
+<div class="table-wrap">
+  <table class="data-table">
+    <thead><tr><th>ID</th><th>Channel</th><th>Session</th><th>Recipient</th><th>Draft</th><th>Created</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <tbody>
+    {% for r in pending_replies %}
+    <tr>
+      <td>{{ r.id }}</td>
+      <td><code>{{ r.channel }}</code></td>
+      <td><code>{{ r.session_id }}</code></td>
+      <td><code>{{ r.recipient_id }}</code></td>
+      <td><pre class="draft-preview">{{ r.draft_text }}</pre></td>
+      <td class="text-muted">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}</td>
+      {% if can_edit %}
+      <td class="actions">
+        <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/approve">
+          <button type="submit" class="btn-primary btn-sm" data-loading="Sending…">Approve</button>
+        </form>
+        <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/reject">
+          <button type="submit" class="btn-secondary btn-sm">Reject</button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty-state">No replies awaiting validation</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
 
 {% elif tab == 'history' %}
 <section class="history-layout">

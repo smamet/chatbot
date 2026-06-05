@@ -38,6 +38,9 @@ class ConnectorService:
     def get_instagram_config(self, tenant_id: int, *, outbound: bool = False) -> dict | None:
         return self._channel_config(tenant_id, type=ConnectorType.INSTAGRAM, outbound=outbound)
 
+    def get_email_config(self, tenant_id: int, *, outbound: bool = False) -> dict | None:
+        return self._channel_config(tenant_id, type=ConnectorType.EMAIL, outbound=outbound)
+
     def get(self, connector_id: int) -> Connector | None:
         return self._repo.find_by_id(connector_id)
 
