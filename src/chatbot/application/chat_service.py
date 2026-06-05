@@ -1,15 +1,15 @@
 from __future__ import annotations
 
-from pathlib import Path
-
-from chatbot.application.order_command_extractor import extract_order_command
-from chatbot.application.order_service import OrderService
+from chatbot.application.hook_extractor import extract_hook
 from chatbot.application.rag_orchestrator import RagPipeline
+from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.config.settings import Settings
 from chatbot.domain.contracts.conversation_repository import ConversationRepository
+from chatbot.domain.contracts.hook_event_repository import HookEventRepository
 from chatbot.domain.contracts.llm_client import LlmClient, LlmResult
 from chatbot.domain.models.attachment import Attachment
 from chatbot.domain.models.message import ChatMessage, MessageRole
+from chatbot.domain.models.tenant import Tenant
 
 
 class ChatService:
@@ -17,24 +17,30 @@ class ChatService:
         self,
         *,
         settings: Settings,
+        tenant: Tenant,
         llm: LlmClient,
         repo: ConversationRepository,
         rag: RagPipeline | None,
-        order_service: OrderService | None = None,
-        prompt_path: Path | None = None,
+        hook_repo: HookEventRepository | None = None,
     ) -> None:
-        self._settings = settings
+        self._global_settings = settings
+        self._tenant = tenant
+        self._settings = merge_tenant_settings(settings, tenant)
         self._llm = llm
         self._repo = repo
         self._rag = rag
-        self._order_service = order_service
-        self._prompt_path = prompt_path or settings.prompt_path
+        self._hook_repo = hook_repo
 
     def _load_system_instruction(self) -> str:
-        path = self._prompt_path
-        if path.exists():
-            return path.read_text(encoding="utf-8").strip()
-        return "You are a helpful assistant."
+        parts: list[str] = []
+        prompt = (self._tenant.prompt or "").strip()
+        if prompt:
+            parts.append(prompt)
+        if self._tenant.hooks_enabled:
+            hook = (self._tenant.hook_instructions or "").strip()
+            if hook:
+                parts.append(hook)
+        return "\n\n".join(parts) if parts else "You are a helpful assistant."
 
     @staticmethod
     def _content_with_attachment_notes(
@@ -75,17 +81,23 @@ class ChatService:
             messages=history,
             attachments=attachments,
         )
-        extracted = extract_order_command(result.text)
+        extracted = extract_hook(result.text)
         self._repo.append_message(
             session_id,
             ChatMessage(role=MessageRole.ASSISTANT, content=extracted.clean_reply),
         )
-        if self._order_service and extracted.command:
-            context = self._repo.list_messages(session_id, limit=6)
-            self._order_service.append_command(
+        if (
+            self._hook_repo
+            and self._tenant.hooks_enabled
+            and extracted.hook_type
+            and extracted.payload_json
+        ):
+            self._hook_repo.create(
                 session_id=session_id,
-                command=extracted.command,
-                command_json=extracted.command_json,
-                conversation_context=context,
+                hook_type=extracted.hook_type,
+                payload_json=extracted.payload_json,
             )
         return LlmResult(text=extracted.clean_reply, usage=result.usage)
+
+    def draft_reply(self, session_id: str, inbound_text: str) -> LlmResult:
+        return self.handle_user_message(session_id, inbound_text)

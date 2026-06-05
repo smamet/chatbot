@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass
 from datetime import timedelta
 
-from chatbot.application.admin_notifier import AdminNotifier
+from chatbot.automation.handlers.admin_notifier import AdminNotifier
 from chatbot.domain.contracts.clock import Clock
 from chatbot.domain.contracts.order_repository import OrderRepository
 from chatbot.domain.models.message import ChatMessage

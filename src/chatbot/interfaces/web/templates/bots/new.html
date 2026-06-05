@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>New bot</h1>
+  <p class="subtitle">Create a new tenant</p>
+</div>
+<div class="card">
+  <form method="post" action="/dashboard/bots/new">
+    <label>Name <input type="text" name="name" value="{{ name or '' }}" required></label>
+    <label>Slug <small>(optional)</small> <input type="text" name="slug" value="{{ slug or '' }}" placeholder="auto from name"></label>
+    <label>System prompt<textarea name="prompt" rows="8">{{ prompt or 'You are a helpful assistant.' }}</textarea></label>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary" data-loading="Creating…">Create bot</button>
+    </div>
+  </form>
+</div>
+<a href="/dashboard/bots" class="back-link">← Back to bots</a>
+{% endblock %}

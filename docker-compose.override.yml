@@ -1,0 +1,13 @@
+# Merged automatically by Docker Compose (dev). Source on the host replaces image copy — no rebuild for Python changes.
+# Rebuild only when dependencies or Dockerfile change: ./sail build api
+
+services:
+  api:
+    volumes:
+      - ./src:/app/src
+      - ./migrations:/app/migrations
+    command: sh -c "alembic upgrade head && uvicorn chatbot.interfaces.api.main:app --host 0.0.0.0 --port 8000 --reload"
+
+  worker-automation:
+    volumes:
+      - ./src:/app/src

@@ -7,7 +7,8 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from chatbot.application.chat_service import ChatService
 from chatbot.config.settings import Settings
 from chatbot.domain.models.attachment import Attachment
-from chatbot.interfaces.api.deps import get_chat_service, get_settings_dep, require_chat_api_auth
+from chatbot.domain.models.tenant import Tenant
+from chatbot.interfaces.api.deps import get_chat_service, get_current_tenant, get_settings_dep
 
 router = APIRouter()
 
@@ -23,12 +24,13 @@ class ChatResponse(BaseModel):
     usage: UsageOut
 
 
-@router.post("/chat", response_model=ChatResponse)
-async def post_chat(
+@router.post("/c/{slug}/chat", response_model=ChatResponse)
+async def post_tenant_chat(
+    slug: str,
     session_id: str = Form(..., min_length=1, max_length=256),
     message: str = Form(..., min_length=1),
     files: list[UploadFile] = File(default=[]),
-    _: None = Depends(require_chat_api_auth),
+    _: Tenant = Depends(get_current_tenant),
     service: ChatService = Depends(get_chat_service),
     settings: Settings = Depends(get_settings_dep),
 ) -> ChatResponse:

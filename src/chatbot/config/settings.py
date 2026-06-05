@@ -16,37 +16,42 @@ class Settings(BaseSettings):
     )
 
     dev_mode: bool = Field(default=False, validation_alias="DEV_MODE")
+    session_secret: str = Field(default="change-me-session", validation_alias="SESSION_SECRET")
 
-    # When non-empty, POST /v1/chat requires Authorization: Bearer <this value>.
-    chat_api_secret: str = Field(default="", validation_alias="CHAT_API_SECRET")
+    admin_token: str = Field(default="", validation_alias="ADMIN_TOKEN")
+    app_secret_key: str = Field(default="", validation_alias="APP_SECRET_KEY")
+    hook_poll_seconds: int = Field(default=5, validation_alias="HOOK_POLL_SECONDS")
 
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     chat_model: str = Field(default="gemini-2.0-flash", validation_alias="CHAT_MODEL")
     embedding_model: str = Field(default="gemini-embedding-001", validation_alias="EMBEDDING_MODEL")
     rewrite_model: str = Field(default="gemini-2.0-flash", validation_alias="REWRITE_MODEL")
 
-    database_url: str = Field(default="sqlite:///./data/app.db", validation_alias="DATABASE_URL")
-    lancedb_path: Path = Field(default=Path("./data/lancedb"), validation_alias="LANCEDB_PATH")
-    prompt_path: Path = Field(default=Path("./prompts/system.md"), validation_alias="PROMPT_PATH")
+    database_url: str = Field(
+        default="mysql+pymysql://chatbot:chatbot@127.0.0.1:3306/chatbot",
+        validation_alias="DATABASE_URL",
+    )
+    data_root: Path = Field(default=Path("./data"), validation_alias="DATA_ROOT")
+    lancedb_root: Path = Field(default=Path("./data/lancedb"), validation_alias="LANCEDB_ROOT")
 
-    rag_enabled: bool = Field(default=False, validation_alias="RAG_ENABLED")
+    rag_enabled: bool = Field(default=True, validation_alias="RAG_ENABLED")
     rag_rewrite_enabled: bool = Field(default=True, validation_alias="RAG_REWRITE_ENABLED")
     retrieval_language: str = Field(default="en", validation_alias="RETRIEVAL_LANGUAGE")
     rag_top_k: int = Field(default=5, validation_alias="RAG_TOP_K")
     chunk_size: int = Field(default=800, validation_alias="CHUNK_SIZE")
     chunk_overlap: int = Field(default=100, validation_alias="CHUNK_OVERLAP")
-
-    rag_rewrite_lang_filter: bool = Field(default=False, validation_alias="RAG_REWRITE_LANG_FILTER")
+    rag_rewrite_lang_filter: bool = Field(default=True, validation_alias="RAG_REWRITE_LANG_FILTER")
     rag_verbose: bool = Field(default=False, validation_alias="RAG_VERBOSE")
+
+    order_modification_window_hours: int = Field(
+        default=6, validation_alias="ORDER_MODIFICATION_WINDOW_HOURS"
+    )
 
     whatsapp_verify_token: str = Field(default="", validation_alias="WHATSAPP_VERIFY_TOKEN")
     whatsapp_app_secret: str = Field(default="", validation_alias="WHATSAPP_APP_SECRET")
     whatsapp_access_token: str = Field(default="", validation_alias="WHATSAPP_ACCESS_TOKEN")
     whatsapp_phone_number_id: str = Field(default="", validation_alias="WHATSAPP_PHONE_NUMBER_ID")
     whatsapp_admin_wa_id: str = Field(default="", validation_alias="WHATSAPP_ADMIN_WA_ID")
-    order_modification_window_hours: int = Field(
-        default=6, validation_alias="ORDER_MODIFICATION_WINDOW_HOURS"
-    )
     messenger_verify_token: str = Field(default="", validation_alias="MESSENGER_VERIFY_TOKEN")
     messenger_page_access_token: str = Field(default="", validation_alias="MESSENGER_PAGE_ACCESS_TOKEN")
     instagram_verify_token: str = Field(default="", validation_alias="INSTAGRAM_VERIFY_TOKEN")
@@ -60,6 +65,10 @@ class Settings(BaseSettings):
     @property
     def instagram_effective_verify_token(self) -> str:
         return self.instagram_verify_token.strip() or self.whatsapp_verify_token.strip()
+
+    @property
+    def lancedb_path(self) -> Path:
+        return self.lancedb_root
 
 
 _lock = Lock()
@@ -76,7 +85,6 @@ def _dotenv_mtime() -> float:
 
 
 def get_settings() -> Settings:
-    """Reload from `.env` when the file's mtime changes (no uvicorn restart needed for most flags)."""
     global _cached_settings, _cached_env_mtime
     mtime = _dotenv_mtime()
     with _lock:
@@ -87,7 +95,6 @@ def get_settings() -> Settings:
 
 
 def reset_settings_cache_for_tests() -> None:
-    """Clear process-wide settings cache (pytest / isolated runs)."""
     global _cached_settings, _cached_env_mtime
     with _lock:
         _cached_settings = None

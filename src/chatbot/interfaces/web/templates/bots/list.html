@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>Bots</h1>
+  <p class="subtitle">Manage your chatbot tenants</p>
+</div>
+<div class="actions-bar">
+  {% if user.role == 'admin' %}
+  <a href="/dashboard/bots/new" class="btn btn-primary">New bot</a>
+  {% endif %}
+  {% if user.role in ('admin', 'client_admin') %}
+  <a href="/dashboard/bots/import" class="btn btn-secondary">Import bot</a>
+  {% endif %}
+</div>
+<div class="table-wrap">
+  <table class="data-table">
+    <thead><tr><th>Name</th><th>Slug</th><th>Hooks</th><th></th></tr></thead>
+    <tbody>
+    {% for t in tenants %}
+    <tr>
+      <td><strong>{{ t.name }}</strong></td>
+      <td><code>{{ t.slug }}</code></td>
+      <td>{% if t.hooks_enabled %}<span class="badge on">ON</span>{% else %}<span class="badge off">OFF</span>{% endif %}</td>
+      <td><a href="/dashboard/bots/{{ t.slug }}" class="btn btn-secondary btn-sm">Open</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="empty-state">No bots yet</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -3,7 +3,7 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from chatbot.application.admin_notifier import WhatsAppAdminNotifier
+from chatbot.automation.handlers.admin_notifier import WhatsAppAdminNotifier
 from chatbot.config.settings import Settings
 from chatbot.domain.models.order import OrderAction
 
@@ -16,7 +16,7 @@ def test_whatsapp_admin_notifier_swallows_graph_401(monkeypatch: pytest.MonkeyPa
         resp = httpx.Response(401, request=req, json={"error": {"message": "Invalid OAuth access token"}})
         raise httpx.HTTPStatusError("401", request=req, response=resp)
 
-    monkeypatch.setattr("chatbot.application.admin_notifier.send_whatsapp_text", _boom)
+    monkeypatch.setattr("chatbot.automation.handlers.admin_notifier.send_whatsapp_text", _boom)
 
     notifier = WhatsAppAdminNotifier(
         phone_number_id="209262928928431",

@@ -1,0 +1,83 @@
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-chatbot}
+      MYSQL_USER: ${MYSQL_USER:-chatbot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-chatbot}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3308:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    command: sh -c "alembic upgrade head && uvicorn chatbot.interfaces.api.main:app --host 0.0.0.0 --port 8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      DATA_ROOT: /app/data
+      LANCEDB_ROOT: /app/data/lancedb
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-changeme-admin}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      SESSION_SECRET: ${SESSION_SECRET:-changeme-session}
+      HOOK_POLL_SECONDS: ${HOOK_POLL_SECONDS:-5}
+    volumes:
+      - app_data:/app/data
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker-automation:
+    build: .
+    command: python -m chatbot.interfaces.worker_automation
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      HOOK_POLL_SECONDS: ${HOOK_POLL_SECONDS:-5}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  # Phase 2 email worker — enable when IMAP is configured
+  # worker-mail:
+  #   build: .
+  #   command: python -m chatbot.interfaces.worker_mail
+  #   environment:
+  #     DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+  #   volumes:
+  #     - app_data:/app/data
+  #   depends_on:
+  #     db:
+  #       condition: service_healthy
+
+  caddy:
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+
+volumes:
+  mysql_data:
+  app_data:

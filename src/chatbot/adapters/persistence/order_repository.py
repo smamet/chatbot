@@ -67,8 +67,9 @@ def _to_order_snapshot(row: OrderRow) -> OrderSnapshot:
 
 
 class SqlAlchemyOrderRepository:
-    def __init__(self, session: Session) -> None:
+    def __init__(self, session: Session, tenant_id: int) -> None:
         self._session = session
+        self._tenant_id = tenant_id
 
     def create_order(
         self,
@@ -80,6 +81,7 @@ class SqlAlchemyOrderRepository:
     ) -> OrderSnapshot:
         now = _as_utc(datetime.now(UTC))
         row = OrderRow(
+            tenant_id=self._tenant_id,
             session_id=session_id,
             customer_key=customer_key,
             customer_name=command.name,
@@ -103,6 +105,7 @@ class SqlAlchemyOrderRepository:
         stmt = (
             select(OrderRow)
             .where(
+                OrderRow.tenant_id == self._tenant_id,
                 OrderRow.customer_key == customer_key,
                 OrderRow.status == OrderStatus.PENDING.value,
                 OrderRow.editable_until >= _as_utc(now),
@@ -116,7 +119,10 @@ class SqlAlchemyOrderRepository:
     def find_latest_order(self, *, customer_key: str) -> OrderSnapshot | None:
         stmt = (
             select(OrderRow)
-            .where(OrderRow.customer_key == customer_key)
+            .where(
+                OrderRow.tenant_id == self._tenant_id,
+                OrderRow.customer_key == customer_key,
+            )
             .order_by(desc(OrderRow.id))
             .limit(1)
         )
@@ -169,6 +175,7 @@ class SqlAlchemyOrderRepository:
         error_detail: str | None = None,
     ) -> OrderEvent:
         row = OrderEventRow(
+            tenant_id=self._tenant_id,
             order_id=order_id,
             session_id=session_id,
             customer_key=customer_key,
@@ -197,6 +204,7 @@ class SqlAlchemyOrderRepository:
         stmt = (
             select(OrderRow)
             .where(
+                OrderRow.tenant_id == self._tenant_id,
                 OrderRow.status == OrderStatus.PENDING.value,
                 OrderRow.editable_until <= _as_utc(now),
             )

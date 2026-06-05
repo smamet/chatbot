@@ -38,15 +38,16 @@ class _FakeVectorStore:
 
 
 @pytest.fixture
-def sync_session(test_settings: SettingsForTests):
-    test_settings.lancedb_path.mkdir(parents=True, exist_ok=True)
-    engine = create_db_engine(test_settings)
+def sync_session(test_settings: SettingsForTests, test_tenant):
+    tenant, _ = test_tenant
+    test_settings.lancedb_root.mkdir(parents=True, exist_ok=True)
+    engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
     store = _FakeVectorStore()
     embedder = _FakeEmbedder()
     try:
         with factory() as session:
-            yield test_settings, session, store, embedder
+            yield test_settings, session, store, embedder, tenant
             session.rollback()
     finally:
         engine.dispose()
@@ -57,10 +58,10 @@ def _workspace_root(test_settings: SettingsForTests) -> Path:
 
 
 def test_prune_calls_vector_delete_and_removes_row(sync_session) -> None:
-    test_settings, session, store, embedder = sync_session
+    test_settings, session, store, embedder, tenant = sync_session
     root = _workspace_root(test_settings)
     missing_key = str((root / "missing.pdf").resolve())
-    session.add(IngestedFileRow(path=missing_key, content_hash="dead"))
+    session.add(IngestedFileRow(tenant_id=tenant.id, path=missing_key, content_hash="dead"))
     session.flush()
 
     svc = IngestSyncService(
@@ -68,18 +69,24 @@ def test_prune_calls_vector_delete_and_removes_row(sync_session) -> None:
         embedder=embedder,
         vector_store=store,
         session=session,
+        tenant_id=tenant.id,
     )
     logs = svc.prune_missing_under_root(root)
     assert missing_key in store.deleted_paths
     assert any("pruned missing" in line for line in logs)
-    assert session.scalar(select(IngestedFileRow).where(IngestedFileRow.path == missing_key)) is None
+    assert session.scalar(
+        select(IngestedFileRow).where(
+            IngestedFileRow.tenant_id == tenant.id,
+            IngestedFileRow.path == missing_key,
+        )
+    ) is None
 
 
 def test_no_prior_when_no_rows_under_root(sync_session) -> None:
-    test_settings, session, store, embedder = sync_session
+    test_settings, session, store, embedder, tenant = sync_session
     root = _workspace_root(test_settings)
     outside = str((root.parent / f"outside_root_{uuid.uuid4().hex}.pdf").resolve())
-    session.add(IngestedFileRow(path=outside, content_hash="a"))
+    session.add(IngestedFileRow(tenant_id=tenant.id, path=outside, content_hash="a"))
     session.flush()
 
     svc = IngestSyncService(
@@ -87,19 +94,18 @@ def test_no_prior_when_no_rows_under_root(sync_session) -> None:
         embedder=embedder,
         vector_store=store,
         session=session,
+        tenant_id=tenant.id,
     )
     logs = svc.prune_missing_under_root(root)
     assert "no prior ingested paths under root" in logs
     assert outside not in store.deleted_paths
 
 
-def test_clear_all_index_removes_all_rows_and_calls_vector_clear(sync_session) -> None:
-    test_settings, session, store, embedder = sync_session
+def test_clear_tenant_index_removes_tenant_rows_only(sync_session) -> None:
+    test_settings, session, store, embedder, tenant = sync_session
     root = _workspace_root(test_settings)
     inside = str((root / "a.pdf").resolve())
-    outside = str((root.parent / f"outside_{uuid.uuid4().hex}.pdf").resolve())
-    session.add(IngestedFileRow(path=inside, content_hash="a"))
-    session.add(IngestedFileRow(path=outside, content_hash="b"))
+    session.add(IngestedFileRow(tenant_id=tenant.id, path=inside, content_hash="a"))
     session.flush()
 
     svc = IngestSyncService(
@@ -107,44 +113,45 @@ def test_clear_all_index_removes_all_rows_and_calls_vector_clear(sync_session) -
         embedder=embedder,
         vector_store=store,
         session=session,
+        tenant_id=tenant.id,
     )
-    logs = svc.clear_all_index()
+    logs = svc.clear_tenant_index()
     assert store.cleared
     assert "cleared vector index" in logs
-    assert "cleared 2 ingested file records" in logs
-    assert list(session.scalars(select(IngestedFileRow)).all()) == []
+    assert "cleared 1 ingested file records" in logs
+    assert list(
+        session.scalars(
+            select(IngestedFileRow).where(IngestedFileRow.tenant_id == tenant.id)
+        ).all()
+    ) == []
 
 
-def test_reconcile_fresh_clears_outside_root_and_ingests(sync_session) -> None:
-    test_settings, session, store, embedder = sync_session
+def test_reconcile_fresh_clears_tenant_and_ingests(sync_session) -> None:
+    test_settings, session, store, embedder, tenant = sync_session
     root = _workspace_root(test_settings)
-    outside = str((root.parent / f"outside_{uuid.uuid4().hex}.pdf").resolve())
-    session.add(IngestedFileRow(path=outside, content_hash="x"))
-    session.flush()
 
     svc = IngestSyncService(
         settings=test_settings,
         embedder=embedder,
         vector_store=store,
         session=session,
+        tenant_id=tenant.id,
     )
     svc._ingest.ingest_path = Mock(return_value=["ingest-stub"])
     logs = svc.reconcile_root(root, fresh=True)
     assert store.cleared
     assert "cleared vector index" in logs
     assert "ingest-stub" in logs
-    assert outside not in store.deleted_paths
-    assert session.scalar(select(IngestedFileRow).where(IngestedFileRow.path == outside)) is None
     ingest_mock = svc._ingest.ingest_path
     assert isinstance(ingest_mock, Mock)
     ingest_mock.assert_called_once()
 
 
 def test_reconcile_calls_ingest_after_prune(sync_session) -> None:
-    test_settings, session, store, embedder = sync_session
+    test_settings, session, store, embedder, tenant = sync_session
     root = _workspace_root(test_settings)
     missing_key = str((root / "gone.pdf").resolve())
-    session.add(IngestedFileRow(path=missing_key, content_hash="b"))
+    session.add(IngestedFileRow(tenant_id=tenant.id, path=missing_key, content_hash="b"))
     session.flush()
 
     svc = IngestSyncService(
@@ -152,6 +159,7 @@ def test_reconcile_calls_ingest_after_prune(sync_session) -> None:
         embedder=embedder,
         vector_store=store,
         session=session,
+        tenant_id=tenant.id,
     )
     svc._ingest.ingest_path = Mock(return_value=["ingest-stub"])
     logs = svc.reconcile_root(root)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import DateTime, ForeignKey, Index, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -10,10 +10,34 @@ class Base(DeclarativeBase):
     pass
 
 
-class MessageRow(Base):
-    __tablename__ = "messages"
+class TenantRow(Base):
+    __tablename__ = "tenants"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    slug: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(256))
+    token_hash: Mapped[str] = mapped_column(String(128))
+    prompt: Mapped[str] = mapped_column(Text(), default="")
+    hook_instructions: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    gemini_api_key_enc: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    config_json: Mapped[str] = mapped_column(Text(), default="{}")
+    active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class MessageRow(Base):
+    __tablename__ = "messages"
+    __table_args__ = (Index("ix_messages_tenant_session_created", "tenant_id", "session_id", "id"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     session_id: Mapped[str] = mapped_column(String(256), index=True)
     role: Mapped[str] = mapped_column(String(32))
     content: Mapped[str] = mapped_column(Text())
@@ -24,9 +48,11 @@ class MessageRow(Base):
 
 class IngestedFileRow(Base):
     __tablename__ = "ingested_files"
+    __table_args__ = (UniqueConstraint("tenant_id", "path", name="uq_ingested_tenant_path"),)
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    path: Mapped[str] = mapped_column(String(1024), unique=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    path: Mapped[str] = mapped_column(String(512))
     content_hash: Mapped[str] = mapped_column(String(128))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -36,12 +62,13 @@ class IngestedFileRow(Base):
 class OrderRow(Base):
     __tablename__ = "orders"
     __table_args__ = (
-        Index("ix_orders_customer_key_status", "customer_key", "status"),
-        Index("ix_orders_editable_until_status", "editable_until", "status"),
-        Index("ix_orders_session_id", "session_id"),
+        Index("ix_orders_tenant_customer_key_status", "tenant_id", "customer_key", "status"),
+        Index("ix_orders_tenant_editable_until_status", "tenant_id", "editable_until", "status"),
+        Index("ix_orders_tenant_session_id", "tenant_id", "session_id"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     session_id: Mapped[str] = mapped_column(String(256), nullable=False)
     customer_key: Mapped[str] = mapped_column(String(128), nullable=False)
     customer_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
@@ -74,11 +101,12 @@ class OrderItemRow(Base):
 class OrderEventRow(Base):
     __tablename__ = "order_events"
     __table_args__ = (
-        Index("ix_order_events_customer_key_created_at", "customer_key", "created_at"),
-        Index("ix_order_events_session_id_created_at", "session_id", "created_at"),
+        Index("ix_order_events_tenant_customer_created", "tenant_id", "customer_key", "created_at"),
+        Index("ix_order_events_tenant_session_created", "tenant_id", "session_id", "created_at"),
     )
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), nullable=True, index=True)
     session_id: Mapped[str] = mapped_column(String(256), nullable=False)
     customer_key: Mapped[str] = mapped_column(String(128), nullable=False)
@@ -88,3 +116,102 @@ class OrderEventRow(Base):
     conversation_context: Mapped[str] = mapped_column(Text(), nullable=False)
     error_detail: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserRow(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    email: Mapped[str] = mapped_column(String(256), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(256))
+    role: Mapped[str] = mapped_column(String(32))
+    active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class UserBotAccessRow(Base):
+    __tablename__ = "user_bot_access"
+    __table_args__ = (UniqueConstraint("user_id", "tenant_id", name="uq_user_bot_access"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), index=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+
+
+class ConnectorRow(Base):
+    __tablename__ = "connectors"
+    __table_args__ = (Index("ix_connectors_tenant_dir_type", "tenant_id", "direction", "type"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    direction: Mapped[str] = mapped_column(String(8))
+    type: Mapped[str] = mapped_column(String(32))
+    mode: Mapped[str] = mapped_column(String(16), default="direct")
+    config_enc: Mapped[str] = mapped_column(Text(), default="")
+    active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class HookEventRow(Base):
+    __tablename__ = "hook_events"
+    __table_args__ = (
+        Index("ix_hook_events_status_id", "status", "id"),
+        Index("ix_hook_events_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    session_id: Mapped[str] = mapped_column(String(256))
+    type: Mapped[str] = mapped_column(String(64))
+    payload_json: Mapped[str] = mapped_column(Text())
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MailDraftRow(Base):
+    __tablename__ = "mail_drafts"
+    __table_args__ = (Index("ix_mail_drafts_tenant_status", "tenant_id", "status"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    imap_uid: Mapped[str] = mapped_column(String(128), default="")
+    from_addr: Mapped[str] = mapped_column(String(512), default="")
+    to_addr: Mapped[str] = mapped_column(String(512), default="")
+    subject: Mapped[str] = mapped_column(String(1024), default="")
+    body_in: Mapped[str] = mapped_column(Text(), default="")
+    draft_reply: Mapped[str] = mapped_column(Text(), default="")
+    status: Mapped[str] = mapped_column(String(32), default="pending")
+    rating: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

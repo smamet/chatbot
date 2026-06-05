@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.adapters.persistence.order_repository import SqlAlchemyOrderRepository
 from chatbot.adapters.persistence.orm import OrderEventRow
-from chatbot.application.order_service import OrderService
+from chatbot.automation.handlers.order_service import OrderService
 from chatbot.domain.models.message import ChatMessage, MessageRole
 from chatbot.domain.models.order import OrderAction, OrderCommand, OrderItem
 
@@ -39,13 +39,14 @@ def _context(n: int = 6) -> list[ChatMessage]:
     return out
 
 
-def test_order_service_create_persists_order_and_event(test_settings) -> None:
+def test_order_service_create_persists_order_and_event(test_settings, test_tenant) -> None:
+    tenant, _ = test_tenant
     now = datetime(2026, 5, 5, 9, 0, tzinfo=UTC)
-    engine = create_db_engine(test_settings)
+    engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
     session = factory()
     try:
-        repo = SqlAlchemyOrderRepository(session)
+        repo = SqlAlchemyOrderRepository(session, tenant.id)
         notifier = _Notifier()
         svc = OrderService(repository=repo, notifier=notifier, clock=_Clock(now), modification_window_hours=6)
         cmd = OrderCommand(
@@ -74,14 +75,15 @@ def test_order_service_create_persists_order_and_event(test_settings) -> None:
     assert notifier.messages
 
 
-def test_order_service_update_within_window_updates_latest_order(test_settings) -> None:
+def test_order_service_update_within_window_updates_latest_order(test_settings, test_tenant) -> None:
+    tenant, _ = test_tenant
     base = datetime(2026, 5, 5, 9, 0, tzinfo=UTC)
     clock = _Clock(base)
-    engine = create_db_engine(test_settings)
+    engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
     session = factory()
     try:
-        repo = SqlAlchemyOrderRepository(session)
+        repo = SqlAlchemyOrderRepository(session, tenant.id)
         svc = OrderService(repository=repo, notifier=_Notifier(), clock=clock, modification_window_hours=6)
         svc.append_command(
             session_id="whatsapp:1",
@@ -115,13 +117,14 @@ def test_order_service_update_within_window_updates_latest_order(test_settings) 
     assert out.order.items[0].qty == 3
 
 
-def test_order_service_create_same_customer_creates_second_order(test_settings) -> None:
+def test_order_service_create_same_customer_creates_second_order(test_settings, test_tenant) -> None:
+    tenant, _ = test_tenant
     now = datetime(2026, 5, 5, 9, 0, tzinfo=UTC)
-    engine = create_db_engine(test_settings)
+    engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
     session = factory()
     try:
-        repo = SqlAlchemyOrderRepository(session)
+        repo = SqlAlchemyOrderRepository(session, tenant.id)
         svc = OrderService(repository=repo, notifier=_Notifier(), clock=_Clock(now), modification_window_hours=6)
         first = svc.append_command(
             session_id="s1",
@@ -142,14 +145,15 @@ def test_order_service_create_same_customer_creates_second_order(test_settings) 
     assert first.order.id != second.order.id
 
 
-def test_order_service_delete_marks_deleted_and_logs_context(test_settings) -> None:
+def test_order_service_delete_marks_deleted_and_logs_context(test_settings, test_tenant) -> None:
+    tenant, _ = test_tenant
     now = datetime(2026, 5, 5, 9, 0, tzinfo=UTC)
     clock = _Clock(now)
-    engine = create_db_engine(test_settings)
+    engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
     session = factory()
     try:
-        repo = SqlAlchemyOrderRepository(session)
+        repo = SqlAlchemyOrderRepository(session, tenant.id)
         svc = OrderService(repository=repo, notifier=_Notifier(), clock=clock, modification_window_hours=6)
         svc.append_command(
             session_id="s-del",
@@ -175,14 +179,15 @@ def test_order_service_delete_marks_deleted_and_logs_context(test_settings) -> N
     assert '"role":"user"' in events[-1].conversation_context
 
 
-def test_order_service_expired_update_is_rejected_and_logged(test_settings) -> None:
+def test_order_service_expired_update_is_rejected_and_logged(test_settings, test_tenant) -> None:
+    tenant, _ = test_tenant
     base = datetime(2026, 5, 5, 9, 0, tzinfo=UTC)
     clock = _Clock(base)
-    engine = create_db_engine(test_settings)
+    engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
     session = factory()
     try:
-        repo = SqlAlchemyOrderRepository(session)
+        repo = SqlAlchemyOrderRepository(session, tenant.id)
         svc = OrderService(repository=repo, notifier=_Notifier(), clock=clock, modification_window_hours=6)
         svc.append_command(
             session_id="s-exp",
@@ -206,14 +211,15 @@ def test_order_service_expired_update_is_rejected_and_logged(test_settings) -> N
     assert events[-1].error_detail is not None
 
 
-def test_order_service_list_ready_orders_returns_past_window(test_settings) -> None:
+def test_order_service_list_ready_orders_returns_past_window(test_settings, test_tenant) -> None:
+    tenant, _ = test_tenant
     base = datetime(2026, 5, 5, 9, 0, tzinfo=UTC)
     clock = _Clock(base)
-    engine = create_db_engine(test_settings)
+    engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
     session = factory()
     try:
-        repo = SqlAlchemyOrderRepository(session)
+        repo = SqlAlchemyOrderRepository(session, tenant.id)
         svc = OrderService(repository=repo, notifier=_Notifier(), clock=clock, modification_window_hours=6)
         svc.append_command(
             session_id="s-ready",

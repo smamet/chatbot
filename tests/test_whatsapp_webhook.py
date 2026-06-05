@@ -9,32 +9,47 @@ import pytest
 from fastapi.testclient import TestClient
 
 from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.interfaces.api.deps import get_chat_service
+from chatbot.interfaces.api.deps import get_connector_service, get_webhook_chat_service, get_webhook_tenant
 from chatbot.interfaces.api.main import create_app
+
+WEBHOOK_SLUG = "wa-bot"
 
 
 def _sig(secret: str, payload: bytes) -> str:
     return "sha256=" + hmac.new(secret.encode(), payload, hashlib.sha256).hexdigest()
 
 
+class _FakeConnectors:
+    def get_whatsapp_config(self, tenant_id: int, *, outbound: bool = False) -> dict:
+        _ = tenant_id
+        return {
+            "verify_token": "verify-wa",
+            "app_secret": "wa-secret",
+            "phone_number_id": "phone-id",
+            "access_token": "access-token",
+        }
+
+
 @pytest.fixture
 def whatsapp_client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> TestClient:
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{tmp_path / 'wa.db'}")
-    monkeypatch.setenv("LANCEDB_PATH", str(tmp_path / "lancedb"))
-    monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "verify-wa")
-    monkeypatch.setenv("WHATSAPP_APP_SECRET", "wa-secret")
-    monkeypatch.setenv("WHATSAPP_PHONE_NUMBER_ID", "phone-id")
-    monkeypatch.setenv("WHATSAPP_ACCESS_TOKEN", "access-token")
+    monkeypatch.setenv("LANCEDB_ROOT", str(tmp_path / "lancedb"))
     reset_settings_cache_for_tests()
     app = create_app()
+    fake_tenant = SimpleNamespace(id=1, slug=WEBHOOK_SLUG, active=True)
 
     class _FakeChatService:
         def handle_user_message(self, session_id: str, message: str):
             _ = session_id
             _ = message
-            return SimpleNamespace(text="clean reply", usage=SimpleNamespace(prompt_tokens=1, candidates_tokens=1, total_tokens=2))
+            return SimpleNamespace(
+                text="clean reply",
+                usage=SimpleNamespace(prompt_tokens=1, candidates_tokens=1, total_tokens=2),
+            )
 
-    app.dependency_overrides[get_chat_service] = lambda: _FakeChatService()
+    app.dependency_overrides[get_webhook_chat_service] = lambda: _FakeChatService()
+    app.dependency_overrides[get_webhook_tenant] = lambda slug=WEBHOOK_SLUG: fake_tenant
+    app.dependency_overrides[get_connector_service] = lambda: _FakeConnectors()
     client = TestClient(app)
     yield client
     app.dependency_overrides.clear()
@@ -51,7 +66,10 @@ def test_whatsapp_post_sends_clean_reply(monkeypatch: pytest.MonkeyPatch, whatsa
         _ = timeout
         sent.append(text)
 
-    monkeypatch.setattr("chatbot.interfaces.api.routers.whatsapp_webhook.whatsapp_meta.send_whatsapp_text", _fake_send_whatsapp_text)
+    monkeypatch.setattr(
+        "chatbot.interfaces.api.routers.whatsapp_webhook.whatsapp_meta.send_whatsapp_text",
+        _fake_send_whatsapp_text,
+    )
     body = {
         "entry": [
             {
@@ -73,7 +91,7 @@ def test_whatsapp_post_sends_clean_reply(monkeypatch: pytest.MonkeyPatch, whatsa
     }
     payload = json.dumps(body).encode("utf-8")
     r = whatsapp_client.post(
-        "/webhooks/whatsapp",
+        f"/webhooks/whatsapp/{WEBHOOK_SLUG}",
         content=payload,
         headers={"X-Hub-Signature-256": _sig("wa-secret", payload)},
     )

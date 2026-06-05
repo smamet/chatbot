@@ -1,0 +1,370 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>{{ tenant.name }}</h1>
+  <p class="subtitle"><code>{{ tenant.slug }}</code></p>
+  <div class="badges">
+    {% if tenant.active %}<span class="badge on">Active</span>{% else %}<span class="badge off">Inactive</span>{% endif %}
+    {% if tenant.hooks_enabled %}<span class="badge on">Hooks ON</span>{% else %}<span class="badge off">Hooks OFF</span>{% endif %}
+  </div>
+</div>
+
+<nav class="tabs">
+  <a href="?tab=config" class="{% if tab=='config' %}active{% endif %}">Config</a>
+  <a href="?tab=documents" class="{% if tab=='documents' %}active{% endif %}">Documents</a>
+  <a href="?tab=connectors" class="{% if tab=='connectors' %}active{% endif %}">Connectors</a>
+  <a href="?tab=history" class="{% if tab=='history' %}active{% endif %}">History</a>
+  <a href="?tab=chat" class="{% if tab=='chat' %}active{% endif %}">Test chat</a>
+  <a href="?tab=hooks" class="{% if tab=='hooks' %}active{% endif %}">Hooks</a>
+</nav>
+
+{% if tab == 'config' %}
+  {% if can_edit %}
+  <div class="card">
+    <h2 class="card-title">Bot settings</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/settings">
+      <div class="form-inline-settings">
+        <label>Name<input type="text" name="name" value="{{ tenant.name }}" required></label>
+        <div class="checkbox-row">
+          <input type="checkbox" name="active" id="bot-active" {% if tenant.active %}checked{% endif %}>
+          <label for="bot-active">Active</label>
+        </div>
+      </div>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save settings</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Prompt &amp; hooks</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/config">
+      <label>System prompt<textarea name="prompt" rows="12">{{ tenant.prompt }}</textarea></label>
+      <label>Hook instructions
+        {% if not tenant.hooks_enabled %}<span class="badge off">Hooks OFF</span>{% endif %}
+        <textarea name="hook_instructions" rows="10">{{ tenant.hook_instructions or '' }}</textarea>
+      </label>
+      <label>Gemini API key override<input type="password" name="gemini_api_key" placeholder="Leave blank to keep"></label>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save prompt</button>
+      </div>
+    </form>
+    <div class="form-actions--bordered">
+      <form method="post" action="/dashboard/bots/{{ tenant.slug }}/hooks/restore-default">
+        <button type="submit" class="btn-secondary">Restore default hook instructions</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">RAG settings</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/rag-config">
+      {% set c = tenant.config %}
+      <div class="form-section">
+        <h3 class="form-section-title">Models</h3>
+        <div class="form-grid form-grid--3">
+          <label>Chat model<input type="text" name="chat_model" value="{{ c.chat_model }}"></label>
+          <label>Embedding model<input type="text" name="embedding_model" value="{{ c.embedding_model }}"></label>
+          <label>Rewrite model<input type="text" name="rewrite_model" value="{{ c.rewrite_model }}"></label>
+        </div>
+      </div>
+      <div class="form-section">
+        <h3 class="form-section-title">Retrieval &amp; chunking</h3>
+        <div class="form-grid">
+          <label>Retrieval language<input type="text" name="retrieval_language" value="{{ c.retrieval_language }}"></label>
+          <label>Top K<input type="number" name="rag_top_k" value="{{ c.rag_top_k }}" min="1" max="50"></label>
+          <label>Chunk size<input type="number" name="chunk_size" value="{{ c.chunk_size }}"></label>
+          <label>Chunk overlap<input type="number" name="chunk_overlap" value="{{ c.chunk_overlap }}"></label>
+        </div>
+      </div>
+      <div class="form-section">
+        <h3 class="form-section-title">Options</h3>
+        <div class="checkbox-panel">
+          <div class="checkbox-grid">
+            <div class="checkbox-row"><input type="checkbox" name="rag_enabled" id="rag-en" {% if c.rag_enabled %}checked{% endif %}><label for="rag-en">RAG enabled</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="rag_rewrite_enabled" id="rag-rw" {% if c.rag_rewrite_enabled %}checked{% endif %}><label for="rag-rw">Rewrite enabled</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="rag_rewrite_lang_filter" id="rag-lf" {% if c.rag_rewrite_lang_filter %}checked{% endif %}><label for="rag-lf">Rewrite lang filter</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="dev_mode" id="dev-mode" {% if c.dev_mode %}checked{% endif %}><label for="dev-mode">Dev mode</label></div>
+          </div>
+        </div>
+      </div>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save RAG settings</button>
+      </div>
+    </form>
+  </div>
+
+  {% if can_edit %}
+  <div class="card">
+    <h2 class="card-title">Backup</h2>
+    <p class="text-muted">Export includes prompts, RAG settings, connectors (with secrets), and documents. Store the ZIP securely. After import elsewhere, run <strong>Sync documents</strong>.</p>
+    <div class="form-actions form-actions--compact">
+      <a href="/dashboard/bots/{{ tenant.slug }}/export" class="btn btn-secondary">Export bot (ZIP)</a>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if is_admin %}
+  <div class="card">
+    <h2 class="card-title">API token</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/regenerate-token">
+      <p class="text-muted">Generates a new Bearer token. The previous token stops working immediately.</p>
+      <div class="form-actions">
+        <button type="submit" class="btn-secondary" data-loading="Regenerating…">Regenerate API token</button>
+      </div>
+    </form>
+  </div>
+  <div class="card card-danger">
+    <h2 class="card-title">Danger zone</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/delete" onsubmit="return confirm('Delete bot {{ tenant.slug }}? This cannot be undone.');">
+      <label>Type <code>{{ tenant.slug }}</code> to confirm<input type="text" name="confirm" required placeholder="{{ tenant.slug }}"></label>
+      <div class="form-actions">
+        <button type="submit" class="btn-danger" data-loading="Deleting…">Delete bot</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+  {% else %}
+  <div class="card">
+    <pre>{{ tenant.prompt }}</pre>
+  </div>
+  {% endif %}
+
+{% elif tab == 'documents' %}
+  {% if can_edit %}
+  <div class="card">
+    <h2 class="card-title">Upload &amp; sync</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/documents" enctype="multipart/form-data" id="doc-upload-form">
+      <label>Upload files<input type="file" name="files" multiple></label>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" data-loading="Uploading…">Upload</button>
+      </div>
+    </form>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/sync" id="doc-sync-form" class="form-actions--bordered">
+      <div class="checkbox-row">
+        <input type="checkbox" name="fresh" id="fresh-sync" value="on">
+        <label for="fresh-sync">Fresh sync (clear index first)</label>
+      </div>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-secondary" id="doc-sync-btn" data-loading="Syncing…">Sync documents</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+  {% if sync_logs %}
+  <div class="card">
+    <h2 class="card-title">Sync log</h2>
+    <pre class="log">{% for line in sync_logs %}{{ line }}
+{% endfor %}</pre>
+  </div>
+  {% endif %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>File</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+      <tbody>
+      {% for doc in documents %}
+      <tr>
+        <td><code>{{ doc }}</code></td>
+        {% if can_edit %}
+        <td>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/documents/delete">
+            <input type="hidden" name="path" value="{{ doc }}">
+            <button type="submit" class="btn-secondary btn-sm">Delete</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="empty-state">No documents</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+{% elif tab == 'connectors' %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Mode</th><th>Status</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+      <tbody>
+      {% for c in connectors %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td>{{ c.direction.value }}</td>
+        <td>{{ c.type.value }}</td>
+        <td>{{ c.mode.value }}</td>
+        <td>{% if c.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}</td>
+        <td>
+          {% if c.type in webhook_channels and c.direction.value == 'in' %}
+          <code>/webhooks/{{ c.type.value }}/{{ tenant.slug }}</code>
+          {% else %}—{% endif %}
+        </td>
+        {% if can_edit %}
+        <td class="actions">
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/toggle"><button type="submit" class="btn-secondary btn-sm">Toggle</button></form>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/delete"><button type="submit" class="btn-secondary btn-sm">Delete</button></form>
+        </td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty-state">No connectors</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if can_edit %}
+  <div class="card">
+    <h2 class="card-title">Add / update connector</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form">
+      <div class="form-grid">
+        <label>Type
+          <select name="connector_type" id="connector-type">
+            <option value="whatsapp">WhatsApp</option>
+            <option value="messenger">Messenger</option>
+            <option value="instagram">Instagram</option>
+            <option value="email">Email</option>
+          </select>
+        </label>
+        <label>Direction
+          <select name="direction">
+            <option value="in">in</option>
+            <option value="out">out</option>
+          </select>
+        </label>
+        <label>Mode
+          <select name="mode">
+            <option value="direct">direct</option>
+            <option value="validation">validation</option>
+          </select>
+        </label>
+        <div class="checkbox-row" style="align-self:end">
+          <input type="checkbox" name="active" id="conn-active" checked>
+          <label for="conn-active">Active</label>
+        </div>
+      </div>
+      <div data-channel="whatsapp">
+        <input type="text" name="phone_number_id" placeholder="phone_number_id">
+        <input type="password" name="access_token" placeholder="access_token">
+        <input type="password" name="app_secret" placeholder="app_secret">
+        <input type="text" name="verify_token" placeholder="verify_token">
+        <input type="text" name="admin_wa_id" placeholder="admin_wa_id">
+      </div>
+      <div data-channel="messenger" hidden>
+        <input type="password" name="page_access_token" placeholder="page_access_token">
+        <input type="text" name="verify_token" placeholder="verify_token">
+        <input type="password" name="app_secret" placeholder="app_secret">
+      </div>
+      <div data-channel="instagram" hidden>
+        <input type="password" name="access_token" placeholder="access_token">
+        <input type="text" name="ig_user_id" placeholder="ig_user_id">
+        <input type="text" name="verify_token" placeholder="verify_token">
+        <input type="password" name="app_secret" placeholder="app_secret">
+      </div>
+      <div data-channel="email" hidden>
+        <input type="text" name="imap_host" placeholder="imap_host">
+        <input type="text" name="imap_port" placeholder="imap_port">
+        <input type="text" name="smtp_host" placeholder="smtp_host">
+        <input type="text" name="smtp_port" placeholder="smtp_port">
+        <input type="text" name="username" placeholder="username">
+        <input type="password" name="password" placeholder="password">
+        <input type="text" name="from_addr" placeholder="from_addr (outbound)">
+      </div>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save connector</button>
+      </div>
+    </form>
+    <script>
+      (function () {
+        const sel = document.getElementById('connector-type');
+        const panels = document.querySelectorAll('[data-channel]');
+        function sync() {
+          const v = sel.value;
+          panels.forEach(p => {
+            const on = p.dataset.channel === v;
+            p.hidden = !on;
+            p.querySelectorAll('input,select,textarea').forEach(el => { el.disabled = !on; });
+          });
+        }
+        sel.addEventListener('change', sync);
+        sync();
+      })();
+    </script>
+  </div>
+  {% endif %}
+
+{% elif tab == 'history' %}
+<section class="history-layout">
+  <aside>
+    <h2>Sessions</h2>
+    <ul>
+    {% for sid in sessions %}
+      <li><a href="?tab=history&amp;sid={{ sid|urlencode }}" {% if selected_sid == sid %}class="active"{% endif %}>{{ sid }}</a></li>
+    {% else %}
+      <li class="text-muted">No sessions</li>
+    {% endfor %}
+    </ul>
+  </aside>
+  <div>
+    {% if selected_sid %}
+    <h2 class="card-title">Messages — {{ selected_sid }}</h2>
+    {% for m in history_messages %}
+    <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><pre>{{ m.content }}</pre></div>
+    {% else %}
+    <p class="text-muted">No messages</p>
+    {% endfor %}
+    {% else %}
+    <p class="text-muted">Select a session from the list</p>
+    {% endif %}
+  </div>
+</section>
+
+{% elif tab == 'chat' %}
+<div class="card chat-panel" id="chat-panel" data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send">
+  <div class="chat-header">
+    <h2 class="card-title">Test chat</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/chat-test/reset" onsubmit="return confirm('Clear this test conversation?');">
+      <button type="submit" class="btn-secondary btn-sm">Clear history</button>
+    </form>
+  </div>
+  <div class="chat-thread" id="chat-thread"></div>
+  <script id="chat-initial" type="application/json">{{ chat_messages_json|safe }}</script>
+  <form id="chat-form">
+    <label>Message<textarea name="message" id="chat-input" rows="3" placeholder="Type a test message…"></textarea></label>
+    <p class="text-muted chat-hint">Enter to send · Shift+Enter for new line</p>
+    <div class="form-actions form-actions--compact chat-compose-actions">
+      <button type="submit" class="btn-primary" id="chat-send">Send</button>
+      <button type="button" class="btn-danger" id="chat-stop" hidden>Stop</button>
+    </div>
+  </form>
+  <p class="text-muted" style="margin-top:1rem">Session: <code>{{ chat_session_id }}</code></p>
+  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+  <script src="/static/chat-test.js"></script>
+</div>
+
+{% elif tab == 'hooks' %}
+<div class="table-wrap">
+  <table class="data-table">
+    <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Session</th><th>Error</th><th></th></tr></thead>
+    <tbody>
+    {% for h in hooks %}
+    <tr class="hook-{{ status_class(h.status.value) }}">
+      <td>{{ h.id }}</td>
+      <td><code>{{ h.type }}</code></td>
+      <td><span class="badge">{{ h.status.value }}</span></td>
+      <td><code>{{ h.session_id }}</code></td>
+      <td class="text-muted">{{ h.error or '—' }}</td>
+      <td>
+        {% if can_edit and h.status.value in ('failed','done') %}
+        <form method="post" action="/dashboard/hooks/{{ h.id }}/replay"><button type="submit" class="btn-secondary btn-sm">Replay</button></form>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="6" class="empty-state">No hooks yet</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endif %}
+{% endblock %}

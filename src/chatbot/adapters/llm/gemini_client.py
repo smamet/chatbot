@@ -12,21 +12,31 @@ from chatbot.domain.models.message import ChatMessage, MessageRole
 
 
 class GeminiLlmClient:
-    """Reads model id and API key from ``get_settings()`` on each call so `.env` edits apply without restart."""
+    """Gemini client with optional per-request API key and model override."""
 
-    def __init__(self, *, model_attr: Literal["chat_model", "rewrite_model"]) -> None:
+    def __init__(
+        self,
+        *,
+        model_attr: Literal["chat_model", "rewrite_model"] | None = None,
+        model: str | None = None,
+        api_key: str | None = None,
+    ) -> None:
         self._model_attr = model_attr
+        self._fixed_model = model
+        self._api_key = api_key
         self._client: genai.Client | None = None
         self._client_api_key: str | None = None
 
     def _client_and_model(self) -> tuple[genai.Client, str]:
         s: Settings = get_settings()
-        key = s.gemini_api_key or ""
+        key = (self._api_key or s.gemini_api_key or "").strip()
         if self._client is None or key != self._client_api_key:
             self._client = genai.Client(api_key=key) if key else genai.Client()
             self._client_api_key = key
-        model = getattr(s, self._model_attr)
-        return self._client, model
+        if self._fixed_model:
+            return self._client, self._fixed_model
+        assert self._model_attr is not None
+        return self._client, getattr(s, self._model_attr)
 
     def generate_chat(
         self,
@@ -46,11 +56,7 @@ class GeminiLlmClient:
                 continue
             role = "user" if m.role == MessageRole.USER else "model"
             parts: list[types.Part] = [types.Part.from_text(text=m.content)]
-            if (
-                m.role == MessageRole.USER
-                and i == last_user_idx
-                and attachments
-            ):
+            if m.role == MessageRole.USER and i == last_user_idx and attachments:
                 for att in attachments:
                     parts.append(
                         types.Part.from_bytes(data=att.data, mime_type=att.mime_type)
@@ -65,8 +71,7 @@ class GeminiLlmClient:
             ),
         )
         text = (response.text or "").strip()
-        usage = _usage_from_response(response)
-        return LlmResult(text=text, usage=usage)
+        return LlmResult(text=text, usage=_usage_from_response(response))
 
 
 def _usage_from_response(response: object) -> LlmUsage:
