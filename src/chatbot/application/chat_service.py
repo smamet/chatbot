@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from chatbot.application.hook_extractor import extract_hook
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.application.tenant_settings import merge_tenant_settings
@@ -22,6 +24,8 @@ class ChatService:
         repo: ConversationRepository,
         rag: RagPipeline | None,
         hook_repo: HookEventRepository | None = None,
+        integration_enricher: Callable[[str], str | None] | None = None,
+        erp_enricher: Callable[[str], str | None] | None = None,
     ) -> None:
         self._global_settings = settings
         self._tenant = tenant
@@ -30,6 +34,7 @@ class ChatService:
         self._repo = repo
         self._rag = rag
         self._hook_repo = hook_repo
+        self._integration_enricher = integration_enricher or erp_enricher
 
     def _load_system_instruction(self) -> str:
         parts: list[str] = []
@@ -66,6 +71,10 @@ class ChatService:
         self._repo.append_message(session_id, user_msg)
         history = self._repo.list_messages(session_id, limit=50)
         system = self._load_system_instruction()
+        if self._integration_enricher:
+            data_block = self._integration_enricher(session_id)
+            if data_block:
+                system = f"{system}\n\n--- Customer data ---\n{data_block}"
         if self._rag and self._settings.rag_enabled:
             ctx = self._rag.build_retrieval_context(user_message)
             if ctx:

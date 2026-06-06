@@ -11,12 +11,15 @@ from fastapi.testclient import TestClient
 
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
+from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.adapters.persistence.user_repository import SqlAlchemyUserRepository
+from chatbot.application.integration_service import IntegrationService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.user_service import UserService
 from chatbot.config.settings import reset_settings_cache_for_tests
 from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from chatbot.domain.models.integration import IntegrationType
 from chatbot.domain.models.message import ChatMessage, MessageRole
 from chatbot.domain.models.user import UserRole
 from chatbot.interfaces.api.deps import _build_chat_service
@@ -70,8 +73,8 @@ def dashboard_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
     original_build = _build_chat_service
 
-    def _patched_build(request, settings, tenant, repo, hook_repo):
-        _ = request, settings, tenant, hook_repo
+    def _patched_build(request, settings, tenant, repo, hook_repo, **kwargs):
+        _ = request, settings, tenant, hook_repo, kwargs
         fake = _FakeChat()
 
         class _Wrapper:
@@ -382,3 +385,72 @@ def test_client_user_cannot_export_import(dashboard_env) -> None:
         files={"bundle": ("bot.zip", zip_bytes, "application/zip")},
     )
     assert r.status_code == 403
+
+
+def test_integration_dashboard_save(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+
+    r = client.get(f"/dashboard/bots/{slug}?tab=integrations")
+    assert r.status_code == 200
+    assert "ERPNext" in r.text
+    assert "Integrations" in r.text
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/integrations",
+        data={
+            "integration_type": "erpnext",
+            "url": "https://erp.example.com",
+            "api_key": "test-key",
+            "api_secret": "test-secret",
+            "identity_email_field": "email_id",
+            "identity_phone_field": "mobile_no",
+            "fetch_orders": "on",
+            "fetch_quotations": "on",
+            "max_items": "5",
+            "active": "on",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/dashboard/bots/{slug}?tab=integrations&integration_type=erpnext"
+
+    with factory() as session:
+        integration = IntegrationService(
+            SqlAlchemyIntegrationRepository(session)
+        ).find_active(tenant_id, type=IntegrationType.ERPNEXT)
+        assert integration is not None
+        assert integration.config["url"] == "https://erp.example.com"
+        assert integration.config["fetch_orders"] is True
+
+
+def test_integration_test_endpoint(dashboard_env) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/integrations/test",
+        data={
+            "integration_type": "erpnext",
+            "url": "https://erp.example.com",
+            "api_key": "k",
+            "api_secret": "s",
+            "identity_email_field": "email_id",
+            "identity_phone_field": "mobile_no",
+            "max_items": "5",
+            "test_email": "alice@example.com",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert "ok" in body
+
+
+def test_quickbooks_connect_requires_saved_config(dashboard_env) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.get(
+        f"/dashboard/bots/{slug}/integrations/quickbooks/connect",
+        follow_redirects=False,
+    )
+    assert r.status_code == 400

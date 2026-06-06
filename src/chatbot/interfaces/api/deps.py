@@ -17,6 +17,7 @@ from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepos
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.chat_service import ChatService
 from chatbot.application.connector_service import ConnectorService
+from chatbot.application.integration_enrichment import build_enricher
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
@@ -129,6 +130,8 @@ def _build_chat_service(
     tenant: Tenant,
     repo: SqlAlchemyConversationRepository,
     hook_repo: SqlAlchemyHookEventRepository,
+    *,
+    db_session: Session | None = None,
 ) -> ChatService:
     merged = merge_tenant_settings(settings, tenant)
     rag: RagPipeline | None = None
@@ -142,6 +145,7 @@ def _build_chat_service(
             vector_store=_vector_store_for_tenant(request, tenant, settings),
             rewrite_language_gate=getattr(request.app.state, "rewrite_language_gate", None),
         )
+    integration_enricher = build_enricher(db_session, tenant.id) if db_session else None
     return ChatService(
         settings=settings,
         tenant=tenant,
@@ -149,6 +153,7 @@ def _build_chat_service(
         repo=repo,
         rag=rag,
         hook_repo=hook_repo,
+        integration_enricher=integration_enricher,
     )
 
 
@@ -172,8 +177,11 @@ def get_chat_service(
     tenant: Tenant = Depends(get_current_tenant),
     repo: SqlAlchemyConversationRepository = Depends(get_conversation_repo),
     hook_repo: SqlAlchemyHookEventRepository = Depends(get_hook_repo),
+    session: Session = Depends(get_session),
 ) -> ChatService:
-    return _build_chat_service(request, settings, tenant, repo, hook_repo)
+    return _build_chat_service(
+        request, settings, tenant, repo, hook_repo, db_session=session
+    )
 
 
 def get_webhook_tenant(
@@ -203,5 +211,8 @@ def get_webhook_chat_service(
     tenant: Tenant = Depends(get_webhook_tenant),
     repo: SqlAlchemyConversationRepository = Depends(get_webhook_conversation_repo),
     hook_repo: SqlAlchemyHookEventRepository = Depends(get_webhook_hook_repo),
+    session: Session = Depends(get_session),
 ) -> ChatService:
-    return _build_chat_service(request, settings, tenant, repo, hook_repo)
+    return _build_chat_service(
+        request, settings, tenant, repo, hook_repo, db_session=session
+    )

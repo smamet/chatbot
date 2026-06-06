@@ -1,0 +1,6 @@
+{% macro help_tip(text) %}
+<span class="help-tip">
+  <button type="button" class="help-tip__trigger" aria-label="Help">?</button>
+  <span class="help-tip__bubble" role="tooltip">{{ text }}</span>
+</span>
+{% endmacro %}

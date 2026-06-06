@@ -47,6 +47,8 @@ class Settings(BaseSettings):
         default=6, validation_alias="ORDER_MODIFICATION_WINDOW_HOURS"
     )
 
+    public_base_url: str = Field(default="", validation_alias="PUBLIC_BASE_URL")
+
     whatsapp_verify_token: str = Field(default="", validation_alias="WHATSAPP_VERIFY_TOKEN")
     whatsapp_app_secret: str = Field(default="", validation_alias="WHATSAPP_APP_SECRET")
     whatsapp_access_token: str = Field(default="", validation_alias="WHATSAPP_ACCESS_TOKEN")

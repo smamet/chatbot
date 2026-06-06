@@ -251,6 +251,52 @@ def test_chat_service_rag_includes_source_paths_when_dev_mode(test_settings, tes
     assert "Do not mention internal file names" not in cap.last_system
 
 
+def test_chat_service_injects_erp_context(test_settings, test_tenant) -> None:
+    tenant, _token = test_tenant
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+
+    class CaptureLlm:
+        def __init__(self) -> None:
+            self.last_system: str | None = None
+
+        def generate_chat(
+            self,
+            *,
+            system_instruction: str,
+            messages: list[ChatMessage],
+            attachments: list[Attachment] | None = None,
+        ) -> LlmResult:
+            _ = attachments
+            self.last_system = system_instruction
+            return LlmResult(text="ok", usage=LlmUsage())
+
+    def enrich(session_id: str) -> str | None:
+        if session_id == "whatsapp:33600000000":
+            return "Customer: Test Corp\nRecent sales orders:\n- SO-1"
+        return None
+
+    cap = CaptureLlm()
+    session = factory()
+    try:
+        repo = SqlAlchemyConversationRepository(session, tenant.id)
+        svc = ChatService(
+            settings=test_settings,
+            tenant=tenant,
+            llm=cap,
+            repo=repo,
+            rag=None,
+            integration_enricher=enrich,
+        )
+        svc.handle_user_message("whatsapp:33600000000", "Where is my order?")
+        session.commit()
+    finally:
+        session.close()
+    assert cap.last_system is not None
+    assert "Customer data" in cap.last_system
+    assert "Test Corp" in cap.last_system
+
+
 def test_chat_service_strips_marker_and_persists_hook(test_settings, test_tenant) -> None:
     from chatbot.domain.models.hook import HookStatus
 

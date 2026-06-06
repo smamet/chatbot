@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% from "macros/help_tip.html" import help_tip %}
 {% block body %}
 <div class="page-header">
   <h1>{{ tenant.name }}</h1>
@@ -13,6 +14,7 @@
   <a href="?tab=config" class="{% if tab=='config' %}active{% endif %}">Config</a>
   <a href="?tab=documents" class="{% if tab=='documents' %}active{% endif %}">Documents</a>
   <a href="?tab=connectors" class="{% if tab=='connectors' %}active{% endif %}">Connectors</a>
+  <a href="?tab=integrations" class="{% if tab=='integrations' %}active{% endif %}">Integrations</a>
   {% if has_validation_connectors or pending_count %}
   <a href="?tab=validation" class="{% if tab=='validation' %}active{% endif %}">Validation{% if pending_count %} <span class="tab-badge">{{ pending_count }}</span>{% endif %}</a>
   {% endif %}
@@ -84,10 +86,10 @@
         <h3 class="form-section-title">Options</h3>
         <div class="checkbox-panel">
           <div class="checkbox-grid">
-            <div class="checkbox-row"><input type="checkbox" name="rag_enabled" id="rag-en" {% if c.rag_enabled %}checked{% endif %}><label for="rag-en">RAG enabled</label></div>
-            <div class="checkbox-row"><input type="checkbox" name="rag_rewrite_enabled" id="rag-rw" {% if c.rag_rewrite_enabled %}checked{% endif %}><label for="rag-rw">Rewrite enabled</label></div>
-            <div class="checkbox-row"><input type="checkbox" name="rag_rewrite_lang_filter" id="rag-lf" {% if c.rag_rewrite_lang_filter %}checked{% endif %}><label for="rag-lf">Rewrite lang filter</label></div>
-            <div class="checkbox-row"><input type="checkbox" name="dev_mode" id="dev-mode" {% if c.dev_mode %}checked{% endif %}><label for="dev-mode">Dev mode</label></div>
+            <div class="checkbox-row"><input type="checkbox" name="rag_enabled" id="rag-en" {% if c.rag_enabled %}checked{% endif %}><label for="rag-en">RAG enabled</label>{{ help_tip("Search the document index and inject the best-matching chunks into the bot prompt before each reply. Requires synced documents. When off, the bot answers from its system prompt only.") }}</div>
+            <div class="checkbox-row"><input type="checkbox" name="rag_rewrite_enabled" id="rag-rw" {% if c.rag_rewrite_enabled %}checked{% endif %}><label for="rag-rw">Rewrite enabled</label>{{ help_tip("Before vector search, calls the rewrite model to turn the user message into a short keyword query (in Retrieval language). Only runs when RAG enabled is on.") }}</div>
+            <div class="checkbox-row"><input type="checkbox" name="rag_rewrite_lang_filter" id="rag-lf" {% if c.rag_rewrite_lang_filter %}checked{% endif %}><label for="rag-lf">Rewrite lang filter</label>{{ help_tip("When ON: LLM rewrite runs only if Mauritian Creole marker words are detected (e.g. mo, eki, ki). Plain French or English uses the raw message for search. When OFF and Rewrite enabled is ON: every message is always rewritten before search — no language gate.") }}</div>
+            <div class="checkbox-row"><input type="checkbox" name="dev_mode" id="dev-mode" {% if c.dev_mode %}checked{% endif %}><label for="dev-mode">Dev mode</label>{{ help_tip("Shows source file paths and chunk IDs in retrieved context; returns detailed API errors on failure; does not instruct the bot to hide source citations from customers.") }}</div>
           </div>
         </div>
       </div>
@@ -429,6 +431,257 @@
     </script>
   </div>
   {% endif %}
+
+{% elif tab == 'integrations' %}
+  <div class="card card--flat">
+    <p class="text-muted integration-intro">Live customer data from external systems. Identity comes from the channel (email, WhatsApp) — not from the LLM.</p>
+    {% if multiple_active_integrations %}
+    <p class="field-hint integration-priority-hint">Multiple integrations are active. ERPNext is used first, then QuickBooks.</p>
+    {% endif %}
+  </div>
+
+  <div class="integration-layout">
+    <aside class="integration-list card">
+      <h3 class="integration-list__title">Configured</h3>
+      <ul class="integration-list__items">
+        {% for i in integrations %}
+        <li>
+          <a href="?tab=integrations&amp;integration_type={{ i.type.value }}"
+             class="integration-list__link{% if selected_integration_type == i.type.value %} is-selected{% endif %}">
+            <span class="integration-list__name">{{ integration_meta.get(i.type.value, {}).get('label', i.type.value) }}</span>
+            <span class="integration-list__meta">
+              {% if i.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}
+              <code>{{ integration_endpoint(i) }}</code>
+            </span>
+          </a>
+          {% if can_edit %}
+          <div class="integration-list__actions">
+            <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integrations/{{ i.id }}/toggle" class="no-loader">
+              <button type="submit" class="btn-secondary btn-sm">Toggle</button>
+            </form>
+            <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integrations/{{ i.id }}/delete" class="no-loader">
+              <button type="submit" class="btn-secondary btn-sm">Delete</button>
+            </form>
+          </div>
+          {% endif %}
+        </li>
+        {% else %}
+        <li class="text-muted integration-list__empty">No integrations saved yet.</li>
+        {% endfor %}
+      </ul>
+    </aside>
+
+    {% if can_edit %}
+    <div class="integration-editor card">
+      <div class="integration-editor__header">
+        <label>Type
+          <select id="integration-type-select">
+            {% for t in integration_types_list %}
+            <option value="{{ t }}" {% if selected_integration_type == t %}selected{% endif %}>
+              {{ integration_meta.get(t, {}).get('label', t) }}
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="integration-editor__badges" id="integration-status-badges"></div>
+      </div>
+      <p class="text-muted integration-editor__desc" id="integration-type-desc"></p>
+
+      <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integrations" class="integration-form no-loader" id="integration-form">
+        <input type="hidden" name="integration_type" id="integration-type-input" value="{{ selected_integration_type }}">
+        <div id="integration-fields" class="form-grid"></div>
+        <div class="form-actions form-actions--compact integration-editor__actions">
+          <button type="submit" class="btn-primary" data-loading="Saving…">Save</button>
+          <span id="integration-qb-connect-wrap"></span>
+        </div>
+      </form>
+      <div id="integration-qb-disconnect-wrap"></div>
+      <p class="field-hint integration-oauth-hint" id="integration-qb-hint" hidden></p>
+
+      <details class="integration-test">
+        <summary>Test connection</summary>
+        <div class="integration-test__body">
+          <div class="form-grid integration-test__inputs">
+            <label>Test email<input type="email" class="integration-test-email" placeholder="customer@example.com"></label>
+            <label>Test phone<input type="text" class="integration-test-phone" placeholder="+33612345678"></label>
+          </div>
+          <button type="button" class="btn-secondary btn-sm integration-test-btn" data-slug="{{ tenant.slug }}">Run test</button>
+          <pre class="integration-test-result" hidden></pre>
+        </div>
+      </details>
+    </div>
+
+    <script type="application/json" id="integration-schemas-data">{{ integration_schemas_json|safe }}</script>
+    <script type="application/json" id="integration-configs-data">{{ integrations_config_json|safe }}</script>
+    <script type="application/json" id="integration-meta-data">{{ integration_meta_json|safe }}</script>
+    <script>
+      (function () {
+        const schemas = JSON.parse(document.getElementById('integration-schemas-data').textContent);
+        const saved = JSON.parse(document.getElementById('integration-configs-data').textContent);
+        const meta = JSON.parse(document.getElementById('integration-meta-data').textContent);
+        const typeSel = document.getElementById('integration-type-select');
+        const typeInput = document.getElementById('integration-type-input');
+        const container = document.getElementById('integration-fields');
+        const descEl = document.getElementById('integration-type-desc');
+        const badgesEl = document.getElementById('integration-status-badges');
+        const qbConnectWrap = document.getElementById('integration-qb-connect-wrap');
+        const qbDisconnectWrap = document.getElementById('integration-qb-disconnect-wrap');
+        const qbHint = document.getElementById('integration-qb-hint');
+        const botSlug = {{ tenant.slug|tojson }};
+        const qbRedirectUri = {{ quickbooks_redirect_uri|tojson }};
+
+        function recordFor(type) {
+          return saved[type] || { active: true, connected: false, config: {} };
+        }
+
+        function isChecked(value, defaultVal) {
+          if (value === true || value === false) return value;
+          const raw = String(value ?? defaultVal ?? '').toLowerCase();
+          return ['1', 'true', 'on', 'yes'].includes(raw);
+        }
+
+        function renderFields() {
+          const type = typeSel.value;
+          typeInput.value = type;
+          const fields = schemas[type] || [];
+          const rec = recordFor(type);
+          const cfg = rec.config || {};
+          const hasSaved = Object.prototype.hasOwnProperty.call(saved, type);
+
+          descEl.textContent = (meta[type] && meta[type].description) || '';
+          badgesEl.replaceChildren();
+          if (type === 'quickbooks') {
+            badgesEl.appendChild(makeBadge(rec.connected ? 'Connected' : 'Not connected', rec.connected));
+          }
+          if (hasSaved) {
+            badgesEl.appendChild(makeBadge(rec.active ? 'Active' : 'Inactive', rec.active));
+          }
+
+          container.replaceChildren();
+          fields.forEach((field) => {
+            const label = document.createElement('label');
+            label.textContent = field.label + ' ';
+            let control;
+            if (field.input_type === 'checkbox') {
+              const row = document.createElement('div');
+              row.className = 'checkbox-row';
+              control = document.createElement('input');
+              control.type = 'checkbox';
+              control.name = field.key;
+              control.checked = isChecked(cfg[field.key], field.default);
+              row.appendChild(control);
+              const hint = document.createElement('span');
+              hint.className = 'field-hint';
+              hint.textContent = field.help || '';
+              row.appendChild(hint);
+              label.appendChild(row);
+            } else if (field.input_type === 'select') {
+              control = document.createElement('select');
+              control.name = field.key;
+              (field.options || []).forEach((opt) => {
+                const o = document.createElement('option');
+                o.value = opt.value;
+                o.textContent = opt.label;
+                o.selected = String(cfg[field.key] ?? field.default) === opt.value;
+                control.appendChild(o);
+              });
+              label.appendChild(control);
+              label.appendChild(makeHint(field.help));
+            } else {
+              control = document.createElement('input');
+              control.type = field.input_type || 'text';
+              control.name = field.key;
+              control.placeholder = hasSaved && field.input_type === 'password'
+                ? 'Leave blank to keep'
+                : (field.placeholder || '');
+              if (field.input_type !== 'password') {
+                control.value = cfg[field.key] ?? field.default ?? '';
+              }
+              if (field.required && !hasSaved) control.required = true;
+              label.appendChild(control);
+              label.appendChild(makeHint(field.help));
+            }
+            if (control) control.title = field.help || '';
+            container.appendChild(label);
+          });
+
+          const activeLabel = document.createElement('label');
+          const activeRow = document.createElement('div');
+          activeRow.className = 'checkbox-row';
+          activeRow.style.alignSelf = 'end';
+          const activeInput = document.createElement('input');
+          activeInput.type = 'checkbox';
+          activeInput.name = 'active';
+          activeInput.id = 'integration-active';
+          activeInput.checked = rec.active !== false;
+          activeRow.appendChild(activeInput);
+          const activeText = document.createElement('label');
+          activeText.setAttribute('for', 'integration-active');
+          activeText.textContent = 'Active';
+          activeRow.appendChild(activeText);
+          activeLabel.appendChild(activeRow);
+          container.appendChild(activeLabel);
+
+          qbConnectWrap.replaceChildren();
+          qbDisconnectWrap.replaceChildren();
+          qbHint.replaceChildren();
+          qbHint.hidden = true;
+          if (type === 'quickbooks') {
+            qbHint.hidden = false;
+            qbHint.appendChild(document.createTextNode('Intuit redirect URI: '));
+            const code = document.createElement('code');
+            code.textContent = qbRedirectUri;
+            qbHint.appendChild(code);
+          }
+          if (type === 'quickbooks' && !rec.connected) {
+            const link = document.createElement('a');
+            link.href = '/dashboard/bots/' + botSlug + '/integrations/quickbooks/connect';
+            link.className = 'btn btn-secondary';
+            link.textContent = 'Connect QuickBooks';
+            qbConnectWrap.appendChild(link);
+          }
+          if (type === 'quickbooks' && rec.connected) {
+            const form = document.createElement('form');
+            form.method = 'post';
+            form.action = '/dashboard/bots/' + botSlug + '/integrations/quickbooks/disconnect';
+            form.className = 'form-actions form-actions--compact no-loader';
+            const btn = document.createElement('button');
+            btn.type = 'submit';
+            btn.className = 'btn-secondary';
+            btn.textContent = 'Disconnect QuickBooks';
+            form.appendChild(btn);
+            qbDisconnectWrap.appendChild(form);
+          }
+
+          const url = new URL(window.location.href);
+          url.searchParams.set('tab', 'integrations');
+          url.searchParams.set('integration_type', type);
+          window.history.replaceState({}, '', url);
+          document.querySelectorAll('.integration-list__link').forEach((link) => {
+            link.classList.toggle('is-selected', link.getAttribute('href').includes('integration_type=' + type));
+          });
+        }
+
+        function makeHint(text) {
+          const hint = document.createElement('small');
+          hint.className = 'field-hint';
+          hint.textContent = text || '';
+          return hint;
+        }
+
+        function makeBadge(text, on) {
+          const span = document.createElement('span');
+          span.className = 'badge ' + (on ? 'on' : 'off');
+          span.textContent = text;
+          return span;
+        }
+
+        typeSel.addEventListener('change', renderFields);
+        renderFields();
+      })();
+    </script>
+    {% endif %}
+  </div>
 
 {% elif tab == 'validation' %}
 <div class="card">

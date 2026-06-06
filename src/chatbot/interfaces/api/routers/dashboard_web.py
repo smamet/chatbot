@@ -5,13 +5,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
 from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
+from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
@@ -23,6 +24,14 @@ from chatbot.application.bot_bundle_service import (
 )
 from chatbot.application.channel_outbound import approve_pending_reply
 from chatbot.application.connector_service import ConnectorService
+from chatbot.adapters.quickbooks.oauth import (
+    build_authorize_url,
+    exchange_code,
+    sign_oauth_state,
+    verify_oauth_state,
+)
+from chatbot.application.integration_test_service import run_integration_test
+from chatbot.application.integration_service import IntegrationService
 from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
@@ -37,6 +46,14 @@ from chatbot.domain.models.connector_schema import (
     secret_connector_keys,
 )
 from chatbot.domain.models.hook import HookStatus
+from chatbot.domain.models.integration import Integration, IntegrationType
+from chatbot.domain.models.integration_schema import (
+    fields_for as integration_fields_for,
+    integration_meta_for_template,
+    integration_schemas_for_template,
+    is_quickbooks_connected,
+    secret_integration_keys,
+)
 from chatbot.domain.models.pending_reply import PendingReplyStatus
 from chatbot.domain.models.tenant import Tenant, TenantConfig
 from chatbot.domain.models.user import User, UserRole
@@ -75,6 +92,90 @@ def _tenant_or_404(tenant_service: TenantService, slug: str) -> Tenant:
 def _require_access(user: User, user_service: UserService, tenant: Tenant) -> None:
     if not user_service.can_access_tenant(user, tenant.id):
         raise HTTPException(status_code=403, detail="Forbidden")
+
+
+def _merge_integration_config(existing: dict | None, incoming: dict) -> dict:
+    secrets = secret_integration_keys()
+    base = dict(existing or {})
+    for key, value in incoming.items():
+        if key in secrets and not str(value).strip():
+            continue
+        base[key] = value
+    return base
+
+
+def _integration_config_from_form(integration_type: str, fields: dict[str, str]) -> dict:
+    schema_fields = integration_fields_for(integration_type)
+    secrets = secret_integration_keys()
+    raw = {field.key: fields.get(field.key, "").strip() for field in schema_fields}
+    cfg = {key: value for key, value in raw.items() if value or key not in secrets}
+    for field in schema_fields:
+        if field.input_type == "checkbox":
+            cfg[field.key] = fields.get(field.key, "") == "on"
+        elif field.input_type == "number" and field.key in cfg:
+            try:
+                cfg[field.key] = int(cfg[field.key])
+            except ValueError:
+                cfg[field.key] = int(field.default or "0")
+    return cfg
+
+
+def _public_base_url(request: Request, settings: Settings) -> str:
+    public = settings.public_base_url.strip()
+    if public:
+        return public.rstrip("/")
+    return str(request.base_url).rstrip("/")
+
+
+def _quickbooks_redirect_uri(request: Request, settings: Settings, slug: str) -> str:
+    return (
+        f"{_public_base_url(request, settings)}"
+        f"/dashboard/bots/{slug}/integrations/quickbooks/callback"
+    )
+
+
+def _integration_endpoint(integration: Integration) -> str:
+    if integration.type == IntegrationType.ERPNEXT:
+        return str(integration.config.get("url") or "—")
+    if integration.type == IntegrationType.QUICKBOOKS:
+        realm = str(integration.config.get("realm_id") or "").strip()
+        return f"realm {realm}" if realm else "Not connected"
+    return "—"
+
+
+async def _integration_config_from_request(
+    integration_type: str,
+    form,
+    *,
+    existing: Integration | None,
+) -> dict:
+    schema_fields = integration_fields_for(integration_type)
+    field_values = {field.key: str(form.get(field.key, "")).strip() for field in schema_fields}
+    for field in schema_fields:
+        if field.input_type == "checkbox":
+            field_values[field.key] = "on" if form.get(field.key) == "on" else ""
+    incoming = _integration_config_from_form(integration_type, field_values)
+    return _merge_integration_config(existing.config if existing else None, incoming)
+
+
+def _integration_configs_for_client(integrations: list[Integration]) -> dict[str, dict]:
+    secrets = secret_integration_keys()
+    out: dict[str, dict] = {}
+    for integration in integrations:
+        cfg: dict = {}
+        for key, value in integration.config.items():
+            cfg[key] = "" if key in secrets else value
+        connected = (
+            is_quickbooks_connected(integration.config)
+            if integration.type == IntegrationType.QUICKBOOKS
+            else True
+        )
+        out[integration.type.value] = {
+            "active": integration.active,
+            "connected": connected,
+            "config": cfg,
+        }
+    return out
 
 
 def _merge_connector_config(existing: dict | None, incoming: dict) -> dict:
@@ -121,7 +222,7 @@ def _run_dashboard_chat(
 ):
     repo = SqlAlchemyConversationRepository(session, tenant.id)
     hook_repo = SqlAlchemyHookEventRepository(session, tenant.id)
-    chat = _build_chat_service(request, settings, tenant, repo, hook_repo)
+    chat = _build_chat_service(request, settings, tenant, repo, hook_repo, db_session=session)
     return chat.handle_user_message(_dashboard_chat_session_id(user), message.strip())
 
 
@@ -456,6 +557,9 @@ def bot_detail(
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     connectors = ConnectorService(SqlAlchemyConnectorRepository(session)).list_for_tenant(tenant.id)
+    integrations = IntegrationService(SqlAlchemyIntegrationRepository(session)).list_for_tenant(
+        tenant.id
+    )
     pending_repo = SqlAlchemyPendingReplyRepository(session)
     hooks = SqlAlchemyHookEventRepository(session, tenant.id).list_by_tenant(limit=50)
     ctx: dict = {
@@ -463,6 +567,7 @@ def bot_detail(
         "tenant": tenant,
         "tab": tab,
         "connectors": connectors,
+        "integrations": integrations,
         "hooks": hooks,
         "status_class": _status_class,
         "default_hook_instructions": DEFAULT_HOOK_INSTRUCTIONS,
@@ -475,6 +580,12 @@ def bot_detail(
         "webhook_channels": _WEBHOOK_CHANNELS,
         "connector_schemas": connector_schemas_for_template(),
         "connector_schemas_json": json.dumps(connector_schemas_for_template()),
+        "integration_types": IntegrationType,
+        "integration_schemas": integration_schemas_for_template(),
+        "integration_meta": integration_meta_for_template(),
+        "integration_endpoint": _integration_endpoint,
+        "is_quickbooks_connected": is_quickbooks_connected,
+        "integration_types_list": [t.value for t in IntegrationType],
         "pending_count": pending_repo.count_pending(tenant.id),
         "has_validation_connectors": any(c.mode == ConnectorMode.VALIDATION for c in connectors),
     }
@@ -498,6 +609,28 @@ def bot_detail(
         )
     elif tab == "validation":
         ctx["pending_replies"] = pending_repo.list_pending(tenant.id)
+    elif tab == "integrations":
+        by_type = {i.type.value: i for i in integrations}
+        ctx["integrations_by_type"] = by_type
+        ctx["multiple_active_integrations"] = sum(1 for i in integrations if i.active) > 1
+        qb = by_type.get(IntegrationType.QUICKBOOKS.value)
+        ctx["quickbooks_connected"] = is_quickbooks_connected(qb.config) if qb else False
+        ctx["quickbooks_redirect_uri"] = _quickbooks_redirect_uri(request, settings, slug)
+        requested = request.query_params.get("integration_type", "").strip()
+        if requested in {t.value for t in IntegrationType}:
+            selected = requested
+        elif by_type:
+            selected = next(iter(IntegrationType)).value
+            for itype in IntegrationType:
+                if itype.value in by_type:
+                    selected = itype.value
+                    break
+        else:
+            selected = IntegrationType.ERPNEXT.value
+        ctx["selected_integration_type"] = selected
+        ctx["integrations_config_json"] = json.dumps(_integration_configs_for_client(integrations))
+        ctx["integration_schemas_json"] = json.dumps(integration_schemas_for_template())
+        ctx["integration_meta_json"] = json.dumps(integration_meta_for_template())
     return templates.TemplateResponse(request, "bots/detail.html", ctx)
 
 
@@ -772,6 +905,241 @@ async def save_connector(
     )
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
+
+
+@router.post("/bots/{slug}/integrations")
+async def save_integration(
+    request: Request,
+    slug: str,
+    integration_type: str = Form(...),
+    active: str = Form("on"),
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    try:
+        itype = IntegrationType(integration_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid integration") from exc
+    form = await request.form()
+    schema_fields = integration_fields_for(integration_type)
+    field_values = {
+        field.key: str(form.get(field.key, "")).strip() for field in schema_fields
+    }
+    for field in schema_fields:
+        if field.input_type == "checkbox":
+            field_values[field.key] = "on" if form.get(field.key) == "on" else ""
+    incoming = _integration_config_from_form(integration_type, field_values)
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    existing = svc.find(tenant.id, type=itype)
+    cfg = _merge_integration_config(existing.config if existing else None, incoming)
+    svc.upsert(tenant_id=tenant.id, type=itype, config=cfg, active=active == "on")
+    session.commit()
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}?tab=integrations&integration_type={integration_type}",
+        status_code=303,
+    )
+
+
+@router.post("/bots/{slug}/integrations/{integration_id}/toggle")
+def toggle_integration(
+    slug: str,
+    integration_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    integration = svc.get(integration_id)
+    if integration is None or integration.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    svc.set_active(integration_id, not integration.active)
+    session.commit()
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}?tab=integrations&integration_type={integration.type.value}",
+        status_code=303,
+    )
+
+
+@router.post("/bots/{slug}/integrations/{integration_id}/delete")
+def delete_integration(
+    slug: str,
+    integration_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    integration = svc.get(integration_id)
+    if integration is None or integration.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    svc.delete(integration_id)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=integrations", status_code=303)
+
+
+@router.post("/bots/{slug}/integrations/test")
+async def test_integration(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    integration_type = str(form.get("integration_type", "")).strip()
+    test_email = str(form.get("test_email", "")).strip() or None
+    test_phone = str(form.get("test_phone", "")).strip() or None
+    try:
+        itype = IntegrationType(integration_type)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid integration") from exc
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    existing = svc.find(tenant.id, type=itype)
+    cfg = await _integration_config_from_request(integration_type, form, existing=existing)
+    if itype == IntegrationType.QUICKBOOKS and not is_quickbooks_connected(cfg):
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "Connect QuickBooks via OAuth before testing.",
+                "error": "not_connected",
+                "customer": None,
+                "orders": None,
+                "quotations": None,
+                "preview": None,
+            }
+        )
+    result = run_integration_test(
+        integration_type,
+        cfg,
+        test_email=test_email,
+        test_phone=test_phone,
+    )
+    return JSONResponse(result.to_dict())
+
+
+@router.get("/bots/{slug}/integrations/quickbooks/connect")
+def quickbooks_connect(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    integration = svc.find(tenant.id, type=IntegrationType.QUICKBOOKS)
+    if integration is None:
+        raise HTTPException(status_code=400, detail="Save QuickBooks credentials first")
+    cfg = integration.config
+    client_id = str(cfg.get("client_id", "")).strip()
+    client_secret = str(cfg.get("client_secret", "")).strip()
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=400, detail="Client ID and Client Secret are required")
+    oauth_secret = settings.session_secret.strip() or settings.app_secret_key.strip()
+    if not oauth_secret:
+        raise HTTPException(status_code=503, detail="SESSION_SECRET is required for OAuth")
+    state = sign_oauth_state(slug=slug, secret=oauth_secret)
+    url = build_authorize_url(
+        client_id=client_id,
+        redirect_uri=_quickbooks_redirect_uri(request, settings, slug),
+        state=state,
+        environment=str(cfg.get("environment", "sandbox")),
+    )
+    return RedirectResponse(url=url, status_code=303)
+
+
+@router.get("/bots/{slug}/integrations/quickbooks/callback")
+def quickbooks_callback(
+    request: Request,
+    slug: str,
+    code: str = "",
+    state: str = "",
+    realmId: str = "",
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    oauth_secret = settings.session_secret.strip() or settings.app_secret_key.strip()
+    try:
+        state_slug = verify_oauth_state(state, secret=oauth_secret)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state") from exc
+    if state_slug != slug:
+        raise HTTPException(status_code=400, detail="OAuth state mismatch")
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    integration = svc.find(tenant.id, type=IntegrationType.QUICKBOOKS)
+    if integration is None:
+        raise HTTPException(status_code=400, detail="QuickBooks integration not configured")
+    cfg = dict(integration.config)
+    client_id = str(cfg.get("client_id", "")).strip()
+    client_secret = str(cfg.get("client_secret", "")).strip()
+    tokens = exchange_code(
+        code=code.strip(),
+        client_id=client_id,
+        client_secret=client_secret,
+        redirect_uri=_quickbooks_redirect_uri(request, settings, slug),
+    )
+    cfg["access_token"] = tokens.access_token
+    cfg["refresh_token"] = tokens.refresh_token
+    cfg["token_expires_at"] = tokens.expires_at
+    cfg["realm_id"] = realmId.strip() or tokens.realm_id or cfg.get("realm_id", "")
+    svc.upsert(
+        tenant_id=tenant.id,
+        type=IntegrationType.QUICKBOOKS,
+        config=cfg,
+        active=integration.active,
+    )
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=integrations", status_code=303)
+
+
+@router.post("/bots/{slug}/integrations/quickbooks/disconnect")
+def quickbooks_disconnect(
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    integration = svc.find(tenant.id, type=IntegrationType.QUICKBOOKS)
+    if integration is None:
+        raise HTTPException(status_code=404)
+    cfg = dict(integration.config)
+    for key in ("access_token", "refresh_token", "realm_id", "token_expires_at"):
+        cfg.pop(key, None)
+    svc.upsert(
+        tenant_id=tenant.id,
+        type=IntegrationType.QUICKBOOKS,
+        config=cfg,
+        active=integration.active,
+    )
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=integrations", status_code=303)
 
 
 @router.post("/bots/{slug}/connectors/{connector_id}/toggle")

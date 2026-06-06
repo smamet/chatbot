@@ -43,4 +43,41 @@
   window.addEventListener("pageshow", (event) => {
     if (event.persisted) setPageLoading(false);
   });
+
+  document.querySelectorAll(".integration-test-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const form = document.getElementById("integration-form");
+      const resultEl = document.querySelector(".integration-test-result");
+      if (!form || !resultEl) return;
+      const slug = btn.dataset.slug;
+      const fd = new FormData(form);
+      const card = form.closest(".integration-editor");
+      const email = card?.querySelector(".integration-test-email")?.value?.trim() || "";
+      const phone = card?.querySelector(".integration-test-phone")?.value?.trim() || "";
+      fd.set("test_email", email);
+      fd.set("test_phone", phone);
+      btn.disabled = true;
+      resultEl.hidden = false;
+      resultEl.className = "integration-test-result";
+      resultEl.textContent = "Testing…";
+      try {
+        const res = await fetch(`/dashboard/bots/${slug}/integrations/test`, {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
+        const data = await res.json();
+        resultEl.classList.add(data.ok ? "ok" : "err");
+        resultEl.textContent = data.preview || data.message || data.error || "Done";
+        if (data.error && !data.ok) {
+          resultEl.textContent = `${data.message}\n${data.error}`;
+        }
+      } catch (err) {
+        resultEl.classList.add("err");
+        resultEl.textContent = String(err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
 })();
