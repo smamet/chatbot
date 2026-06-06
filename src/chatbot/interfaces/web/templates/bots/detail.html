@@ -224,19 +224,54 @@
   <div class="card">
     <h2 class="card-title">Add / update connector</h2>
     <p class="text-muted">Saving updates the connector for the selected type and direction. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).</p>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form">
-      <div class="form-grid">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form" data-bot-slug="{{ tenant.slug }}">
+      <div class="connector-flow" id="connector-flow" aria-hidden="false">
+        <div class="connector-flow__node" id="flow-source">
+          <span class="connector-flow__label">Source</span>
+          <strong id="flow-source-text">Meta webhook</strong>
+          <small class="field-hint" id="flow-source-hint" hidden></small>
+        </div>
+        <div class="connector-flow__arrow connector-flow__arrow--in is-active" id="flow-arrow-in">
+          <span class="connector-flow__arrow-label">IN</span>
+          <span class="connector-flow__arrow-line" aria-hidden="true"></span>
+        </div>
+        <div class="connector-flow__node connector-flow__node--bot">
+          <span class="connector-flow__label">Bot</span>
+          <strong>{{ tenant.name }}</strong>
+        </div>
+        <div class="connector-flow__arrow connector-flow__arrow--out" id="flow-arrow-out">
+          <span class="connector-flow__arrow-label">OUT</span>
+          <span class="connector-flow__arrow-line" aria-hidden="true"></span>
+        </div>
+        <div class="connector-flow__node" id="flow-dest">
+          <span class="connector-flow__label">Destination</span>
+          <strong id="flow-dest-text">WhatsApp customer</strong>
+        </div>
+      </div>
+
+      <input type="hidden" name="direction" id="connector-direction" value="in">
+      <nav class="connector-direction-tabs" role="tablist" aria-label="Connector direction">
+        <button type="button" role="tab" class="active" data-direction="in" id="tab-direction-in" aria-selected="true">
+          <svg class="connector-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M12 3v12m0 0l-4-4m4 4l4-4"/><rect x="4" y="15" width="16" height="6" rx="1"/>
+          </svg>
+          Inbound
+        </button>
+        <button type="button" role="tab" data-direction="out" id="tab-direction-out" aria-selected="false">
+          <svg class="connector-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M12 21V9m0 0l-4 4m4-4l4 4"/><rect x="4" y="3" width="16" height="6" rx="1"/>
+          </svg>
+          Outbound
+        </button>
+      </nav>
+      <p class="text-muted connector-direction-hint">Inbound: receive messages. Outbound: send replies (and validation queue).</p>
+
+      <div class="form-grid connector-form-meta">
         <label>Type
           <select name="connector_type" id="connector-type">
             {% for t in connector_schemas.keys() %}
             <option value="{{ t }}">{{ t|capitalize }}</option>
             {% endfor %}
-          </select>
-        </label>
-        <label>Direction
-          <select name="direction" id="connector-direction">
-            <option value="in">in</option>
-            <option value="out">out</option>
           </select>
         </label>
         <label id="connector-mode-wrap">
@@ -261,11 +296,57 @@
     <script>
       (function () {
         const schemas = JSON.parse(document.getElementById('connector-schemas-data').textContent);
+        const form = document.getElementById('connector-form');
+        const botSlug = form.dataset.botSlug || '';
         const typeSel = document.getElementById('connector-type');
-        const dirSel = document.getElementById('connector-direction');
+        const dirInput = document.getElementById('connector-direction');
+        const dirTabs = document.querySelectorAll('.connector-direction-tabs [data-direction]');
         const modeWrap = document.getElementById('connector-mode-wrap');
         const modeSel = document.getElementById('connector-mode');
         const container = document.getElementById('connector-fields');
+        const flowSourceText = document.getElementById('flow-source-text');
+        const flowSourceHint = document.getElementById('flow-source-hint');
+        const flowDestText = document.getElementById('flow-dest-text');
+        const flowArrowIn = document.getElementById('flow-arrow-in');
+        const flowArrowOut = document.getElementById('flow-arrow-out');
+
+        const WEBHOOK_TYPES = new Set(['whatsapp', 'messenger', 'instagram']);
+        const FLOW_LABELS = {
+          whatsapp: { in: 'Meta webhook', out: 'WhatsApp customer' },
+          messenger: { in: 'Meta webhook', out: 'Messenger user' },
+          instagram: { in: 'Meta webhook', out: 'Instagram user' },
+          email: { in: 'IMAP inbox', out: 'Email recipient (SMTP / Mailjet / Mailgun)' },
+        };
+
+        function getDirection() {
+          return dirInput.value === 'out' ? 'out' : 'in';
+        }
+
+        function setDirection(value) {
+          dirInput.value = value;
+          dirTabs.forEach((tab) => {
+            const active = tab.dataset.direction === value;
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          updateFlowDiagram(typeSel.value, value);
+          renderFields();
+        }
+
+        function updateFlowDiagram(ctype, direction) {
+          const labels = FLOW_LABELS[ctype] || { in: 'Source', out: 'Destination' };
+          flowSourceText.textContent = labels.in;
+          flowDestText.textContent = labels.out;
+          flowArrowIn.classList.toggle('is-active', direction === 'in');
+          flowArrowOut.classList.toggle('is-active', direction === 'out');
+          if (WEBHOOK_TYPES.has(ctype) && direction === 'in') {
+            flowSourceHint.hidden = false;
+            flowSourceHint.textContent = '/webhooks/' + ctype + '/' + botSlug;
+          } else {
+            flowSourceHint.hidden = true;
+            flowSourceHint.textContent = '';
+          }
+        }
 
         function currentProvider() {
           const existing = container.querySelector('select[name="outbound_provider"]');
@@ -283,7 +364,7 @@
 
         function renderFields() {
           const ctype = typeSel.value;
-          const direction = dirSel.value;
+          const direction = getDirection();
           const outbound = direction === 'out';
           modeWrap.hidden = !outbound;
           modeSel.disabled = !outbound;
@@ -335,8 +416,14 @@
           }
         }
 
-        typeSel.addEventListener('change', renderFields);
-        dirSel.addEventListener('change', renderFields);
+        dirTabs.forEach((tab) => {
+          tab.addEventListener('click', () => setDirection(tab.dataset.direction));
+        });
+        typeSel.addEventListener('change', () => {
+          updateFlowDiagram(typeSel.value, getDirection());
+          renderFields();
+        });
+        updateFlowDiagram(typeSel.value, getDirection());
         renderFields();
       })();
     </script>
