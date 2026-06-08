@@ -14,6 +14,7 @@ from chatbot.adapters.persistence.orm import (
     OrderEventRow,
     OrderItemRow,
     OrderRow,
+    PendingReplyRow,
     TenantRow,
     UserBotAccessRow,
 )
@@ -135,6 +136,7 @@ class SqlAlchemyTenantRepository:
         self._session.execute(delete(MessageRow).where(MessageRow.tenant_id == tenant_id))
         self._session.execute(delete(IngestedFileRow).where(IngestedFileRow.tenant_id == tenant_id))
         self._session.execute(delete(HookEventRow).where(HookEventRow.tenant_id == tenant_id))
+        self._session.execute(delete(PendingReplyRow).where(PendingReplyRow.tenant_id == tenant_id))
         self._session.execute(delete(ConnectorRow).where(ConnectorRow.tenant_id == tenant_id))
         self._session.execute(delete(MailDraftRow).where(MailDraftRow.tenant_id == tenant_id))
         self._session.execute(delete(UserBotAccessRow).where(UserBotAccessRow.tenant_id == tenant_id))

@@ -489,8 +489,8 @@ def _upsert_email_connectors(client: TestClient, slug: str) -> None:
     client.post(
         f"/dashboard/bots/{slug}/connectors",
         data={
+            "connector_type": "email",
             "direction": "in",
-            "type": "email",
             "mode": "validation",
             "active": "on",
             "imap_host": "greenmail",
@@ -503,14 +503,14 @@ def _upsert_email_connectors(client: TestClient, slug: str) -> None:
     client.post(
         f"/dashboard/bots/{slug}/connectors",
         data={
+            "connector_type": "email",
             "direction": "out",
-            "type": "email",
             "mode": "validation",
             "active": "on",
             "outbound_provider": "smtp",
             "from_addr": "bot@test.local",
-            "smtp_host": "greenmail",
-            "smtp_port": "3025",
+            "smtp_host": "mailpit",
+            "smtp_port": "1025",
             "smtp_use_tls": "",
         },
         follow_redirects=False,
@@ -554,6 +554,7 @@ def test_email_test_tab_visible_in_dev_mode(dashboard_env, monkeypatch) -> None:
     assert r.status_code == 200
     assert "Test email" in r.text
     assert "email-test.js" in r.text
+    assert "Mailpit" in r.text
 
 
 def test_email_test_send_forbidden_without_dev_mode(dashboard_env, monkeypatch) -> None:
@@ -590,18 +591,6 @@ def test_email_test_send_ok(mock_inject, dashboard_env, monkeypatch) -> None:
             mode=ConnectorMode.VALIDATION,
             config={"imap_host": "greenmail", "username": "bot@test.local", "password": "s"},
         )
-        SqlAlchemyConnectorRepository(session).create(
-            tenant_id=tenant_id,
-            direction=ConnectorDirection.OUT,
-            type=ConnectorType.EMAIL,
-            mode=ConnectorMode.VALIDATION,
-            config={
-                "outbound_provider": "smtp",
-                "smtp_host": "greenmail",
-                "smtp_port": "3025",
-                "from_addr": "bot@test.local",
-            },
-        )
         session.commit()
     _login(client, admin.email, "admin-pass")
     r = client.post(
@@ -612,6 +601,8 @@ def test_email_test_send_ok(mock_inject, dashboard_env, monkeypatch) -> None:
     body = r.json()
     assert body["ok"] is True
     mock_inject.assert_called_once()
+    call_args = mock_inject.call_args
+    assert call_args[0][1]["username"] == "bot@test.local"
 
 
 @patch("chatbot.interfaces.api.routers.dashboard_web.poll_tenant_now")
@@ -646,8 +637,8 @@ def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> Non
             mode=ConnectorMode.VALIDATION,
             config={
                 "outbound_provider": "smtp",
-                "smtp_host": "greenmail",
-                "smtp_port": "3025",
+                "smtp_host": "mailpit",
+                "smtp_port": "1025",
                 "from_addr": "bot@test.local",
             },
         )
@@ -672,6 +663,54 @@ def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> Non
     assert 'class="validation-message-body msg-body js-md"' in r.text
     assert "**Hello** client" in r.text
     assert "markdown.js" in r.text
+
+
+def test_delete_connector_removes_pending_replies(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={
+                "outbound_provider": "smtp",
+                "smtp_host": "mailpit",
+                "smtp_port": "1025",
+                "from_addr": "bot@test.local",
+            },
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Queued reply",
+        )
+        session.commit()
+        conn_id = connector.id
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/connectors/{conn_id}/delete",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    with factory() as session:
+        from chatbot.application.connector_service import ConnectorService
+
+        assert ConnectorService(SqlAlchemyConnectorRepository(session)).get(conn_id) is None
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        assert SqlAlchemyPendingReplyRepository(session).list_pending(tenant_id) == []
 
 
 def test_email_in_connector_sets_process_since_on_save(dashboard_env) -> None:

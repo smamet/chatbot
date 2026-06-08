@@ -58,8 +58,8 @@ def mail_env(tmp_path, monkeypatch):
             mode=ConnectorMode.VALIDATION,
             config={
                 "outbound_provider": "smtp",
-                "smtp_host": "greenmail",
-                "smtp_port": "3025",
+                "smtp_host": "mailpit",
+                "smtp_port": "1025",
                 "smtp_use_tls": "false",
                 "from_addr": "bot@test.local",
             },
@@ -131,8 +131,8 @@ def test_run_once_tenant_failure_does_not_block_other(mock_imap_ctx, mail_env) -
             mode=ConnectorMode.VALIDATION,
             config={
                 "outbound_provider": "smtp",
-                "smtp_host": "greenmail",
-                "smtp_port": "3025",
+                "smtp_host": "mailpit",
+                "smtp_port": "1025",
                 "from_addr": "bot2@test.local",
             },
         )

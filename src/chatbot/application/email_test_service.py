@@ -17,20 +17,28 @@ class EmailTestError(RuntimeError):
     pass
 
 
-def _mailbox_address(config_in: dict, config_out: dict | None) -> str:
+def build_dev_inject_smtp_config(settings: Settings) -> dict:
+    """SMTP config for injecting inbound test mail into GreenMail (not the OUT connector)."""
+    return {
+        "outbound_provider": "smtp",
+        "smtp_host": settings.dev_mail_inject_smtp_host,
+        "smtp_port": str(settings.dev_mail_inject_smtp_port),
+        "smtp_username": "",
+        "smtp_password": "",
+        "smtp_use_tls": False,
+    }
+
+
+def _mailbox_address(config_in: dict) -> str:
     addr = str(config_in.get("username", "")).strip()
-    if addr:
-        return addr
-    if config_out:
-        addr = str(config_out.get("from_addr", "")).strip()
     if not addr:
         raise EmailTestError("Email inbound connector has no mailbox username")
     return addr
 
 
 def inject_test_email(
+    settings: Settings,
     config_in: dict,
-    config_out: dict,
     *,
     from_addr: str,
     subject: str,
@@ -41,9 +49,9 @@ def inject_test_email(
         raise EmailTestError("From address is required")
     if not body.strip():
         raise EmailTestError("Body is required")
-    to_addr = _mailbox_address(config_in, config_out)
+    to_addr = _mailbox_address(config_in)
     resolved_subject = (subject or "Test email").strip()
-    sender = build_email_sender(config_out)
+    sender = build_email_sender(build_dev_inject_smtp_config(settings))
     sender.send(
         EmailMessage(
             to_addr=to_addr,
@@ -64,19 +72,9 @@ def poll_tenant_now(
     return run_once_for_tenant(session_factory, settings, tenant_id=tenant.id)
 
 
-def get_email_test_connectors(session: Session, tenant_id: int) -> tuple[dict, dict]:
+def get_email_test_connectors(session: Session, tenant_id: int) -> dict:
     connectors = ConnectorService(SqlAlchemyConnectorRepository(session))
     config_in = connectors.get_email_config(tenant_id, outbound=False)
     if not config_in:
         raise EmailTestError("No active email inbound connector")
-    config_out = connectors.get_email_config(tenant_id, outbound=True)
-    if not config_out:
-        out = connectors.find(
-            tenant_id,
-            direction=ConnectorDirection.OUT,
-            type=ConnectorType.EMAIL,
-        )
-        config_out = out.config if out and out.active else None
-    if not config_out:
-        raise EmailTestError("No active email outbound connector for SMTP inject")
-    return config_in, config_out
+    return config_in

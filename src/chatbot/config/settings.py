@@ -16,6 +16,15 @@ class Settings(BaseSettings):
     )
 
     dev_mode: bool = Field(default=False, validation_alias="DEV_MODE")
+    dev_mail_inject_smtp_host: str = Field(
+        default="greenmail", validation_alias="DEV_MAIL_INJECT_SMTP_HOST"
+    )
+    dev_mail_inject_smtp_port: int = Field(
+        default=3025, validation_alias="DEV_MAIL_INJECT_SMTP_PORT"
+    )
+    dev_mailpit_web_url: str = Field(
+        default="http://127.0.0.1:8025", validation_alias="DEV_MAILPIT_WEB_URL"
+    )
     session_secret: str = Field(default="change-me-session", validation_alias="SESSION_SECRET")
 
     admin_token: str = Field(default="", validation_alias="ADMIN_TOKEN")

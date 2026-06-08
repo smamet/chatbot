@@ -753,6 +753,7 @@ def bot_detail(
         ),
         "dev_mode": settings.dev_mode,
         "mail_poll_seconds": settings.mail_poll_seconds,
+        "mailpit_web_url": settings.dev_mailpit_web_url if settings.dev_mode else None,
     }
     if tab == "documents":
         ctx["documents"] = _list_documents(settings, slug)
@@ -1592,10 +1593,10 @@ def bot_email_test_send(
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     try:
-        config_in, config_out = get_email_test_connectors(session, tenant.id)
+        config_in = get_email_test_connectors(session, tenant.id)
         inject_test_email(
+            settings,
             config_in,
-            config_out,
             from_addr=from_addr,
             subject=subject,
             body=body,

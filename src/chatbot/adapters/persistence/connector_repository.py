@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from chatbot.adapters.persistence.orm import ConnectorRow
+from chatbot.adapters.persistence.orm import ConnectorRow, PendingReplyRow
 from chatbot.adapters.persistence.secrets import decrypt_json, encrypt_json
 from chatbot.domain.models.connector import (
     Connector,
@@ -97,6 +97,9 @@ class SqlAlchemyConnectorRepository:
         row = self._session.get(ConnectorRow, connector_id)
         if row is None:
             return False
+        self._session.execute(
+            delete(PendingReplyRow).where(PendingReplyRow.connector_id == connector_id)
+        )
         self._session.delete(row)
         self._session.flush()
         return True

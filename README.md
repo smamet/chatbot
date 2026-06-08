@@ -57,6 +57,21 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 **Automation worker** processes `hook_events` (orders, etc.). Compose starts `worker-automation` automatically; locally: `python -m chatbot.interfaces.worker_automation`.
 
+**Email testing (dev)** — GreenMail (inbound IMAP) + Mailpit (outbound SMTP UI):
+
+```bash
+./sail up -d --profile dev
+# Set DEV_MODE=true in .env for the dashboard Test email tab
+```
+
+| URL | Purpose |
+|-----|---------|
+| http://127.0.0.1:8025 | Mailpit — view outbound emails after Validation approve |
+| http://127.0.0.1:8081 | GreenMail REST API |
+| Dashboard → Test email | Inject simulated client mail into bot inbox |
+
+See [docs/dev/greenmail.md](docs/dev/greenmail.md) for connector presets (IN: GreenMail, OUT: Mailpit).
+
 **Channel credentials** (WhatsApp, Messenger, Instagram) belong in the **dashboard → bot → Connectors**, not in `.env`. Webhook URLs are per bot: `https://<host>/webhooks/whatsapp/{slug}`, etc.
 
 ---
@@ -129,3 +144,4 @@ Subscribe Meta **`messages`** field on each channel. Configure verify token and 
 
 - [ARCHITECTURE.md](ARCHITECTURE.md) — layers, hooks, workers, settings
 - [AGENTS.md](AGENTS.md) — conventions for coding agents
+- [docs/dev/greenmail.md](docs/dev/greenmail.md) — local email testing (GreenMail + Mailpit)

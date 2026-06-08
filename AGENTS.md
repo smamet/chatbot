@@ -24,7 +24,7 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `cadd
 
 **Dev:** `docker-compose.override.yml` bind-mounts `./src` — edit Python without `./sail build`. API runs with `--reload`. Rebuild only after dependency/Dockerfile changes. Restart workers after code changes: `./sail restart worker-automation` / `./sail restart worker-mail`.
 
-**Email dev (GreenMail):** `./sail up -d --profile dev` starts GreenMail (UI http://127.0.0.1:8081, SMTP 3025, IMAP 3143). See [docs/dev/greenmail.md](docs/dev/greenmail.md). Dashboard **Test email** tab requires `DEV_MODE=true`.
+**Email dev (GreenMail + Mailpit):** `./sail up -d --profile dev` starts GreenMail (IMAP 3143, inject SMTP 3025) and Mailpit (outbound SMTP 1025, UI http://127.0.0.1:8025). IN connector → GreenMail; OUT connector → Mailpit. Test email inject uses GreenMail SMTP (not OUT). See [docs/dev/greenmail.md](docs/dev/greenmail.md). Dashboard **Test email** tab requires `DEV_MODE=true`.
 
 ## Common tasks
 

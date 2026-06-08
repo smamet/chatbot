@@ -33,3 +33,10 @@ services:
       - "127.0.0.1:8081:8080"
     environment:
       GREENMAIL_OPTS: "-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=bot@test.local:secret"
+
+  mailpit:
+    profiles: [dev]
+    image: axllent/mailpit:latest
+    ports:
+      - "127.0.0.1:1025:1025"
+      - "127.0.0.1:8025:8025"

@@ -399,14 +399,14 @@
           username: 'bot@test.local',
           password: 'secret',
         };
-        const GREENMAIL_OUT = {
+        const MAILPIT_OUT = {
           outbound_provider: 'smtp',
           from_addr: 'bot@test.local',
           default_subject: 'Reply from support',
-          smtp_host: 'greenmail',
-          smtp_port: '3025',
-          smtp_username: 'bot@test.local',
-          smtp_password: 'secret',
+          smtp_host: 'mailpit',
+          smtp_port: '1025',
+          smtp_username: '',
+          smtp_password: '',
           smtp_use_tls: false,
         };
         const greenmailBtn = document.getElementById('greenmail-autofill');
@@ -573,7 +573,7 @@
           greenmailBtn.hidden = !show;
           const direction = getDirection();
           greenmailBtn.textContent =
-            direction === 'in' ? 'Fill GreenMail IMAP (dev)' : 'Fill GreenMail SMTP (dev)';
+            direction === 'in' ? 'Fill GreenMail IMAP (dev)' : 'Fill Mailpit SMTP (dev)';
         }
 
         function fillGreenmail() {
@@ -587,7 +587,7 @@
           } else {
             renderFields();
           }
-          const preset = direction === 'in' ? GREENMAIL_IN : GREENMAIL_OUT;
+          const preset = direction === 'in' ? GREENMAIL_IN : MAILPIT_OUT;
           Object.entries(preset).forEach(([key, value]) => setFieldValue(key, value));
           document.getElementById('conn-active').checked = true;
         }
@@ -871,7 +871,7 @@
 {% elif tab == 'validation' %}
 <div class="card">
   <h2 class="card-title">Pending replies {{ help_tip("Quote replies are held until you approve. ERPNext records are created only when you click Approve. Check product matches before sending.") }}</h2>
-  <p class="text-muted">Replies queued because an outbound connector is in <strong>validation</strong> mode, or because the bot emitted a quote hook. Click a row to read the customer message and proposed reply. Approve to send, or reject to discard.</p>
+  <p class="text-muted">Replies queued because an outbound connector is in <strong>validation</strong> mode, or because the bot emitted a quote hook. Click a row to read the customer message and proposed reply. Approve to send, or reject to discard.{% if mailpit_web_url %} Email replies are sent via Mailpit in dev — <a href="{{ mailpit_web_url }}" target="_blank" rel="noopener">Open Mailpit</a>.{% endif %}</p>
   {% if request.session.get('validation_error') %}
   <p class="validation-error">{{ request.session.pop('validation_error') }}</p>
   {% endif %}
@@ -1077,7 +1077,7 @@
      data-validation-url="/dashboard/bots/{{ tenant.slug }}?tab=validation"
      data-poll-hint="{{ mail_poll_seconds }}">
   <h2 class="card-title">Test email (dev)</h2>
-  <p class="text-muted">Inject a client email into the bot inbox via SMTP (GreenMail in local dev). Unlike Test chat, this flow is asynchronous: the mail worker polls every ~{{ mail_poll_seconds }}s, then replies appear in Validation.</p>
+  <p class="text-muted">Inject a client email into the bot IMAP inbox via <strong>GreenMail SMTP</strong> (local dev). Unlike Test chat, this flow is asynchronous: the mail worker polls every ~{{ mail_poll_seconds }}s, then replies appear in Validation. After you approve, outbound emails are visible in {% if mailpit_web_url %}<a href="{{ mailpit_web_url }}" target="_blank" rel="noopener">Mailpit</a>{% else %}Mailpit{% endif %}.</p>
   <form id="email-test-form">
     <label>From (simulated client)<input type="email" name="from_addr" id="email-test-from" value="client@example.com" required></label>
     <label>Subject<input type="text" name="subject" id="email-test-subject" value="Test devis"></label>
