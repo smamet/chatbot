@@ -34,7 +34,7 @@ sail_help() {
   cat <<'EOF'
 Chatbot Sail — Docker Compose shortcuts
 
-  ./sail up [-d]              Start stack (db, api, worker, caddy)
+  ./sail up [-d] [--profile dev]   Start stack (--profile dev includes GreenMail)
   ./sail down                 Stop and remove containers
   ./sail stop | restart       Stop / restart services
   ./sail build [--no-cache]     Rebuild images
@@ -53,6 +53,7 @@ Chatbot Sail — Docker Compose shortcuts
 
   Examples:
     ./sail up -d
+    ./sail up -d --profile dev
     ./sail chatbot user-create admin@example.com -p 'your-password' --role admin
     ./sail chatbot tenant-create "My Bot" --slug my-bot
     ./sail chatbot sync my-bot /app/data/docs --fresh
@@ -61,9 +62,31 @@ Chatbot Sail — Docker Compose shortcuts
 EOF
 }
 
-# Pass through to compose when no special handling
+# Reorder `--profile` to compose-global position (docker compose --profile dev up -d).
 compose() {
-  "${DC[@]}" "$@"
+  local profiles=()
+  local args=()
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --profile)
+        if [ $# -lt 2 ]; then
+          echo "sail: --profile requires a value" >&2
+          exit 1
+        fi
+        profiles+=(--profile "$2")
+        shift 2
+        ;;
+      --profile=*)
+        profiles+=("$1")
+        shift
+        ;;
+      *)
+        args+=("$1")
+        shift
+        ;;
+    esac
+  done
+  "${DC[@]}" "${profiles[@]}" "${args[@]}"
 }
 
 case "${1:-}" in

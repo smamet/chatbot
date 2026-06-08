@@ -56,17 +56,24 @@ services:
       api:
         condition: service_started
 
-  # Phase 2 email worker — enable when IMAP is configured
-  # worker-mail:
-  #   build: .
-  #   command: python -m chatbot.interfaces.worker_mail
-  #   environment:
-  #     DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
-  #   volumes:
-  #     - app_data:/app/data
-  #   depends_on:
-  #     db:
-  #       condition: service_healthy
+  worker-mail:
+    build: .
+    command: python -m chatbot.interfaces.worker_mail
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-60}
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
 
   caddy:
     image: caddy:2-alpine

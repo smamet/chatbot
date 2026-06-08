@@ -61,6 +61,21 @@ class SqlAlchemyConnectorRepository:
         )
         return _row_to_connector(row) if row else None
 
+    def list_active_by_type(
+        self,
+        *,
+        direction: ConnectorDirection,
+        type: ConnectorType,
+    ) -> list[Connector]:
+        rows = self._session.scalars(
+            select(ConnectorRow).where(
+                ConnectorRow.direction == direction.value,
+                ConnectorRow.type == type.value,
+                ConnectorRow.active.is_(True),
+            )
+        ).all()
+        return [_row_to_connector(r) for r in rows]
+
     def find_active(
         self,
         tenant_id: int,

@@ -527,7 +527,107 @@ textarea {
 }
 
 .validation-quote-card {
-  margin: var(--space-sm) 0;
+  margin: var(--space-md) 0 0;
+}
+
+.validation-table .validation-row {
+  cursor: pointer;
+}
+
+.validation-table .validation-row:hover {
+  background: #f8fafc;
+}
+
+.validation-table .validation-row.is-open {
+  background: #f1f5f9;
+}
+
+.validation-row-chevron {
+  width: 2rem;
+  text-align: center;
+  color: var(--color-text-muted);
+  font-size: 0.75rem;
+  transition: transform 0.15s ease;
+}
+
+.validation-row.is-open .validation-row-chevron {
+  transform: rotate(90deg);
+}
+
+.validation-expand-row > td {
+  padding: 0;
+  border-top: none;
+  background: #f8fafc;
+}
+
+.validation-panel {
+  padding: var(--space-md) var(--space-lg) var(--space-lg);
+}
+
+.validation-panel-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-md);
+}
+
+@media (max-width: 900px) {
+  .validation-panel-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.validation-message {
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: var(--space-md);
+  min-width: 0;
+}
+
+.validation-message h4 {
+  margin: 0 0 var(--space-sm);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--color-text-muted);
+}
+
+.validation-message--inbound {
+  border-left: 3px solid #94a3b8;
+}
+
+.validation-message--reply {
+  border-left: 3px solid var(--color-accent);
+}
+
+.validation-subject {
+  margin: 0 0 var(--space-sm);
+  font-size: 0.875rem;
+}
+
+.validation-message-body {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: inherit;
+  font-size: 0.9375rem;
+  line-height: 1.55;
+  max-height: none;
+  max-width: none;
+  overflow: visible;
+}
+
+.validation-panel-actions {
+  display: flex;
+  gap: var(--space-sm);
+  margin-top: var(--space-md);
+  padding-top: var(--space-md);
+  border-top: 1px solid var(--color-border);
+}
+
+.validation-panel-actions form {
+  margin: 0;
 }
 
 .validation-quote-card h4 {

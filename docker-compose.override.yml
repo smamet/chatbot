@@ -1,5 +1,6 @@
 # Merged automatically by Docker Compose (dev). Source on the host replaces image copy — no rebuild for Python changes.
 # Rebuild only when dependencies or Dockerfile change: ./sail build api
+# Start with GreenMail: ./sail up -d --profile dev
 
 services:
   api:
@@ -11,3 +12,24 @@ services:
   worker-automation:
     volumes:
       - ./src:/app/src
+
+  worker-mail:
+    volumes:
+      - ./src:/app/src
+    environment:
+      MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-30}
+    depends_on:
+      greenmail:
+        condition: service_started
+        required: false
+
+  greenmail:
+    profiles: [dev]
+    image: greenmail/standalone:2.1.8
+    ports:
+      - "127.0.0.1:3025:3025"
+      - "127.0.0.1:3143:3143"
+      - "127.0.0.1:3993:3993"
+      - "127.0.0.1:8081:8080"
+    environment:
+      GREENMAIL_OPTS: "-Dgreenmail.setup.test.all -Dgreenmail.hostname=0.0.0.0 -Dgreenmail.users=bot@test.local:secret"

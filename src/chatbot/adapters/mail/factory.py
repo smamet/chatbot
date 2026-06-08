@@ -3,7 +3,7 @@ from __future__ import annotations
 from chatbot.adapters.mail.mailgun_sender import MailgunEmailSender
 from chatbot.adapters.mail.mailjet_sender import MailjetEmailSender
 from chatbot.adapters.mail.protocol import EmailSender
-from chatbot.adapters.mail.smtp_sender import EmailSendError, SmtpEmailSender
+from chatbot.adapters.mail.smtp_sender import EmailSendError, SmtpEmailSender, _parse_use_tls
 from chatbot.domain.models.connector_schema import EmailOutboundProvider, resolve_email_outbound_provider
 
 
@@ -28,6 +28,7 @@ def build_email_sender(config: dict) -> EmailSender:
             port=port,
             username=str(config.get("smtp_username", "")).strip(),
             password=str(config.get("smtp_password", "")).strip(),
+            use_tls=_parse_use_tls(config.get("smtp_use_tls"), default=True),
         )
     if provider == EmailOutboundProvider.MAILJET.value:
         return MailjetEmailSender(

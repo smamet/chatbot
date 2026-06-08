@@ -4,6 +4,7 @@ import io
 import json
 import zipfile
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -454,3 +455,154 @@ def test_quickbooks_connect_requires_saved_config(dashboard_env) -> None:
         follow_redirects=False,
     )
     assert r.status_code == 400
+
+
+def _upsert_email_connectors(client: TestClient, slug: str) -> None:
+    client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "direction": "in",
+            "type": "email",
+            "mode": "validation",
+            "active": "on",
+            "imap_host": "greenmail",
+            "imap_port": "3143",
+            "username": "bot@test.local",
+            "password": "secret",
+        },
+        follow_redirects=False,
+    )
+    client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "direction": "out",
+            "type": "email",
+            "mode": "validation",
+            "active": "on",
+            "outbound_provider": "smtp",
+            "from_addr": "bot@test.local",
+            "smtp_host": "greenmail",
+            "smtp_port": "3025",
+            "smtp_use_tls": "",
+        },
+        follow_redirects=False,
+    )
+
+
+def test_email_test_tab_hidden_without_dev_mode(dashboard_env, monkeypatch) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    monkeypatch.setenv("DEV_MODE", "false")
+    reset_settings_cache_for_tests()
+    with factory() as session:
+        SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"imap_host": "greenmail", "username": "bot@test.local", "password": "s"},
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}")
+    assert r.status_code == 200
+    assert "Test email" not in r.text
+
+
+def test_email_test_tab_visible_in_dev_mode(dashboard_env, monkeypatch) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    monkeypatch.setenv("DEV_MODE", "true")
+    reset_settings_cache_for_tests()
+    with factory() as session:
+        SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"imap_host": "greenmail", "username": "bot@test.local", "password": "s"},
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=email-test")
+    assert r.status_code == 200
+    assert "Test email" in r.text
+    assert "email-test.js" in r.text
+
+
+def test_email_test_send_forbidden_without_dev_mode(dashboard_env, monkeypatch) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    monkeypatch.setenv("DEV_MODE", "false")
+    reset_settings_cache_for_tests()
+    with factory() as session:
+        SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"imap_host": "greenmail", "username": "bot@test.local", "password": "s"},
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/email-test/send",
+        data={"from_addr": "client@example.com", "subject": "Hi", "body": "Test"},
+    )
+    assert r.status_code == 403
+
+
+@patch("chatbot.interfaces.api.routers.dashboard_web.inject_test_email")
+def test_email_test_send_ok(mock_inject, dashboard_env, monkeypatch) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    monkeypatch.setenv("DEV_MODE", "true")
+    reset_settings_cache_for_tests()
+    with factory() as session:
+        SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"imap_host": "greenmail", "username": "bot@test.local", "password": "s"},
+        )
+        SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={
+                "outbound_provider": "smtp",
+                "smtp_host": "greenmail",
+                "smtp_port": "3025",
+                "from_addr": "bot@test.local",
+            },
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/email-test/send",
+        data={"from_addr": "client@example.com", "subject": "Hi", "body": "Test body"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    mock_inject.assert_called_once()
+
+
+@patch("chatbot.interfaces.api.routers.dashboard_web.poll_tenant_now")
+def test_email_test_poll_ok(mock_poll, dashboard_env, monkeypatch) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    monkeypatch.setenv("DEV_MODE", "true")
+    reset_settings_cache_for_tests()
+    mock_poll.return_value = 2
+    with factory() as session:
+        SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"imap_host": "greenmail", "username": "bot@test.local", "password": "s"},
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.post(f"/dashboard/bots/{slug}/email-test/poll")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["processed_mails"] == 2

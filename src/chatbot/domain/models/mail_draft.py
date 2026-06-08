@@ -1,0 +1,26 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import datetime
+from enum import StrEnum
+
+
+class MailDraftStatus(StrEnum):
+    PENDING = "pending"
+    PROCESSED = "processed"
+    FAILED = "failed"
+
+
+@dataclass(frozen=True, slots=True)
+class MailDraft:
+    id: int
+    tenant_id: int
+    imap_uid: str
+    from_addr: str
+    to_addr: str
+    subject: str
+    body_in: str
+    draft_reply: str
+    status: MailDraftStatus
+    created_at: datetime
+    updated_at: datetime

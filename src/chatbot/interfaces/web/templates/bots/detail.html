@@ -20,6 +20,9 @@
   {% endif %}
   <a href="?tab=history" class="{% if tab=='history' %}active{% endif %}">History</a>
   <a href="?tab=chat" class="{% if tab=='chat' %}active{% endif %}">Test chat</a>
+  {% if show_email_test_tab %}
+  <a href="?tab=email-test" class="{% if tab=='email-test' %}active{% endif %}">Test email</a>
+  {% endif %}
   <a href="?tab=hooks" class="{% if tab=='hooks' %}active{% endif %}">Hooks</a>
 </nav>
 
@@ -343,6 +346,9 @@
       <div id="connector-fields" class="form-grid connector-fields"></div>
       <script type="application/json" id="connector-schemas-data">{{ connector_schemas_json|safe }}</script>
       <div class="form-actions">
+        {% if dev_mode and can_edit %}
+        <button type="button" class="btn-secondary" id="greenmail-autofill" hidden>Fill GreenMail (dev)</button>
+        {% endif %}
         <button type="submit" class="btn-primary" data-loading="Saving…">Save connector</button>
       </div>
     </form>
@@ -370,6 +376,23 @@
           instagram: { in: 'Meta webhook', out: 'Instagram user' },
           email: { in: 'IMAP inbox', out: 'Email recipient (SMTP / Mailjet / Mailgun)' },
         };
+        const GREENMAIL_IN = {
+          imap_host: 'greenmail',
+          imap_port: '3143',
+          username: 'bot@test.local',
+          password: 'secret',
+        };
+        const GREENMAIL_OUT = {
+          outbound_provider: 'smtp',
+          from_addr: 'bot@test.local',
+          default_subject: 'Reply from support',
+          smtp_host: 'greenmail',
+          smtp_port: '3025',
+          smtp_username: 'bot@test.local',
+          smtp_password: 'secret',
+          smtp_use_tls: false,
+        };
+        const greenmailBtn = document.getElementById('greenmail-autofill');
 
         function getDirection() {
           return dirInput.value === 'out' ? 'out' : 'in';
@@ -435,7 +458,19 @@
               document.createTextNode(field.label + (field.required ? ' *' : ''))
             );
             let control;
-            if (field.input_type === 'select' && field.options) {
+            if (field.input_type === 'checkbox') {
+              const row = document.createElement('div');
+              row.className = 'checkbox-row';
+              control = document.createElement('input');
+              control.type = 'checkbox';
+              control.name = field.key;
+              row.appendChild(control);
+              const hint = document.createElement('span');
+              hint.className = 'field-hint';
+              hint.textContent = field.help || '';
+              row.appendChild(hint);
+              label.appendChild(row);
+            } else if (field.input_type === 'select' && field.options) {
               control = document.createElement('select');
               for (const opt of field.options) {
                 const option = document.createElement('option');
@@ -454,19 +489,63 @@
               control.type = field.input_type || 'text';
               control.placeholder = field.placeholder || '';
             }
-            control.name = field.key;
+            if (field.input_type !== 'checkbox') {
+              control.name = field.key;
+            }
             control.title = field.help || '';
             if (field.required) control.required = true;
             if (field.key === 'outbound_provider') {
               control.addEventListener('change', renderFields);
             }
-            label.appendChild(control);
-            const hint = document.createElement('small');
-            hint.className = 'field-hint';
-            hint.textContent = field.help || '';
-            label.appendChild(hint);
+            if (field.input_type !== 'checkbox') {
+              label.appendChild(control);
+              const hint = document.createElement('small');
+              hint.className = 'field-hint';
+              hint.textContent = field.help || '';
+              label.appendChild(hint);
+            }
             container.appendChild(label);
           }
+          updateGreenmailButton();
+        }
+
+        function setFieldValue(name, value) {
+          const el = form.querySelector('[name="' + name + '"]');
+          if (!el) return;
+          if (el.type === 'checkbox') {
+            el.checked = !!value;
+          } else {
+            el.value = value;
+          }
+        }
+
+        function updateGreenmailButton() {
+          if (!greenmailBtn) return;
+          const show = typeSel.value === 'email';
+          greenmailBtn.hidden = !show;
+          const direction = getDirection();
+          greenmailBtn.textContent =
+            direction === 'in' ? 'Fill GreenMail IMAP (dev)' : 'Fill GreenMail SMTP (dev)';
+        }
+
+        function fillGreenmail() {
+          typeSel.value = 'email';
+          const direction = getDirection();
+          if (direction === 'out') {
+            renderFields();
+            setFieldValue('outbound_provider', 'smtp');
+            renderFields();
+            modeSel.value = 'validation';
+          } else {
+            renderFields();
+          }
+          const preset = direction === 'in' ? GREENMAIL_IN : GREENMAIL_OUT;
+          Object.entries(preset).forEach(([key, value]) => setFieldValue(key, value));
+          document.getElementById('conn-active').checked = true;
+        }
+
+        if (greenmailBtn) {
+          greenmailBtn.addEventListener('click', fillGreenmail);
         }
 
         dirTabs.forEach((tab) => {
@@ -478,6 +557,7 @@
         });
         updateFlowDiagram(typeSel.value, getDirection());
         renderFields();
+        updateGreenmailButton();
       })();
     </script>
   </div>
@@ -737,30 +817,49 @@
 {% elif tab == 'validation' %}
 <div class="card">
   <h2 class="card-title">Pending replies {{ help_tip("Quote replies are held until you approve. ERPNext records are created only when you click Approve. Check product matches before sending.") }}</h2>
-  <p class="text-muted">Replies queued because an outbound connector is in <strong>validation</strong> mode, or because the bot emitted a quote hook. Approve to send to the customer, or reject to discard.</p>
+  <p class="text-muted">Replies queued because an outbound connector is in <strong>validation</strong> mode, or because the bot emitted a quote hook. Click a row to read the customer message and proposed reply. Approve to send, or reject to discard.</p>
   {% if request.session.get('validation_error') %}
   <p class="validation-error">{{ request.session.pop('validation_error') }}</p>
   {% endif %}
 </div>
 <div class="table-wrap">
-  <table class="data-table">
-    <thead><tr><th>ID</th><th>Kind</th><th>Channel</th><th>Session</th><th>Recipient</th><th>Created</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+  <table class="data-table validation-table">
+    <thead><tr><th>ID</th><th>Kind</th><th>Channel</th><th>Session</th><th>Recipient</th><th>Created</th><th></th></tr></thead>
     <tbody>
     {% for item in pending_replies_ui %}
     {% set r = item.reply %}
-    <tr>
+    {% if not item.is_quote %}
+    <tr class="validation-row" data-panel="validation-panel-{{ r.id }}" tabindex="0" role="button" aria-expanded="false" aria-controls="validation-panel-{{ r.id }}">
       <td>{{ r.id }}</td>
-      <td><code>{% if item.is_quote %}quote{% else %}reply{% endif %}</code></td>
+      <td><code>reply</code></td>
       <td><code>{{ r.channel }}</code></td>
       <td><code>{{ r.session_id }}</code></td>
       <td><code>{{ r.recipient_id }}</code></td>
       <td class="text-muted">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}</td>
-      {% if can_edit and not item.is_quote %}
-      <td class="actions">
-        <details class="validation-reply-details">
-          <summary>Review</summary>
-          <div class="validation-reply-body">
-            <pre class="draft-preview">{{ r.draft_text }}</pre>
+      <td class="validation-row-chevron" aria-hidden="true">▶</td>
+    </tr>
+    <tr id="validation-panel-{{ r.id }}" class="validation-expand-row" hidden>
+      <td colspan="7">
+        <div class="validation-panel">
+          <div class="validation-panel-grid">
+            <section class="validation-message validation-message--inbound">
+              <h4>Customer message</h4>
+              {% if item.inbound_subject %}
+              <p class="validation-subject"><strong>Subject:</strong> {{ item.inbound_subject }}</p>
+              {% endif %}
+              {% if item.inbound_text %}
+              <pre class="validation-message-body">{{ item.inbound_text }}</pre>
+              {% else %}
+              <p class="text-muted">No inbound message found for this reply.</p>
+              {% endif %}
+            </section>
+            <section class="validation-message validation-message--reply">
+              <h4>Proposed reply</h4>
+              <pre class="validation-message-body">{{ r.draft_text }}</pre>
+            </section>
+          </div>
+          {% if can_edit %}
+          <div class="validation-panel-actions">
             <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/approve">
               <button type="submit" class="btn-primary btn-sm" data-loading="Sending…">Approve</button>
             </form>
@@ -768,19 +867,42 @@
               <button type="submit" class="btn-secondary btn-sm">Reject</button>
             </form>
           </div>
-        </details>
+          {% endif %}
+        </div>
       </td>
-      {% elif can_edit %}
-      <td></td>
-      {% endif %}
     </tr>
-    {% if item.is_quote %}
-    <tr class="validation-quote-row">
-      <td colspan="{% if can_edit %}7{% else %}6{% endif %}">
+    {% else %}
+    <tr class="validation-row validation-row--quote" data-panel="validation-panel-{{ r.id }}" tabindex="0" role="button" aria-expanded="false" aria-controls="validation-panel-{{ r.id }}">
+      <td>{{ r.id }}</td>
+      <td><code>quote</code></td>
+      <td><code>{{ r.channel }}</code></td>
+      <td><code>{{ r.session_id }}</code></td>
+      <td><code>{{ r.recipient_id }}</code></td>
+      <td class="text-muted">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}</td>
+      <td class="validation-row-chevron" aria-hidden="true">▶</td>
+    </tr>
+    <tr id="validation-panel-{{ r.id }}" class="validation-expand-row" hidden>
+      <td colspan="7">
+        <div class="validation-panel">
+          <div class="validation-panel-grid">
+            <section class="validation-message validation-message--inbound">
+              <h4>Customer message</h4>
+              {% if item.inbound_subject %}
+              <p class="validation-subject"><strong>Subject:</strong> {{ item.inbound_subject }}</p>
+              {% endif %}
+              {% if item.inbound_text %}
+              <pre class="validation-message-body">{{ item.inbound_text }}</pre>
+              {% else %}
+              <p class="text-muted">No inbound message found for this reply.</p>
+              {% endif %}
+            </section>
+            <section class="validation-message validation-message--reply">
+              <h4>Proposed reply</h4>
+              <pre class="validation-message-body">{{ r.draft_text }}</pre>
+            </section>
+          </div>
         <div class="validation-quote-card card card--flat">
           {% if r.fulfillment_error %}<p class="validation-error">{{ r.fulfillment_error }}</p>{% endif %}
-          <h4>Draft message</h4>
-          <pre class="draft-preview">{{ r.draft_text }}</pre>
           {% if item.resolved_lines %}
           <h4>Quote lines</h4>
           <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/approve">
@@ -831,6 +953,7 @@
           {% endif %}
           {% endif %}
         </div>
+        </div>
       </td>
     </tr>
     {% endif %}
@@ -840,6 +963,7 @@
     </tbody>
   </table>
 </div>
+<script src="/static/validation.js"></script>
 
 {% elif tab == 'history' %}
 <section class="history-layout">
@@ -889,6 +1013,27 @@
   <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
   <script src="/static/chat-test.js"></script>
+</div>
+
+{% elif tab == 'email-test' %}
+<div class="card" id="email-test-panel"
+     data-send-url="/dashboard/bots/{{ tenant.slug }}/email-test/send"
+     data-poll-url="/dashboard/bots/{{ tenant.slug }}/email-test/poll"
+     data-validation-url="/dashboard/bots/{{ tenant.slug }}?tab=validation"
+     data-poll-hint="{{ mail_poll_seconds }}">
+  <h2 class="card-title">Test email (dev)</h2>
+  <p class="text-muted">Inject a client email into the bot inbox via SMTP (GreenMail in local dev). Unlike Test chat, this flow is asynchronous: the mail worker polls every ~{{ mail_poll_seconds }}s, then replies appear in Validation.</p>
+  <form id="email-test-form">
+    <label>From (simulated client)<input type="email" name="from_addr" id="email-test-from" value="client@example.com" required></label>
+    <label>Subject<input type="text" name="subject" id="email-test-subject" value="Test devis"></label>
+    <label>Body<textarea name="body" id="email-test-body" rows="5" placeholder="Bonjour, je voudrais un devis…" required></textarea></label>
+    <div class="form-actions form-actions--compact">
+      <button type="submit" class="btn-primary" id="email-test-send">Send to inbox</button>
+      <button type="button" class="btn-secondary" id="email-test-poll">Process now</button>
+    </div>
+  </form>
+  <p id="email-test-status" class="text-muted" style="margin-top:1rem" hidden></p>
+  <script src="/static/email-test.js"></script>
 </div>
 
 {% elif tab == 'hooks' %}

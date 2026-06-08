@@ -214,6 +214,14 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
             providers=(EmailOutboundProvider.SMTP.value,),
         ),
         ConnectorField(
+            key="smtp_use_tls",
+            label="SMTP STARTTLS",
+            help="Enable STARTTLS (typical for port 587). Disable for local test servers such as GreenMail.",
+            input_type="checkbox",
+            directions=(ConnectorDirection.OUT.value,),
+            providers=(EmailOutboundProvider.SMTP.value,),
+        ),
+        ConnectorField(
             key="mailjet_api_key",
             label="Mailjet API key",
             help="Public API key from Mailjet account settings. Leave blank on update to keep current value.",

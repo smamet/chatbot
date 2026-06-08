@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import UTC
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -13,6 +14,7 @@ from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnecto
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
 from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
 from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
@@ -34,6 +36,12 @@ from chatbot.adapters.quickbooks.oauth import (
     exchange_code,
     sign_oauth_state,
     verify_oauth_state,
+)
+from chatbot.application.email_test_service import (
+    EmailTestError,
+    get_email_test_connectors,
+    inject_test_email,
+    poll_tenant_now,
 )
 from chatbot.application.integration_test_service import run_integration_test
 from chatbot.application.integration_service import IntegrationService
@@ -170,15 +178,39 @@ def _automation_modules_for_ui(integrations: list[Integration]) -> list[dict]:
     return rows
 
 
-def _pending_replies_for_ui(pending: list) -> list[dict]:
+def _inbound_for_pending_reply(session: Session, tenant_id: int, reply) -> dict[str, str]:
+    subject = ""
+    text = ""
+    channel = (reply.channel or "").lower()
+    if channel == "email":
+        from_addr = (reply.recipient_id or reply.session_id.removeprefix("email:")).strip().lower()
+        draft = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).find_by_reply(
+            from_addr, reply.draft_text
+        )
+        if draft:
+            return {"subject": draft.subject, "text": draft.body_in}
+    conv = SqlAlchemyConversationRepository(session, tenant_id)
+    before = reply.created_at
+    if before.tzinfo is None:
+        before = before.replace(tzinfo=UTC)
+    user_msg = conv.last_user_message_before(reply.session_id, before)
+    if user_msg:
+        text = user_msg
+    return {"subject": subject, "text": text}
+
+
+def _pending_replies_for_ui(session: Session, tenant_id: int, pending: list) -> list[dict]:
     out: list[dict] = []
     for reply in pending:
         resolved = resolved_lines_from_json(reply.quote_resolved_json)
+        inbound = _inbound_for_pending_reply(session, tenant_id, reply)
         out.append(
             {
                 "reply": reply,
                 "resolved_lines": resolved,
                 "is_quote": reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE,
+                "inbound_subject": inbound["subject"],
+                "inbound_text": inbound["text"],
             }
         )
     return out
@@ -263,7 +295,11 @@ def _connector_config_from_form(
     )
     secrets = secret_connector_keys()
     raw = {field.key: fields.get(field.key, "").strip() for field in schema_fields}
-    return {key: value for key, value in raw.items() if value or key not in secrets}
+    cfg = {key: value for key, value in raw.items() if value or key not in secrets}
+    for field in schema_fields:
+        if field.input_type == "checkbox":
+            cfg[field.key] = fields.get(field.key, "") == "on"
+    return cfg
 
 
 def _list_documents(settings: Settings, slug: str) -> list[str]:
@@ -291,6 +327,18 @@ def _run_dashboard_chat(
 
 class ChatTestSendOut(BaseModel):
     reply: str
+
+
+class EmailTestSendOut(BaseModel):
+    ok: bool
+    message: str
+    poll_hint_seconds: int
+
+
+class EmailTestPollOut(BaseModel):
+    ok: bool
+    processed_mails: int
+    message: str
 
 
 @router.get("/bots", response_class=HTMLResponse)
@@ -658,6 +706,21 @@ def bot_detail(
         ),
         "erpnext_integration_active": IntegrationType.ERPNEXT.value
         in _active_integration_types(integrations),
+        "has_email_in_connector": any(
+            c.type == ConnectorType.EMAIL
+            and c.direction == ConnectorDirection.IN
+            and c.active
+            for c in connectors
+        ),
+        "show_email_test_tab": settings.dev_mode
+        and any(
+            c.type == ConnectorType.EMAIL
+            and c.direction == ConnectorDirection.IN
+            and c.active
+            for c in connectors
+        ),
+        "dev_mode": settings.dev_mode,
+        "mail_poll_seconds": settings.mail_poll_seconds,
     }
     if tab == "documents":
         ctx["documents"] = _list_documents(settings, slug)
@@ -679,7 +742,7 @@ def bot_detail(
         )
     elif tab == "validation":
         ctx["pending_replies"] = pending_repo.list_pending(tenant.id)
-        ctx["pending_replies_ui"] = _pending_replies_for_ui(ctx["pending_replies"])
+        ctx["pending_replies_ui"] = _pending_replies_for_ui(session, tenant.id, ctx["pending_replies"])
         ctx["fulfillment_kind_quote"] = FulfillmentKind.ERPNEXT_QUOTE.value
     elif tab == "integrations":
         by_type = {i.type.value: i for i in integrations}
@@ -1027,6 +1090,9 @@ async def save_connector(
     field_values = {
         field.key: str(form.get(field.key, "")).strip() for field in schema_fields
     }
+    for field in schema_fields:
+        if field.input_type == "checkbox":
+            field_values[field.key] = "on" if form.get(field.key) == "on" else ""
     incoming = _connector_config_from_form(
         connector_type, direction, field_values, outbound_provider=outbound_provider
     )
@@ -1468,6 +1534,74 @@ def bot_chat_test_send(
     except Exception as exc:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+def _require_dev_email_test(settings: Settings) -> None:
+    if not settings.dev_mode:
+        raise HTTPException(status_code=403, detail="Email test is only available in DEV_MODE")
+
+
+@router.post("/bots/{slug}/email-test/send", response_model=EmailTestSendOut)
+def bot_email_test_send(
+    slug: str,
+    from_addr: str = Form("client@example.com"),
+    subject: str = Form("Test email"),
+    body: str = Form(...),
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+) -> EmailTestSendOut:
+    _require_dev_email_test(settings)
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    try:
+        config_in, config_out = get_email_test_connectors(session, tenant.id)
+        inject_test_email(
+            config_in,
+            config_out,
+            from_addr=from_addr,
+            subject=subject,
+            body=body,
+        )
+    except EmailTestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    hint = max(1, settings.mail_poll_seconds)
+    return EmailTestSendOut(
+        ok=True,
+        message="Mail injected into inbox. Use Process now or wait for the mail worker poll.",
+        poll_hint_seconds=hint,
+    )
+
+
+@router.post("/bots/{slug}/email-test/poll", response_model=EmailTestPollOut)
+def bot_email_test_poll(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+) -> EmailTestPollOut:
+    _require_dev_email_test(settings)
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    factory = request.app.state.session_factory
+    try:
+        processed = poll_tenant_now(factory, settings, tenant)
+    except EmailTestError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+    msg = (
+        f"Processed {processed} mail(s)."
+        if processed
+        else "No new mail to process."
+    )
+    return EmailTestPollOut(ok=True, processed_mails=processed, message=msg)
 
 
 @router.get("/bots/{slug}/export")

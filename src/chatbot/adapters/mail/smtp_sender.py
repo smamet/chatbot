@@ -10,6 +10,14 @@ class EmailSendError(RuntimeError):
     pass
 
 
+def _parse_use_tls(config_value: object, *, default: bool = True) -> bool:
+    if config_value is None or config_value == "":
+        return default
+    if isinstance(config_value, bool):
+        return config_value
+    return str(config_value).strip().lower() in ("1", "true", "on", "yes")
+
+
 class SmtpEmailSender:
     def __init__(
         self,
@@ -18,11 +26,13 @@ class SmtpEmailSender:
         port: int,
         username: str,
         password: str,
+        use_tls: bool = True,
     ) -> None:
         self._host = host
         self._port = port
         self._username = username
         self._password = password
+        self._use_tls = use_tls
 
     def send(self, message: EmailMessage) -> None:
         msg = StdEmailMessage()
@@ -42,7 +52,8 @@ class SmtpEmailSender:
             msg.set_content(message.body_text)
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
-                smtp.starttls()
+                if self._use_tls:
+                    smtp.starttls()
                 if self._username:
                     smtp.login(self._username, self._password)
                 smtp.send_message(msg)

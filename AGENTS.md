@@ -5,7 +5,7 @@
 - **Hexagonal layout**: `domain/` (models + contracts), `application/` (use cases), `adapters/` (SQLAlchemy, LanceDB, Gemini), `interfaces/` (FastAPI, web dashboard, workers).
 - **Multi-tenant**: every row scoped by `tenant_id`; LanceDB under `data/lancedb/{slug}/`.
 - **Auth**: `POST /c/{slug}/chat` with `Authorization: Bearer <tenant_token>` (token must match slug). Admin API: `ADMIN_TOKEN`. Dashboard: session cookie (`/auth/login`).
-- **Hooks**: LLM appends global marker `===HOOK===` + JSON → `hook_events` → `worker-automation` dispatches **automation modules** (`core.orders` → local DB; `erpnext.quote` → validation queue + ERPNext on approve). Module list per bot in `config_json.automation_modules`. Run `./sail migrate` after pull for `005_pending_reply_quotes`.
+- **Hooks**: LLM appends global marker `===HOOK===` + JSON → `hook_events` → `worker-automation` dispatches **automation modules** (`core.orders` → local DB; `erpnext.quote` → validation queue + ERPNext on approve). Module list per bot in `config_json.automation_modules`. Run `./sail migrate` after pull for `006_mail_drafts_uid_unique`.
 - **Connectors**: per-tenant channel creds in `connectors.config_enc` (Fernet via `APP_SECRET_KEY`).
 
 ## Docker (Sail)
@@ -20,9 +20,11 @@
 ./sail shell
 ```
 
-Compose services: `db` (MySQL), `api`, `worker-automation`, `caddy`. Root `.env` is loaded via `env_file`; `DATABASE_URL` is overridden to MySQL inside containers.
+Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `caddy`. Root `.env` is loaded via `env_file`; `DATABASE_URL` is overridden to MySQL inside containers.
 
-**Dev:** `docker-compose.override.yml` bind-mounts `./src` — edit Python without `./sail build`. API runs with `--reload`. Rebuild only after dependency/Dockerfile changes. Restart worker after automation code changes: `./sail restart worker-automation`.
+**Dev:** `docker-compose.override.yml` bind-mounts `./src` — edit Python without `./sail build`. API runs with `--reload`. Rebuild only after dependency/Dockerfile changes. Restart workers after code changes: `./sail restart worker-automation` / `./sail restart worker-mail`.
+
+**Email dev (GreenMail):** `./sail up -d --profile dev` starts GreenMail (UI http://127.0.0.1:8081, SMTP 3025, IMAP 3143). See [docs/dev/greenmail.md](docs/dev/greenmail.md). Dashboard **Test email** tab requires `DEV_MODE=true`.
 
 ## Common tasks
 
@@ -40,6 +42,7 @@ pip install -e ".[dev]"
 mkdir -p data
 uvicorn chatbot.interfaces.api.main:app --reload
 python -m chatbot.interfaces.worker_automation
+python -m chatbot.interfaces.worker_mail
 ```
 
 Dashboard: http://127.0.0.1:8000/auth/login
@@ -69,7 +72,7 @@ pytest
 # ./sail test
 ```
 
-Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`.
+Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`.
 
 ## Environment (`.env`)
 

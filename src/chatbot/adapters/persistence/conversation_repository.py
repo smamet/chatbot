@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.orm import Session
 
@@ -42,6 +44,20 @@ class SqlAlchemyConversationRepository:
                 role = MessageRole.USER
             out.append(ChatMessage(role=role, content=r.content))
         return out
+
+    def last_user_message_before(self, session_id: str, before: datetime) -> str | None:
+        stmt = (
+            select(MessageRow.content)
+            .where(
+                MessageRow.tenant_id == self._tenant_id,
+                MessageRow.session_id == session_id,
+                MessageRow.role == MessageRole.USER.value,
+                MessageRow.created_at <= before,
+            )
+            .order_by(desc(MessageRow.id))
+            .limit(1)
+        )
+        return self._session.scalar(stmt)
 
     def list_session_ids(self, *, limit: int = 100) -> list[str]:
         stmt = (

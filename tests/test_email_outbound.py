@@ -75,6 +75,7 @@ def test_email_out_fields_filtered_by_provider() -> None:
     }
     assert "outbound_provider" in smtp_keys
     assert "smtp_host" in smtp_keys
+    assert "smtp_use_tls" in smtp_keys
     assert "mailjet_api_key" not in smtp_keys
 
     mailjet_keys = {
@@ -124,6 +125,19 @@ def test_dispatch_channel_reply_email(mock_send) -> None:
         body="Draft body",
         attachments=None,
     )
+
+
+def test_build_email_sender_smtp_no_tls() -> None:
+    sender = build_email_sender(
+        {
+            "outbound_provider": "smtp",
+            "smtp_host": "greenmail",
+            "smtp_port": "3025",
+            "smtp_use_tls": "false",
+        }
+    )
+    assert isinstance(sender, SmtpEmailSender)
+    assert sender._use_tls is False
 
 
 @patch("chatbot.adapters.mail.mailjet_sender.httpx.Client")
