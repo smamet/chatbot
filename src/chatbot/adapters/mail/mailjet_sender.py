@@ -14,16 +14,15 @@ class MailjetEmailSender:
         self._api_secret = api_secret
 
     def send(self, message: EmailMessage) -> None:
-        payload = {
-            "Messages": [
-                {
-                    "From": {"Email": message.from_addr},
-                    "To": [{"Email": message.to_addr}],
-                    "Subject": message.subject,
-                    "TextPart": message.body_text,
-                }
-            ]
+        msg_payload: dict = {
+            "From": {"Email": message.from_addr},
+            "To": [{"Email": message.to_addr}],
+            "Subject": message.subject,
+            "TextPart": message.body_text,
         }
+        if message.body_html:
+            msg_payload["HTMLPart"] = message.body_html
+        payload = {"Messages": [msg_payload]}
         try:
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(

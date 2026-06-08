@@ -99,7 +99,7 @@ def test_send_email_reply_uses_factory(mock_build) -> None:
             "default_subject": "Support reply",
         },
         to_addr="client@example.com",
-        body="Hello",
+        body="Hello **world**",
     )
     mock_sender.send.assert_called_once()
     msg = mock_sender.send.call_args[0][0]
@@ -107,7 +107,9 @@ def test_send_email_reply_uses_factory(mock_build) -> None:
     assert msg.to_addr == "client@example.com"
     assert msg.from_addr == "bot@example.com"
     assert msg.subject == "Support reply"
-    assert msg.body_text == "Hello"
+    assert msg.body_text == "Hello world"
+    assert msg.body_html is not None
+    assert "<strong>world</strong>" in msg.body_html
 
 
 @patch("chatbot.application.channel_outbound.send_email_reply")

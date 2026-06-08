@@ -25,6 +25,8 @@ class MailgunEmailSender:
             "subject": message.subject,
             "text": message.body_text,
         }
+        if message.body_html:
+            data["html"] = message.body_html
         try:
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(

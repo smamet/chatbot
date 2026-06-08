@@ -16,4 +16,5 @@ class EmailMessage:
     subject: str
     body_text: str
     from_addr: str
+    body_html: str | None = None
     attachments: tuple[EmailAttachment, ...] = field(default_factory=tuple)

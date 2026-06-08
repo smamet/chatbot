@@ -43,12 +43,19 @@ def test_smtp_sender_no_tls(mock_smtp_cls) -> None:
         EmailMessage(
             to_addr="bot@test.local",
             subject="Hi",
-            body_text="Body",
+            body_text="Plain body",
+            body_html="<p>HTML body</p>",
             from_addr="client@example.com",
         )
     )
     mock_smtp.starttls.assert_not_called()
     mock_smtp.send_message.assert_called_once()
+    sent = mock_smtp.send_message.call_args[0][0]
+    assert sent.get_content_type() == "multipart/alternative"
+    parts = list(sent.walk())
+    payloads = {p.get_content_type(): p.get_content() for p in parts if not p.is_multipart()}
+    assert payloads["text/plain"].strip() == "Plain body"
+    assert payloads["text/html"].strip() == "<p>HTML body</p>"
 
 
 @patch("chatbot.adapters.mail.smtp_sender.smtplib.SMTP")

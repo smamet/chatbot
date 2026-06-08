@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from chatbot.adapters.mail.body_format import format_email_bodies
 from chatbot.adapters.mail.factory import build_email_sender
 from chatbot.adapters.mail.smtp_sender import EmailSendError
 from chatbot.adapters.mail.types import EmailAttachment, EmailMessage
@@ -25,12 +26,14 @@ def send_email_reply(
         EmailAttachment(filename=a.filename, data=a.data, mime_type=a.mime_type)
         for a in (attachments or [])
     )
+    body_text, body_html = format_email_bodies(body)
     sender = build_email_sender(config)
     sender.send(
         EmailMessage(
             to_addr=to,
             subject=resolved_subject,
-            body_text=body,
+            body_text=body_text,
+            body_html=body_html,
             from_addr=from_addr,
             attachments=email_attachments,
         )
