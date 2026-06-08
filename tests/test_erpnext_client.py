@@ -331,6 +331,36 @@ def test_get_current_item_prices_uses_price_list_then_standard_rate() -> None:
     assert prices["G-1"]["source"] == "standard_rate"
 
 
+def test_get_current_item_prices_skips_zero_and_falls_back_to_standard_rate() -> None:
+    client = ErpNextClient(_config())
+
+    def fake_get(path: str, *, params: dict | None = None) -> dict:
+        if path.endswith("/Customer/Alice%20Corp"):
+            return {"data": {"name": "Alice Corp", "default_price_list": "Standard Selling"}}
+        if params and "Item Price" in path:
+            return {
+                "data": [
+                    {"item_code": "ZERO-PL", "price_list_rate": 0, "uom": "Nos"},
+                    {"item_code": "MISSING", "price_list_rate": 0, "uom": "Nos"},
+                ]
+            }
+        if params and "Item" in path:
+            return {
+                "data": [
+                    {"item_code": "ZERO-PL", "standard_rate": 150, "stock_uom": "Nos"},
+                    {"item_code": "MISSING", "standard_rate": 0, "stock_uom": "Nos"},
+                ]
+            }
+        return {"data": []}
+
+    with patch.object(client, "_get", side_effect=fake_get):
+        prices = client.get_current_item_prices("Alice Corp", ["ZERO-PL", "MISSING", "UNKNOWN"])
+    assert prices["ZERO-PL"]["current_rate"] == 150
+    assert prices["ZERO-PL"]["source"] == "standard_rate"
+    assert "MISSING" not in prices
+    assert "UNKNOWN" not in prices
+
+
 def test_find_customer_returns_none_on_http_error() -> None:
     client = ErpNextClient(_config())
     with patch.object(client, "_get", return_value={}):

@@ -135,6 +135,19 @@ def test_format_context_includes_current_prices() -> None:
     assert "current list @55" in text
 
 
+def test_format_context_omits_current_prices_when_all_zero() -> None:
+    text = format_context(
+        CustomerContext(
+            customer_name="Alice Corp",
+            orders=[],
+            quotations=[],
+            source_label="ERPNext",
+            current_prices={"W-1": {"current_rate": 0, "uom": "Nos", "source": "price_list"}},
+        )
+    )
+    assert "Current list prices" not in text
+
+
 def test_gate_enrich_whatsapp_customer() -> None:
     client = MagicMock()
     client.find_customer.return_value = "Alice Corp"

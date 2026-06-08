@@ -121,7 +121,7 @@ def _format_products(
         code = str(item.get("item_code") or "").strip()
         if current_prices and code and code in current_prices:
             current = current_prices[code].get("current_rate")
-            if current is not None:
+            if isinstance(current, (int, float)) and current > 0:
                 chunk = f"{chunk}; current list @{current}"
         chunks.append(chunk)
     return "; ".join(chunks)
@@ -130,14 +130,15 @@ def _format_products(
 def _format_current_prices(prices: dict[str, dict[str, Any]] | None) -> list[str]:
     if not prices:
         return []
-    lines = ["Current list prices (customer price list):"]
+    lines: list[str] = []
     for code in sorted(prices):
         info = prices[code]
-        rate = info.get("current_rate", "?")
+        rate = info.get("current_rate")
+        if not isinstance(rate, (int, float)) or rate <= 0:
+            continue
         uom = info.get("uom")
         currency = info.get("currency")
-        label = code
-        chunk = f"- {label}: {rate}"
+        chunk = f"- {code}: {rate}"
         if currency:
             chunk = f"{chunk} {currency}"
         if uom:
@@ -146,7 +147,9 @@ def _format_current_prices(prices: dict[str, dict[str, Any]] | None) -> list[str
         if source == "price_list" and info.get("price_list"):
             chunk = f"{chunk} ({info['price_list']})"
         lines.append(chunk)
-    return lines
+    if not lines:
+        return []
+    return ["Current list prices (customer price list):"] + lines
 
 
 def _format_profile_section(

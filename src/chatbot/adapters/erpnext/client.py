@@ -271,10 +271,11 @@ class ErpNextClient:
             )
             for row in rows:
                 code = str(row.get("item_code", "")).strip()
-                if not code:
+                rate = _positive_rate(row.get("price_list_rate"))
+                if not code or rate is None:
                     continue
                 prices[code] = {
-                    "current_rate": row.get("price_list_rate"),
+                    "current_rate": rate,
                     "currency": row.get("currency"),
                     "uom": row.get("uom"),
                     "source": "price_list",
@@ -290,10 +291,11 @@ class ErpNextClient:
             )
             for row in rows:
                 code = str(row.get("item_code", "")).strip()
-                if not code or code in prices:
+                rate = _positive_rate(row.get("standard_rate"))
+                if not code or code in prices or rate is None:
                     continue
                 prices[code] = {
-                    "current_rate": row.get("standard_rate"),
+                    "current_rate": rate,
                     "uom": row.get("stock_uom"),
                     "source": "standard_rate",
                 }
@@ -408,6 +410,18 @@ class ErpNextClient:
                 "format": "Standard",
             },
         )
+
+
+def _positive_rate(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        rate = float(value)
+    except (TypeError, ValueError):
+        return None
+    if rate <= 0:
+        return None
+    return rate
 
 
 def _normalize_customer_profile(doc: dict[str, Any]) -> dict[str, Any]:
