@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import logging
-
 from sqlalchemy.orm import Session, sessionmaker
 
 from chatbot.adapters.mail.imap_client import IncomingMail, imap_client
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from chatbot.adapters.persistence.mail_imap_uid_repository import SqlAlchemyMailImapUidRepository
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.application.channel_outbound import get_outbound_connector
 from chatbot.application.chat_service_factory import build_chat_service_for_worker
@@ -15,10 +15,36 @@ from chatbot.application.outbound_orchestrator import queue_after_chat
 from chatbot.config.settings import Settings
 from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorType
 from chatbot.domain.models.mail_draft import MailDraftStatus
+from chatbot.mail.process_since import imap_since_date, parse_process_since, process_since_now_iso
 
 logger = logging.getLogger(__name__)
 
 _IMAP_TIMEOUT = 30
+
+
+def _ensure_process_since(session: Session, in_connector: Connector) -> Connector:
+    if parse_process_since(in_connector.config) is not None:
+        return in_connector
+    cfg = dict(in_connector.config)
+    cfg["process_since"] = process_since_now_iso()
+    repo = SqlAlchemyConnectorRepository(session)
+    updated = repo.update(in_connector.id, config=cfg)
+    session.flush()
+    return updated or in_connector
+
+
+def _uid_known(
+    uid_repo: SqlAlchemyMailImapUidRepository,
+    draft_repo: SqlAlchemyMailDraftRepository,
+    uid: str,
+) -> bool:
+    return uid_repo.exists_by_uid(uid) or draft_repo.exists_by_uid(uid)
+
+
+def _should_skip_mail(mail: IncomingMail, process_since: datetime | None) -> bool:
+    if process_since is None or mail.received_at is None:
+        return False
+    return mail.received_at < process_since
 
 
 def _process_one_mail(
@@ -29,9 +55,19 @@ def _process_one_mail(
     in_connector: Connector,
     mail: IncomingMail,
     imap_conn,
+    uid_repo: SqlAlchemyMailImapUidRepository,
 ) -> bool:
     draft_repo = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id)
-    if draft_repo.exists_by_uid(mail.uid):
+    if _uid_known(uid_repo, draft_repo, mail.uid):
+        return False
+
+    tenant = SqlAlchemyTenantRepository(session).find_by_id(tenant_id)
+    if tenant is None or not tenant.active:
+        return False
+
+    process_since = parse_process_since(in_connector.config)
+    if _should_skip_mail(mail, process_since):
+        uid_repo.record_skipped(mail.uid, received_at=mail.received_at)
         return False
 
     draft = draft_repo.create(
@@ -42,11 +78,6 @@ def _process_one_mail(
         body_in=mail.body_text,
         status=MailDraftStatus.PENDING,
     )
-
-    tenant = SqlAlchemyTenantRepository(session).find_by_id(tenant_id)
-    if tenant is None or not tenant.active:
-        draft_repo.mark_failed(draft.id, error="Tenant inactive or missing")
-        return False
 
     chat = build_chat_service_for_worker(session, settings, tenant)
     session_id = f"email:{mail.from_addr}"
@@ -68,6 +99,7 @@ def _process_one_mail(
         settings=settings,
     )
     draft_repo.mark_processed(draft.id, draft_reply=result.text)
+    uid_repo.record_processed(mail.uid, received_at=mail.received_at)
     imap_conn.mark_seen(mail.uid)
     return True
 
@@ -80,9 +112,17 @@ def _process_tenant_inbox(
     tenant_slug: str | None = None,
 ) -> int:
     draft_repo = SqlAlchemyMailDraftRepository(session, tenant_id=in_connector.tenant_id)
+    uid_repo = SqlAlchemyMailImapUidRepository(session, tenant_id=in_connector.tenant_id)
+    in_connector = _ensure_process_since(session, in_connector)
+    process_since = parse_process_since(in_connector.config)
+    since_date = imap_since_date(process_since) if process_since else None
+
+    def skip_uid(uid: str) -> bool:
+        return _uid_known(uid_repo, draft_repo, uid)
+
     processed = 0
     with imap_client(in_connector.config, timeout=_IMAP_TIMEOUT) as imap:
-        for mail in imap.fetch_pending(draft_repo.exists_by_uid):
+        for mail in imap.fetch_pending(skip_uid, since_date=since_date):
             try:
                 if _process_one_mail(
                     session,
@@ -91,9 +131,12 @@ def _process_tenant_inbox(
                     in_connector=in_connector,
                     mail=mail,
                     imap_conn=imap,
+                    uid_repo=uid_repo,
                 ):
                     session.commit()
                     processed += 1
+                else:
+                    session.commit()
             except Exception:
                 session.rollback()
                 logger.exception(

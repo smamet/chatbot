@@ -158,6 +158,16 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
             directions=(ConnectorDirection.IN.value,),
         ),
         ConnectorField(
+            key="process_since",
+            label="Process emails since",
+            help=(
+                "Only inbound emails received at or after this date/time are sent to the bot. "
+                "Older messages are ignored permanently."
+            ),
+            input_type="datetime-local",
+            directions=(ConnectorDirection.IN.value,),
+        ),
+        ConnectorField(
             key="outbound_provider",
             label="Send via",
             help="Choose one outbound delivery method. Only fields for the selected provider are shown below.",

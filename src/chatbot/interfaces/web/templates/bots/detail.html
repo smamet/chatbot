@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "macros/help_tip.html" import help_tip %}
+{% from "macros/markdown_scripts.html" import markdown_scripts %}
 {% block body %}
 <div class="page-header">
   <h1>{{ tenant.name }}</h1>
@@ -243,7 +244,7 @@
 {% elif tab == 'connectors' %}
   <div class="table-wrap">
     <table class="data-table">
-      <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Provider</th><th>Mode</th><th>Status</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+      <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Provider</th><th>Mode</th><th>Status</th><th>Since</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
       <tbody>
       {% for c in connectors %}
       <tr>
@@ -258,19 +259,32 @@
         <td>{% if c.direction.value == 'out' %}{{ c.mode.value }}{% else %}—{% endif %}</td>
         <td>{% if c.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}</td>
         <td>
+          {% if c.type.value == 'email' and c.direction.value == 'in' %}
+          {{ c.config.get('process_since')|process_since_display }}
+          {% else %}—{% endif %}
+        </td>
+        <td>
           {% if c.type in webhook_channels and c.direction.value == 'in' %}
           <code>/webhooks/{{ c.type.value }}/{{ tenant.slug }}</code>
           {% else %}—{% endif %}
         </td>
         {% if can_edit %}
         <td class="actions">
-          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/toggle"><button type="submit" class="btn-secondary btn-sm">Toggle</button></form>
-          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/delete"><button type="submit" class="btn-secondary btn-sm">Delete</button></form>
+          <button type="button" class="btn-secondary btn-sm connector-edit-btn"
+                  data-type="{{ c.type.value }}"
+                  data-direction="{{ c.direction.value }}"
+                  data-mode="{{ c.mode.value }}">Edit</button>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/toggle" class="no-loader">
+            <button type="submit" class="btn-secondary btn-sm">{% if c.active %}Deactivate{% else %}Activate{% endif %}</button>
+          </form>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/delete" class="no-loader">
+            <button type="submit" class="btn-secondary btn-sm">Delete</button>
+          </form>
         </td>
         {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="8" class="empty-state">No connectors</td></tr>
+      <tr><td colspan="9" class="empty-state">No connectors</td></tr>
       {% endfor %}
       </tbody>
     </table>
@@ -279,7 +293,7 @@
   {% if can_edit %}
   <div class="card">
     <h2 class="card-title">Add / update connector</h2>
-    <p class="text-muted">Saving updates the connector for the selected type and direction. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).</p>
+    <p class="text-muted">Use <strong>Edit</strong> on a row to load that connector below, change settings (including <strong>Process emails since</strong> for inbound email), then <strong>Save connector</strong>. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).</p>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form" data-bot-slug="{{ tenant.slug }}">
       <div class="connector-flow" id="connector-flow" aria-hidden="false">
         <div class="connector-flow__node" id="flow-source">
@@ -345,6 +359,7 @@
       </div>
       <div id="connector-fields" class="form-grid connector-fields"></div>
       <script type="application/json" id="connector-schemas-data">{{ connector_schemas_json|safe }}</script>
+      <script type="application/json" id="connector-configs-data">{{ connector_configs_json|safe }}</script>
       <div class="form-actions">
         {% if dev_mode and can_edit %}
         <button type="button" class="btn-secondary" id="greenmail-autofill" hidden>Fill GreenMail (dev)</button>
@@ -355,7 +370,9 @@
     <script>
       (function () {
         const schemas = JSON.parse(document.getElementById('connector-schemas-data').textContent);
+        const saved = JSON.parse(document.getElementById('connector-configs-data').textContent);
         const form = document.getElementById('connector-form');
+        const connActive = document.getElementById('conn-active');
         const botSlug = form.dataset.botSlug || '';
         const typeSel = document.getElementById('connector-type');
         const dirInput = document.getElementById('connector-direction');
@@ -409,6 +426,15 @@
           renderFields();
         }
 
+        function loadConnector(ctype, direction, mode) {
+          typeSel.value = ctype;
+          setDirection(direction);
+          if (direction === 'out' && mode) {
+            modeSel.value = mode;
+          }
+          form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
         function updateFlowDiagram(ctype, direction) {
           const labels = FLOW_LABELS[ctype] || { in: 'Source', out: 'Destination' };
           flowSourceText.textContent = labels.in;
@@ -436,6 +462,24 @@
             return field.providers.includes(provider);
           }
           return true;
+        }
+
+        function recordKey(ctype, direction) {
+          return ctype + ':' + direction;
+        }
+
+        function recordFor(ctype, direction) {
+          return saved[recordKey(ctype, direction)] || { active: true, mode: 'direct', config: {} };
+        }
+
+        function applySavedValues(ctype, direction) {
+          const rec = recordFor(ctype, direction);
+          const cfg = rec.config || {};
+          connActive.checked = rec.active !== false;
+          if (direction === 'out' && rec.mode) {
+            modeSel.value = rec.mode;
+          }
+          Object.entries(cfg).forEach(([key, value]) => setFieldValue(key, value));
         }
 
         function renderFields() {
@@ -488,6 +532,9 @@
               control = document.createElement('input');
               control.type = field.input_type || 'text';
               control.placeholder = field.placeholder || '';
+              if (field.input_type === 'datetime-local') {
+                control.step = '60';
+              }
             }
             if (field.input_type !== 'checkbox') {
               control.name = field.key;
@@ -506,6 +553,7 @@
             }
             container.appendChild(label);
           }
+          applySavedValues(ctype, direction);
           updateGreenmailButton();
         }
 
@@ -547,6 +595,12 @@
         if (greenmailBtn) {
           greenmailBtn.addEventListener('click', fillGreenmail);
         }
+
+        document.querySelectorAll('.connector-edit-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            loadConnector(btn.dataset.type, btn.dataset.direction, btn.dataset.mode);
+          });
+        });
 
         dirTabs.forEach((tab) => {
           tab.addEventListener('click', () => setDirection(tab.dataset.direction));
@@ -833,7 +887,7 @@
       <td>{{ r.id }}</td>
       <td><code>reply</code></td>
       <td><code>{{ r.channel }}</code></td>
-      <td><code>{{ r.session_id }}</code></td>
+      <td><code>{{ r.session_id | session_label }}</code></td>
       <td><code>{{ r.recipient_id }}</code></td>
       <td class="text-muted">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}</td>
       <td class="validation-row-chevron" aria-hidden="true">▶</td>
@@ -855,7 +909,7 @@
             </section>
             <section class="validation-message validation-message--reply">
               <h4>Proposed reply</h4>
-              <pre class="validation-message-body">{{ r.draft_text }}</pre>
+              <div class="validation-message-body msg-body js-md">{{ r.draft_text }}</div>
             </section>
           </div>
           {% if can_edit %}
@@ -876,7 +930,7 @@
       <td>{{ r.id }}</td>
       <td><code>quote</code></td>
       <td><code>{{ r.channel }}</code></td>
-      <td><code>{{ r.session_id }}</code></td>
+      <td><code>{{ r.session_id | session_label }}</code></td>
       <td><code>{{ r.recipient_id }}</code></td>
       <td class="text-muted">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}</td>
       <td class="validation-row-chevron" aria-hidden="true">▶</td>
@@ -898,7 +952,7 @@
             </section>
             <section class="validation-message validation-message--reply">
               <h4>Proposed reply</h4>
-              <pre class="validation-message-body">{{ r.draft_text }}</pre>
+              <div class="validation-message-body msg-body js-md">{{ r.draft_text }}</div>
             </section>
           </div>
         <div class="validation-quote-card card card--flat">
@@ -963,6 +1017,7 @@
     </tbody>
   </table>
 </div>
+{{ markdown_scripts() }}
 <script src="/static/validation.js"></script>
 
 {% elif tab == 'history' %}
@@ -971,7 +1026,7 @@
     <h2>Sessions</h2>
     <ul>
     {% for sid in sessions %}
-      <li><a href="?tab=history&amp;sid={{ sid|urlencode }}" {% if selected_sid == sid %}class="active"{% endif %}>{{ sid }}</a></li>
+      <li><a href="?tab=history&amp;sid={{ sid|urlencode }}" {% if selected_sid == sid %}class="active"{% endif %}>{{ sid | session_label }}</a></li>
     {% else %}
       <li class="text-muted">No sessions</li>
     {% endfor %}
@@ -979,9 +1034,9 @@
   </aside>
   <div>
     {% if selected_sid %}
-    <h2 class="card-title">Messages — {{ selected_sid }}</h2>
+    <h2 class="card-title">Messages — {{ selected_sid | session_label }}</h2>
     {% for m in history_messages %}
-    <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><pre>{{ m.content }}</pre></div>
+    <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
     {% else %}
     <p class="text-muted">No messages</p>
     {% endfor %}
@@ -990,6 +1045,7 @@
     {% endif %}
   </div>
 </section>
+{{ markdown_scripts() }}
 
 {% elif tab == 'chat' %}
 <div class="card chat-panel" id="chat-panel" data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send">
@@ -1010,8 +1066,7 @@
     </div>
   </form>
   <p class="text-muted" style="margin-top:1rem">Session: <code>{{ chat_session_id }}</code></p>
-  <script src="https://cdn.jsdelivr.net/npm/marked@15.0.7/marked.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.2.4/dist/purify.min.js"></script>
+  {{ markdown_scripts() }}
   <script src="/static/chat-test.js"></script>
 </div>
 
@@ -1046,7 +1101,7 @@
       <td>{{ h.id }}</td>
       <td><code>{{ h.type }}</code></td>
       <td><span class="badge">{{ h.status.value }}</span></td>
-      <td><code>{{ h.session_id }}</code></td>
+      <td><code>{{ h.session_id | session_label }}</code></td>
       <td class="text-muted">{{ h.error or '—' }}</td>
       <td>
         {% if can_edit and h.status.value in ('failed','done') %}

@@ -7,6 +7,7 @@ from chatbot.application.customer_access_gate import (
     CustomerContext,
     format_context,
     parse_session_identity,
+    session_display_label,
 )
 
 
@@ -26,6 +27,12 @@ def test_parse_session_identity_unknown_channel() -> None:
     email, phone = parse_session_identity("dashboard:42")
     assert email is None
     assert phone is None
+
+
+def test_session_display_label_strips_channel_prefix() -> None:
+    assert session_display_label("email:client@example.com") == "client@example.com"
+    assert session_display_label("whatsapp:33612345678") == "33612345678"
+    assert session_display_label("plain-session") == "plain-session"
 
 
 def test_format_context_includes_orders_and_quotations() -> None:

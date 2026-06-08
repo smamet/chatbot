@@ -28,6 +28,7 @@ def test_email_in_vs_out_fields() -> None:
         )
     }
     assert "imap_host" in in_keys
+    assert "process_since" in in_keys
     assert "username" in in_keys
     assert "smtp_host" not in in_keys
     assert "outbound_provider" in out_keys

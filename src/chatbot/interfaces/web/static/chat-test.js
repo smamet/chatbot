@@ -13,24 +13,8 @@
   let abortController = null;
   let loading = false;
 
-  function escapeHtml(text) {
-    return text
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;");
-  }
-
-  function renderMarkdown(text) {
-    if (typeof marked === "undefined") {
-      return `<pre>${escapeHtml(text)}</pre>`;
-    }
-    const raw = marked.parse(text, { breaks: true, gfm: true });
-    if (typeof DOMPurify !== "undefined") {
-      return DOMPurify.sanitize(raw);
-    }
-    return raw;
-  }
+  const renderMarkdown = (text) =>
+    window.ChatbotMarkdown?.renderMarkdown(text) ?? text;
 
   function scrollThread() {
     if (thread) thread.scrollTop = thread.scrollHeight;

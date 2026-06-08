@@ -47,6 +47,13 @@ def parse_session_identity(session_id: str) -> tuple[str | None, str | None]:
     return None, None
 
 
+def session_display_label(session_id: str) -> str:
+    """Human-readable session id for dashboard display (strips channel prefix)."""
+    if ":" in session_id:
+        return session_id.split(":", 1)[1]
+    return session_id
+
+
 def format_context(ctx: CustomerContext) -> str:
     lines = [f"Customer: {ctx.customer_name}", f"Source: {ctx.source_label}"]
     lines.extend(_format_profile_section("Company", ctx.company))

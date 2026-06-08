@@ -319,6 +319,9 @@ input[type="number"],
 input[type="search"],
 input[type="url"],
 input[type="tel"],
+input[type="date"],
+input[type="time"],
+input[type="datetime-local"],
 input[type="file"],
 select,
 textarea {
@@ -608,14 +611,14 @@ textarea {
 
 .validation-message-body {
   margin: 0;
-  white-space: pre-wrap;
   word-break: break-word;
+}
+
+.validation-message-body:not(.msg-body) {
+  white-space: pre-wrap;
   font-family: inherit;
   font-size: 0.9375rem;
   line-height: 1.55;
-  max-height: none;
-  max-width: none;
-  overflow: visible;
 }
 
 .validation-panel-actions {

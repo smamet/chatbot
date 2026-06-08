@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import email
+import email.utils
 import imaplib
 import re
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from email.header import decode_header
 from typing import Callable, Iterator
 
@@ -20,6 +22,7 @@ class IncomingMail:
     to_addr: str
     subject: str
     body_text: str
+    received_at: datetime | None = None
 
 
 def _decode_header_value(value: str | None) -> str:
@@ -133,6 +136,17 @@ class ImapMailClient:
         to_addr = _extract_email_address(_decode_header_value(msg.get("To")))
         subject = _decode_header_value(msg.get("Subject"))
         body = _body_text_from_message(msg)
+        received_at: datetime | None = None
+        date_header = msg.get("Date")
+        if date_header:
+            try:
+                received_at = email.utils.parsedate_to_datetime(date_header)
+                if received_at.tzinfo is None:
+                    received_at = received_at.replace(tzinfo=UTC)
+                else:
+                    received_at = received_at.astimezone(UTC)
+            except (TypeError, ValueError, OverflowError):
+                received_at = None
         if not from_addr or not body:
             return None
         return IncomingMail(
@@ -141,6 +155,7 @@ class ImapMailClient:
             to_addr=to_addr,
             subject=subject,
             body_text=body,
+            received_at=received_at,
         )
 
     def _fetch_uid(self, uid: str) -> IncomingMail | None:
@@ -151,11 +166,17 @@ class ImapMailClient:
             return None
         return self._parse_fetched_mail(uid, msg_data)
 
-    def fetch_pending(self, skip_uid: Callable[[str], bool]) -> list[IncomingMail]:
+    def fetch_pending(
+        self,
+        skip_uid: Callable[[str], bool],
+        *,
+        since_date: str | None = None,
+    ) -> list[IncomingMail]:
         """Fetch inbox messages not yet recorded (by IMAP UID), without marking read."""
         if self._conn is None:
             raise ImapError("Not connected")
-        typ, data = self._conn.uid("search", None, "ALL")
+        criteria = f'SINCE "{since_date}"' if since_date else "ALL"
+        typ, data = self._conn.uid("search", None, criteria)
         if typ != "OK" or not data or not data[0]:
             return []
         mails: list[IncomingMail] = []

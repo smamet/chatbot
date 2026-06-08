@@ -198,6 +198,22 @@ def test_admin_bot_crud(dashboard_env) -> None:
         follow_redirects=False,
     )
     assert r.status_code == 303
+    r = client.get(f"/dashboard/bots/{slug}?tab=connectors")
+    assert "inactive" in r.text
+    with factory() as session:
+        from chatbot.application.connector_service import ConnectorService
+
+        conn = ConnectorService(SqlAlchemyConnectorRepository(session)).get(conn_id)
+        assert conn is not None
+        assert conn.active is False
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/connectors/{conn_id}/toggle",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    r = client.get(f"/dashboard/bots/{slug}?tab=connectors")
+    assert 'badge on">active' in r.text or "badge on\">active" in r.text
 
     r = client.post(
         f"/dashboard/bots/{slug}/chat-test/send",
@@ -208,6 +224,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
     r = client.get(f"/dashboard/bots/{slug}?tab=chat")
     assert "echo:hello dash" in r.text
     assert "chat-test.js" in r.text
+    assert "markdown.js" in r.text
 
     r = client.post(
         f"/dashboard/bots/{slug}/chat-test/reset",
@@ -223,12 +240,23 @@ def test_admin_bot_crud(dashboard_env) -> None:
         )
 
         repo = SqlAlchemyConversationRepository(session, tenant_id)
-        repo.append_message("hist-1", ChatMessage(role=MessageRole.USER, content="x"))
+        repo.append_message(
+            "email:foo@bar.com",
+            ChatMessage(role=MessageRole.USER, content="hello"),
+        )
+        repo.append_message(
+            "email:foo@bar.com",
+            ChatMessage(role=MessageRole.ASSISTANT, content="**bold** reply"),
+        )
         session.commit()
 
-    r = client.get(f"/dashboard/bots/{slug}?tab=history&sid=hist-1")
+    r = client.get(f"/dashboard/bots/{slug}?tab=history&sid=email%3Afoo%40bar.com")
     assert r.status_code == 200
-    assert "hist-1" in r.text
+    assert "foo@bar.com" in r.text
+    assert "email:foo@bar.com" not in r.text
+    assert 'class="msg-body js-md"' in r.text
+    assert "**bold** reply" in r.text
+    assert "markdown.js" in r.text
 
 
 def test_editor_cannot_delete_bot(dashboard_env) -> None:
@@ -606,3 +634,78 @@ def test_email_test_poll_ok(mock_poll, dashboard_env, monkeypatch) -> None:
     assert r.status_code == 200
     body = r.json()
     assert body["processed_mails"] == 2
+
+
+def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={
+                "outbound_provider": "smtp",
+                "smtp_host": "greenmail",
+                "smtp_port": "3025",
+                "from_addr": "bot@test.local",
+            },
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="**Hello** client",
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=validation")
+    assert r.status_code == 200
+    assert "client@example.com" in r.text
+    assert "email:client@example.com" not in r.text
+    assert 'class="validation-message-body msg-body js-md"' in r.text
+    assert "**Hello** client" in r.text
+    assert "markdown.js" in r.text
+
+
+def test_email_in_connector_sets_process_since_on_save(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "email",
+            "direction": "in",
+            "mode": "direct",
+            "active": "on",
+            "imap_host": "imap.example.com",
+            "imap_port": "993",
+            "username": "bot@example.com",
+            "password": "secret",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with factory() as session:
+        from chatbot.application.connector_service import ConnectorService
+        from chatbot.mail.process_since import parse_process_since
+
+        conn = ConnectorService(SqlAlchemyConnectorRepository(session)).find(
+            tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.EMAIL,
+        )
+        assert conn is not None
+        assert parse_process_since(conn.config) is not None
+
+    r = client.get(f"/dashboard/bots/{slug}?tab=connectors")
+    assert "connector-configs-data" in r.text
+    assert "email:in" in r.text
+    assert "process_since" in r.text
+    assert "Deactivate" in r.text or "Activate" in r.text

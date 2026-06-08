@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -8,11 +9,15 @@ import pytest
 from chatbot.adapters.mail.imap_client import IncomingMail
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
+from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from chatbot.adapters.persistence.mail_imap_uid_repository import SqlAlchemyMailImapUidRepository
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from chatbot.application.connector_service import ConnectorService
 from chatbot.config.settings import get_settings, reset_settings_cache_for_tests
 from chatbot.application.tenant_service import TenantService
 from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
 from chatbot.mail import listener as mail_listener
+from chatbot.mail.process_since import parse_process_since
 
 
 @pytest.fixture
@@ -173,3 +178,60 @@ def test_run_once_mail_failure_continues(mock_imap_ctx, mock_build_chat, mock_qu
     n = mail_listener.run_once(factory, settings)
     assert n == 1
     imap.mark_seen.assert_called_once_with("1")
+
+
+@patch("chatbot.mail.listener.queue_after_chat")
+@patch("chatbot.mail.listener.build_chat_service_for_worker")
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_skips_mail_before_process_since(
+    mock_imap_ctx, mock_build_chat, mock_queue, mail_env
+) -> None:
+    factory, settings, tenant_id, in_id, _ = mail_env
+    with factory() as session:
+        repo = SqlAlchemyConnectorRepository(session)
+        existing = repo.find_by_id(in_id)
+        assert existing is not None
+        cfg = dict(existing.config)
+        cfg["process_since"] = "2026-06-08T12:00:00+00:00"
+        repo.update(in_id, config=cfg)
+        session.commit()
+
+    imap = MagicMock()
+    imap.fetch_pending.return_value = [
+        IncomingMail(
+            uid="old-1",
+            from_addr="client@example.com",
+            to_addr="bot@test.local",
+            subject="Old",
+            body_text="Old body",
+            received_at=datetime(2026, 6, 7, 10, 0, tzinfo=UTC),
+        )
+    ]
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+
+    n = mail_listener.run_once(factory, settings)
+    assert n == 0
+    mock_build_chat.assert_not_called()
+    mock_queue.assert_not_called()
+    imap.mark_seen.assert_not_called()
+
+    with factory() as session:
+        uid_repo = SqlAlchemyMailImapUidRepository(session, tenant_id=tenant_id)
+        draft_repo = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id)
+        assert uid_repo.exists_by_uid("old-1")
+        assert not draft_repo.exists_by_uid("old-1")
+
+
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_persists_process_since_for_existing_connector(mock_imap_ctx, mail_env) -> None:
+    factory, settings, tenant_id, in_id, _ = mail_env
+    imap = MagicMock()
+    imap.fetch_pending.return_value = []
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+
+    mail_listener.run_once(factory, settings)
+
+    with factory() as session:
+        conn = ConnectorService(SqlAlchemyConnectorRepository(session)).get(in_id)
+        assert conn is not None
+        assert parse_process_since(conn.config) is not None

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import email
+from datetime import UTC, datetime
 from email.message import EmailMessage as StdEmailMessage
+from email.utils import format_datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -109,13 +111,44 @@ def test_imap_client_fetch_unseen(mock_close, mock_connect) -> None:
     assert mails[0].body_text == "Need a quote"
 
 
-def _sample_raw_email(*, from_addr: str = "client@example.com") -> bytes:
+def _sample_raw_email(
+    *,
+    from_addr: str = "client@example.com",
+    received_at: datetime | None = None,
+) -> bytes:
     msg = StdEmailMessage()
     msg["From"] = from_addr
     msg["To"] = "bot@test.local"
     msg["Subject"] = "Quote"
+    if received_at is not None:
+        msg["Date"] = format_datetime(received_at)
     msg.set_content("Need a quote")
     return msg.as_bytes()
+
+
+@patch.object(ImapMailClient, "connect")
+@patch.object(ImapMailClient, "close")
+def test_imap_client_parses_received_at(mock_close, mock_connect) -> None:
+    client = ImapMailClient({"imap_host": "h", "imap_port": "3143", "username": "u", "password": "p"})
+    client._conn = MagicMock()
+    received = datetime(2026, 6, 8, 10, 0, tzinfo=UTC)
+    client._conn.uid.side_effect = [
+        ("OK", [b"1"]),
+        ("OK", [(b"1 (BODY[] {..}", _sample_raw_email(received_at=received))]),
+    ]
+    mails = client.fetch_pending(lambda uid: False)
+    assert len(mails) == 1
+    assert mails[0].received_at == received
+
+
+@patch.object(ImapMailClient, "connect")
+@patch.object(ImapMailClient, "close")
+def test_imap_client_fetch_pending_since_date(mock_close, mock_connect) -> None:
+    client = ImapMailClient({"imap_host": "h", "imap_port": "3143", "username": "u", "password": "p"})
+    client._conn = MagicMock()
+    client._conn.uid.return_value = ("OK", [b""])
+    client.fetch_pending(lambda uid: False, since_date="08-Jun-2026")
+    client._conn.uid.assert_called_once_with("search", None, 'SINCE "08-Jun-2026"')
 
 
 @patch.object(ImapMailClient, "connect")

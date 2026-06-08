@@ -263,3 +263,17 @@ class MailDraftRow(Base):
         onupdate=lambda: datetime.now(UTC),
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class MailImapUidRow(Base):
+    __tablename__ = "mail_imap_uids"
+    __table_args__ = (Index("uq_mail_imap_uids_tenant_imap_uid", "tenant_id", "imap_uid", unique=True),)
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    imap_uid: Mapped[str] = mapped_column(String(128), default="")
+    disposition: Mapped[str] = mapped_column(String(32), default="skipped")
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )

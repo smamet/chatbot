@@ -51,7 +51,7 @@ from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.application.user_service import UserService
 from chatbot.config.settings import Settings
 from chatbot.domain.constants import DEFAULT_HOOK_INSTRUCTIONS
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
 from chatbot.domain.models.connector_schema import (
     EmailOutboundProvider,
     connector_schemas_for_template,
@@ -70,6 +70,11 @@ from chatbot.domain.models.integration_schema import (
 from chatbot.domain.models.pending_reply import PendingReplyStatus
 from chatbot.domain.models.tenant import Tenant, TenantConfig
 from chatbot.domain.models.user import User, UserRole
+from chatbot.mail.process_since import (
+    format_for_datetime_local,
+    parse_from_form,
+    process_since_now_iso,
+)
 from chatbot.interfaces.api.deps import (
     _build_chat_service,
     get_session,
@@ -275,12 +280,38 @@ def _integration_configs_for_client(integrations: list[Integration]) -> dict[str
 
 def _merge_connector_config(existing: dict | None, incoming: dict) -> dict:
     secrets = secret_connector_keys()
+    preserve_if_empty = secrets | frozenset({"process_since"})
     base = dict(existing or {})
     for key, value in incoming.items():
-        if key in secrets and not str(value).strip():
+        if key in preserve_if_empty and not str(value).strip():
+            continue
+        if key == "process_since" and str(value).strip():
+            parsed = parse_from_form(str(value))
+            base[key] = parsed if parsed else base.get(key, "")
             continue
         base[key] = value
     return base
+
+
+def _connector_configs_for_client(connectors: list[Connector]) -> dict[str, dict]:
+    secrets = secret_connector_keys()
+    out: dict[str, dict] = {}
+    for connector in connectors:
+        key = f"{connector.type.value}:{connector.direction.value}"
+        cfg: dict = {}
+        for field_key, value in connector.config.items():
+            if field_key in secrets:
+                cfg[field_key] = ""
+            elif field_key == "process_since":
+                cfg[field_key] = format_for_datetime_local(value)
+            else:
+                cfg[field_key] = value
+        out[key] = {
+            "active": connector.active,
+            "mode": connector.mode.value,
+            "config": cfg,
+        }
+    return out
 
 
 def _connector_config_from_form(
@@ -691,6 +722,7 @@ def bot_detail(
         "webhook_channels": _WEBHOOK_CHANNELS,
         "connector_schemas": connector_schemas_for_template(),
         "connector_schemas_json": json.dumps(connector_schemas_for_template()),
+        "connector_configs_json": json.dumps(_connector_configs_for_client(connectors)),
         "integration_types": IntegrationType,
         "integration_schemas": integration_schemas_for_template(),
         "integration_meta": integration_meta_for_template(),
@@ -1099,6 +1131,9 @@ async def save_connector(
     svc = ConnectorService(SqlAlchemyConnectorRepository(session))
     existing = svc.find(tenant.id, direction=cdir, type=ctype)
     cfg = _merge_connector_config(existing.config if existing else None, incoming)
+    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.IN:
+        if not str(cfg.get("process_since", "")).strip():
+            cfg["process_since"] = process_since_now_iso()
     if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.OUT:
         cfg["outbound_provider"] = outbound_provider or EmailOutboundProvider.SMTP.value
     svc.upsert(
