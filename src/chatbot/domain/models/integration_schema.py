@@ -94,6 +94,13 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
             input_type="number",
             default="5",
         ),
+        IntegrationField(
+            key="fetch_current_prices",
+            label="Fetch current prices",
+            help="Bulk lookup of Item Price for products on recent invoices/quotes. Uses the customer's default price list; no discount rules.",
+            input_type="checkbox",
+            default="true",
+        ),
     ],
     IntegrationType.QUICKBOOKS.value: [
         IntegrationField(

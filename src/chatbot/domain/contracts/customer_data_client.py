@@ -26,5 +26,10 @@ class CustomerDataClient(Protocol):
     ) -> dict[str, Any] | None:
         """Return the matched contact person when channel identity is known."""
 
+    def get_current_item_prices(
+        self, customer: str, item_codes: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        """Return current list prices for item codes (price list + standard_rate fallback)."""
+
     def ping(self) -> None:
         """Verify credentials and API reachability."""

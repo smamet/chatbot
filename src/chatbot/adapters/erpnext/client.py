@@ -13,6 +13,7 @@ _ORDER_FIELDS = ["name", "transaction_date", "status", "grand_total", "delivery_
 _INVOICE_FIELDS = ["name", "posting_date", "status", "grand_total"]
 _QUOTATION_FIELDS = ["name", "transaction_date", "status", "grand_total", "valid_till"]
 _ITEM_FIELDS = ["item_code", "item_name", "standard_rate", "stock_uom"]
+_ITEM_PRICE_FIELDS = ["item_code", "price_list", "price_list_rate", "currency", "uom"]
 _LINE_ITEM_FIELDS = ["item_code", "item_name", "qty", "rate", "amount", "uom"]
 
 
@@ -26,6 +27,7 @@ class ErpNextClient:
         self._email_field = str(config.get("identity_email_field", "email_id")).strip() or "email_id"
         self._phone_field = str(config.get("identity_phone_field", "mobile_no")).strip() or "mobile_no"
         self._timeout = timeout
+        self._cached_contact: dict[str, Any] | None = None
 
     def _headers(self) -> dict[str, str]:
         return {"Authorization": f"token {self._api_key}:{self._api_secret}"}
@@ -97,7 +99,9 @@ class ErpNextClient:
     def find_customer(self, *, email: str | None = None, phone: str | None = None) -> str | None:
         contact = self._find_contact(email=email, phone=phone)
         if not contact:
+            self._cached_contact = None
             return None
+        self._cached_contact = contact
         return self._customer_from_contact(contact)
 
     def _get_resource(self, doctype: str, name: str) -> dict[str, Any]:
@@ -110,42 +114,66 @@ class ErpNextClient:
         return doc if isinstance(doc, dict) else {}
 
     def _find_contact(
-        self, *, email: str | None = None, phone: str | None = None
+        self,
+        *,
+        email: str | None = None,
+        phone: str | None = None,
+        customer: str | None = None,
     ) -> dict[str, Any] | None:
-        contact_name = self._find_contact_name(email=email, phone=phone)
-        if not contact_name:
+        names = self._find_contact_names(email=email, phone=phone)
+        if not names:
             return None
-        # List API omits child tables; fetch full Contact doc for `links`.
-        contact = self._get_resource("Contact", contact_name)
-        return contact or None
+        docs = [self._get_resource("Contact", name) for name in names]
+        docs = [doc for doc in docs if doc]
+        if not docs:
+            return None
+        return _pick_best_contact(docs, customer)
+
+    def _find_contact_names(
+        self, *, email: str | None = None, phone: str | None = None
+    ) -> list[str]:
+        names: list[str] = []
+        if email:
+            names.extend(self._find_contact_names_by_email(email))
+        if phone:
+            names.extend(self._find_contact_names_by_phone(phone))
+        return _dedupe_preserve_order(names)
+
+    def _find_contact_names_by_email(self, email: str) -> list[str]:
+        names: list[str] = []
+        rows = self._list_resource(
+            "Contact",
+            filters=[[self._email_field, "=", email]],
+            fields=["name"],
+            limit=20,
+        )
+        names.extend(_contact_names_from_rows(rows))
+        rows = self._list_resource(
+            "Contact",
+            filters=[["Contact Email", "email_id", "=", email]],
+            fields=["name"],
+            limit=20,
+        )
+        names.extend(_contact_names_from_rows(rows))
+        return names
+
+    def _find_contact_names_by_phone(self, phone: str) -> list[str]:
+        names: list[str] = []
+        for candidate in _phone_variants(phone):
+            rows = self._list_resource(
+                "Contact",
+                filters=[[self._phone_field, "=", candidate]],
+                fields=["name"],
+                limit=20,
+            )
+            names.extend(_contact_names_from_rows(rows))
+        return names
 
     def _find_contact_name(
         self, *, email: str | None = None, phone: str | None = None
     ) -> str | None:
-        if email:
-            rows = self._list_resource(
-                "Contact",
-                filters=[[self._email_field, "=", email]],
-                fields=["name"],
-                limit=1,
-            )
-            if rows:
-                name = str(rows[0].get("name", "")).strip()
-                if name:
-                    return name
-        if phone:
-            for candidate in _phone_variants(phone):
-                rows = self._list_resource(
-                    "Contact",
-                    filters=[[self._phone_field, "=", candidate]],
-                    fields=["name"],
-                    limit=1,
-                )
-                if rows:
-                    name = str(rows[0].get("name", "")).strip()
-                    if name:
-                        return name
-        return None
+        names = self._find_contact_names(email=email, phone=phone)
+        return names[0] if names else None
 
     def _customer_from_contact(self, contact: dict[str, Any]) -> str | None:
         links = contact.get("links")
@@ -205,14 +233,71 @@ class ErpNextClient:
         phone: str | None = None,
         customer: str,
     ) -> dict[str, Any] | None:
-        contact_doc = self._find_contact(email=email, phone=phone)
+        if self._cached_contact:
+            return _normalize_contact(self._cached_contact)
+        contact_doc = self._find_contact(email=email, phone=phone, customer=customer)
         if contact_doc:
+            self._cached_contact = contact_doc
             return _normalize_contact(contact_doc)
         customer_doc = self._get_resource("Customer", customer)
         primary = str(customer_doc.get("customer_primary_contact") or "").strip()
         if not primary:
             return None
-        return _normalize_contact(self._get_resource("Contact", primary))
+        contact_doc = self._get_resource("Contact", primary)
+        if contact_doc:
+            self._cached_contact = contact_doc
+        return _normalize_contact(contact_doc)
+
+    def get_current_item_prices(
+        self, customer: str, item_codes: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        codes = _dedupe_preserve_order(
+            [str(code).strip() for code in item_codes if str(code).strip()]
+        )
+        if not codes:
+            return {}
+        customer_doc = self._get_resource("Customer", customer)
+        price_list = str(customer_doc.get("default_price_list") or "").strip()
+        prices: dict[str, dict[str, Any]] = {}
+        if price_list:
+            rows = self._list_resource(
+                "Item Price",
+                filters=[
+                    ["item_code", "in", codes],
+                    ["price_list", "=", price_list],
+                ],
+                fields=_ITEM_PRICE_FIELDS,
+                limit=max(len(codes), 1),
+            )
+            for row in rows:
+                code = str(row.get("item_code", "")).strip()
+                if not code:
+                    continue
+                prices[code] = {
+                    "current_rate": row.get("price_list_rate"),
+                    "currency": row.get("currency"),
+                    "uom": row.get("uom"),
+                    "source": "price_list",
+                    "price_list": price_list,
+                }
+        missing = [code for code in codes if code not in prices]
+        if missing:
+            rows = self._list_resource(
+                "Item",
+                filters=[["item_code", "in", missing]],
+                fields=_ITEM_FIELDS,
+                limit=max(len(missing), 1),
+            )
+            for row in rows:
+                code = str(row.get("item_code", "")).strip()
+                if not code or code in prices:
+                    continue
+                prices[code] = {
+                    "current_rate": row.get("standard_rate"),
+                    "uom": row.get("stock_uom"),
+                    "source": "standard_rate",
+                }
+        return prices
 
     def _get_customer_address(
         self, customer: str, customer_doc: dict[str, Any]
@@ -338,6 +423,7 @@ def _normalize_customer_profile(doc: dict[str, Any]) -> dict[str, Any]:
             "email": doc.get("email_id"),
             "mobile": doc.get("mobile_no"),
             "phone": doc.get("phone"),
+            "default_price_list": doc.get("default_price_list"),
         }
     )
 
@@ -347,13 +433,14 @@ def _normalize_contact(doc: dict[str, Any]) -> dict[str, Any]:
         return {}
     first = str(doc.get("first_name") or "").strip()
     last = str(doc.get("last_name") or "").strip()
-    full_name = " ".join(part for part in (first, last) if part).strip()
+    full_name = _contact_full_name(first, last)
+    email = _contact_primary_email(doc)
     return _compact_profile(
         {
-            "name": full_name or str(doc.get("name") or "").strip(),
+            "full_name": full_name or None,
             "first_name": first or None,
-            "last_name": last or None,
-            "email": doc.get("email_id"),
+            "last_name": last if last else None,
+            "email": email,
             "mobile": doc.get("mobile_no"),
             "phone": doc.get("phone"),
             "designation": doc.get("designation"),
@@ -361,6 +448,104 @@ def _normalize_contact(doc: dict[str, Any]) -> dict[str, Any]:
             "company_name": doc.get("company_name"),
         }
     )
+
+
+def _contact_full_name(first: str, last: str) -> str:
+    if first and last:
+        return f"{first} {last}"
+    return first or last
+
+
+def _contact_primary_email(doc: dict[str, Any]) -> str | None:
+    primary = str(doc.get("email_id") or "").strip()
+    if primary:
+        return primary
+    child_rows = doc.get("email_ids")
+    if isinstance(child_rows, list):
+        for row in child_rows:
+            if not isinstance(row, dict):
+                continue
+            email = str(row.get("email_id") or "").strip()
+            if email:
+                return email
+    return None
+
+
+def _contact_names_from_rows(rows: list[dict[str, Any]]) -> list[str]:
+    names: list[str] = []
+    for row in rows:
+        name = str(row.get("name", "")).strip()
+        if name:
+            names.append(name)
+    return names
+
+
+def _dedupe_preserve_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        out.append(value)
+    return out
+
+
+def _pick_best_contact(
+    docs: list[dict[str, Any]], customer: str | None
+) -> dict[str, Any] | None:
+    if not docs:
+        return None
+    if len(docs) == 1:
+        return docs[0]
+
+    def score(doc: dict[str, Any]) -> tuple[int, int, int]:
+        linked = 1 if customer and _contact_links_customer(doc, customer) else 0
+        person = 1 if _contact_is_person_like(doc, customer) else 0
+        active = 1 if str(doc.get("status") or "").strip().lower() != "passive" else 0
+        return (linked, person, active)
+
+    return max(docs, key=score)
+
+
+def _contact_links_customer(doc: dict[str, Any], customer: str) -> bool:
+    links = doc.get("links")
+    if not isinstance(links, list):
+        return False
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        if link.get("link_doctype") == "Customer" and link.get("link_name") == customer:
+            return True
+    return False
+
+
+def _contact_is_person_like(doc: dict[str, Any], customer: str | None) -> bool:
+    first = str(doc.get("first_name") or "").strip()
+    last = str(doc.get("last_name") or "").strip()
+    if not first:
+        return False
+    if customer and first == customer:
+        return False
+    for linked_customer in _linked_customer_names(doc):
+        if first == linked_customer:
+            return False
+    if last:
+        return True
+    return first != str(doc.get("name") or "").strip()
+
+
+def _linked_customer_names(doc: dict[str, Any]) -> list[str]:
+    links = doc.get("links")
+    if not isinstance(links, list):
+        return []
+    names: list[str] = []
+    for link in links:
+        if not isinstance(link, dict):
+            continue
+        if link.get("link_doctype") == "Customer" and link.get("link_name"):
+            names.append(str(link["link_name"]))
+    return names
 
 
 def _normalize_address(doc: dict[str, Any]) -> dict[str, Any] | None:

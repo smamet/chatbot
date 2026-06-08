@@ -30,13 +30,18 @@ def test_find_customer_by_email() -> None:
             return {
                 "data": {
                     "name": "Contact-1",
+                    "first_name": "Alice",
+                    "last_name": "Smith",
                     "links": [{"link_doctype": "Customer", "link_name": "Alice Corp"}],
                 }
             }
         assert "Contact" in path
         filters = json.loads(params["filters"])  # type: ignore[index]
-        assert filters == [["email_id", "=", "alice@example.com"]]
-        return {"data": [{"name": "Contact-1"}]}
+        if filters == [["email_id", "=", "alice@example.com"]]:
+            return {"data": [{"name": "Contact-1"}]}
+        if filters == [["Contact Email", "email_id", "=", "alice@example.com"]]:
+            return {"data": []}
+        return {"data": []}
 
     with patch.object(client, "_get", side_effect=fake_get):
         assert client.find_customer(email="alice@example.com") == "Alice Corp"
@@ -59,10 +64,13 @@ def test_find_customer_fetches_full_contact_when_list_omits_links() -> None:
                 }
             }
         filters = json.loads(params["filters"])  # type: ignore[index]
-        assert filters == [["email_id", "=", "agoburdhun@uniteddocks.com"]]
-        return {
-            "data": [{"name": "United Docks Business Park-United Docks Business Park"}]
-        }
+        if filters == [["email_id", "=", "agoburdhun@uniteddocks.com"]]:
+            return {
+                "data": [{"name": "United Docks Business Park-United Docks Business Park"}]
+            }
+        if filters == [["Contact Email", "email_id", "=", "agoburdhun@uniteddocks.com"]]:
+            return {"data": []}
+        return {"data": []}
 
     with patch.object(client, "_get", side_effect=fake_get):
         assert client.find_customer(email="agoburdhun@uniteddocks.com") == "United Docks Business Park"
@@ -226,8 +234,101 @@ def test_get_customer_profile_and_contact() -> None:
     assert profile["customer_type"] == "Company"
     assert profile["address"]["city"] == "Port Louis"
     assert contact is not None
-    assert contact["name"] == "Alice Smith"
+    assert contact["full_name"] == "Alice Smith"
     assert contact["email"] == "alice@example.com"
+
+
+def test_find_customer_prefers_person_contact_from_child_email() -> None:
+    client = ErpNextClient(_config())
+
+    def fake_get(path: str, *, params: dict | None = None) -> dict:
+        if path.endswith("/Contact/Anju%20."):
+            return {
+                "data": {
+                    "name": "Anju .",
+                    "first_name": "Anju",
+                    "last_name": ".",
+                    "email_ids": [{"email_id": "agoburdhun@uniteddocks.com"}],
+                    "links": [
+                        {
+                            "link_doctype": "Customer",
+                            "link_name": "United Docks Business Park",
+                        }
+                    ],
+                }
+            }
+        if path.endswith("/Contact/United%20Docks%20Business%20Park-United%20Docks%20Business%20Park"):
+            return {
+                "data": {
+                    "name": "United Docks Business Park-United Docks Business Park",
+                    "first_name": "United Docks Business Park",
+                    "email_id": "agoburdhun@uniteddocks.com",
+                    "links": [
+                        {
+                            "link_doctype": "Customer",
+                            "link_name": "United Docks Business Park",
+                        }
+                    ],
+                }
+            }
+        if params:
+            filters = json.loads(params["filters"])
+            if filters == [["email_id", "=", "agoburdhun@uniteddocks.com"]]:
+                return {
+                    "data": [{"name": "United Docks Business Park-United Docks Business Park"}]
+                }
+            if filters == [["Contact Email", "email_id", "=", "agoburdhun@uniteddocks.com"]]:
+                return {"data": [{"name": "Anju ."}]}
+        return {"data": []}
+
+    with patch.object(client, "_get", side_effect=fake_get):
+        assert client.find_customer(email="agoburdhun@uniteddocks.com") == "United Docks Business Park"
+        contact = client.get_matched_contact(
+            email="agoburdhun@uniteddocks.com",
+            phone=None,
+            customer="United Docks Business Park",
+        )
+    assert contact is not None
+    assert contact["full_name"] == "Anju ."
+
+
+def test_get_current_item_prices_uses_price_list_then_standard_rate() -> None:
+    client = ErpNextClient(_config())
+
+    def fake_get(path: str, *, params: dict | None = None) -> dict:
+        if path.endswith("/Customer/Alice%20Corp"):
+            return {"data": {"name": "Alice Corp", "default_price_list": "Standard Selling"}}
+        if params and "Item Price" in path:
+            filters = json.loads(params["filters"])
+            assert filters[1] == ["price_list", "=", "Standard Selling"]
+            return {
+                "data": [
+                    {
+                        "item_code": "W-1",
+                        "price_list_rate": 55,
+                        "currency": "MUR",
+                        "uom": "Nos",
+                    }
+                ]
+            }
+        if params and "Item" in path:
+            return {
+                "data": [
+                    {
+                        "item_code": "G-1",
+                        "standard_rate": 12,
+                        "stock_uom": "Nos",
+                    }
+                ]
+            }
+        return {"data": []}
+
+    with patch.object(client, "_get", side_effect=fake_get):
+        prices = client.get_current_item_prices("Alice Corp", ["W-1", "G-1"])
+    assert prices["W-1"]["current_rate"] == 55
+    assert prices["W-1"]["source"] == "price_list"
+    assert prices["G-1"]["current_rate"] == 12
+    assert prices["G-1"]["source"] == "standard_rate"
 
 
 def test_find_customer_returns_none_on_http_error() -> None:

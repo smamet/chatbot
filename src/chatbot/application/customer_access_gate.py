@@ -8,6 +8,18 @@ from chatbot.domain.contracts.customer_data_client import CustomerDataClient
 
 logger = logging.getLogger(__name__)
 
+_CONTACT_FIELD_ORDER = (
+    "full_name",
+    "first_name",
+    "last_name",
+    "email",
+    "mobile",
+    "phone",
+    "designation",
+    "department",
+    "company_name",
+)
+
 
 @dataclass(frozen=True, slots=True)
 class CustomerContext:
@@ -17,6 +29,7 @@ class CustomerContext:
     source_label: str
     company: dict[str, Any] | None = None
     contact: dict[str, Any] | None = None
+    current_prices: dict[str, dict[str, Any]] | None = None
 
 
 def parse_session_identity(session_id: str) -> tuple[str | None, str | None]:
@@ -37,15 +50,25 @@ def parse_session_identity(session_id: str) -> tuple[str | None, str | None]:
 def format_context(ctx: CustomerContext) -> str:
     lines = [f"Customer: {ctx.customer_name}", f"Source: {ctx.source_label}"]
     lines.extend(_format_profile_section("Company", ctx.company))
-    lines.extend(_format_profile_section("Contact", ctx.contact))
+    lines.extend(_format_profile_section("Contact", ctx.contact, key_order=_CONTACT_FIELD_ORDER))
+    lines.extend(_format_current_prices(ctx.current_prices))
     if ctx.orders:
         lines.append("Recent orders/invoices:")
         for row in ctx.orders:
-            lines.append(_format_row(row, date_key="transaction_date"))
+            lines.append(
+                _format_row(row, date_key="transaction_date", current_prices=ctx.current_prices)
+            )
     if ctx.quotations:
         lines.append("Recent quotations/estimates:")
         for row in ctx.quotations:
-            lines.append(_format_row(row, date_key="transaction_date", extra="valid_till"))
+            lines.append(
+                _format_row(
+                    row,
+                    date_key="transaction_date",
+                    extra="valid_till",
+                    current_prices=ctx.current_prices,
+                )
+            )
     if len(lines) == 2:
         lines.append("No orders or quotations on file.")
     lines.append(
@@ -54,7 +77,13 @@ def format_context(ctx: CustomerContext) -> str:
     return "\n".join(lines)
 
 
-def _format_row(row: dict[str, Any], *, date_key: str, extra: str | None = None) -> str:
+def _format_row(
+    row: dict[str, Any],
+    *,
+    date_key: str,
+    extra: str | None = None,
+    current_prices: dict[str, dict[str, Any]] | None = None,
+) -> str:
     name = row.get("name", "?")
     status = row.get("status", "?")
     date = row.get(date_key, "?")
@@ -63,13 +92,17 @@ def _format_row(row: dict[str, Any], *, date_key: str, extra: str | None = None)
     if extra and row.get(extra):
         parts.append(f" valid_until={row[extra]}")
     line = "".join(parts)
-    products = _format_products(row.get("items"))
+    products = _format_products(row.get("items"), current_prices=current_prices)
     if products:
         line = f"{line}\n  products: {products}"
     return line
 
 
-def _format_products(raw_items: Any) -> str:
+def _format_products(
+    raw_items: Any,
+    *,
+    current_prices: dict[str, dict[str, Any]] | None = None,
+) -> str:
     if not isinstance(raw_items, list) or not raw_items:
         return ""
     chunks: list[str] = []
@@ -85,19 +118,61 @@ def _format_products(raw_items: Any) -> str:
             chunk = f"{chunk} {uom}"
         if rate is not None:
             chunk = f"{chunk} @{rate}"
+        code = str(item.get("item_code") or "").strip()
+        if current_prices and code and code in current_prices:
+            current = current_prices[code].get("current_rate")
+            if current is not None:
+                chunk = f"{chunk}; current list @{current}"
         chunks.append(chunk)
     return "; ".join(chunks)
 
 
-def _format_profile_section(title: str, profile: dict[str, Any] | None) -> list[str]:
+def _format_current_prices(prices: dict[str, dict[str, Any]] | None) -> list[str]:
+    if not prices:
+        return []
+    lines = ["Current list prices (customer price list):"]
+    for code in sorted(prices):
+        info = prices[code]
+        rate = info.get("current_rate", "?")
+        uom = info.get("uom")
+        currency = info.get("currency")
+        label = code
+        chunk = f"- {label}: {rate}"
+        if currency:
+            chunk = f"{chunk} {currency}"
+        if uom:
+            chunk = f"{chunk}/{uom}"
+        source = info.get("source")
+        if source == "price_list" and info.get("price_list"):
+            chunk = f"{chunk} ({info['price_list']})"
+        lines.append(chunk)
+    return lines
+
+
+def _format_profile_section(
+    title: str,
+    profile: dict[str, Any] | None,
+    *,
+    key_order: tuple[str, ...] | None = None,
+) -> list[str]:
     if not profile:
         return []
     lines = [f"{title}:"]
-    for key, value in profile.items():
+    keys = list(key_order) if key_order else list(profile.keys())
+    seen: set[str] = set()
+    for key in keys:
+        seen.add(key)
+        value = profile.get(key)
         if key == "address" and isinstance(value, dict):
             formatted = _format_address(value)
             if formatted:
                 lines.append(f"- address: {formatted}")
+            continue
+        if value is None or str(value).strip() == "":
+            continue
+        lines.append(f"- {key}: {value}")
+    for key, value in profile.items():
+        if key in seen or key == "address":
             continue
         if value is None or str(value).strip() == "":
             continue
@@ -117,6 +192,23 @@ def _format_address(address: dict[str, Any]) -> str:
     return ", ".join(part for part in parts if part)
 
 
+def _collect_item_codes(
+    orders: list[dict[str, Any]], quotations: list[dict[str, Any]]
+) -> list[str]:
+    codes: list[str] = []
+    for row in orders + quotations:
+        items = row.get("items")
+        if not isinstance(items, list):
+            continue
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            code = str(item.get("item_code") or "").strip()
+            if code:
+                codes.append(code)
+    return list(dict.fromkeys(codes))
+
+
 class CustomerAccessGate:
     """Resolve customer context from channel identity only."""
 
@@ -133,6 +225,7 @@ class CustomerAccessGate:
         self._source_label = source_label
         self._fetch_orders = _config_bool(config.get(fetch_orders_key), default=True)
         self._fetch_quotations = _config_bool(config.get(fetch_quotations_key), default=True)
+        self._fetch_current_prices = _config_bool(config.get("fetch_current_prices"), default=True)
         self._max_items = max(1, _config_int(config.get("max_items"), default=5))
 
     def resolve(self, session_id: str) -> CustomerContext | None:
@@ -150,6 +243,7 @@ class CustomerAccessGate:
         contact: dict[str, Any] | None = None
         orders: list[dict[str, Any]] = []
         quotations: list[dict[str, Any]] = []
+        current_prices: dict[str, dict[str, Any]] | None = None
         try:
             company = self._client.get_customer_profile(customer)
             contact = self._client.get_matched_contact(
@@ -161,6 +255,10 @@ class CustomerAccessGate:
                 orders = self._client.get_orders(customer, self._max_items)
             if self._fetch_quotations:
                 quotations = self._client.get_quotations(customer, self._max_items)
+            if self._fetch_current_prices:
+                codes = _collect_item_codes(orders, quotations)
+                if codes:
+                    current_prices = self._client.get_current_item_prices(customer, codes)
         except Exception:
             logger.exception("%s fetch failed for customer %s", self._source_label, customer)
         return CustomerContext(
@@ -170,6 +268,7 @@ class CustomerAccessGate:
             source_label=self._source_label,
             company=company or None,
             contact=contact,
+            current_prices=current_prices or None,
         )
 
     def enrich(self, session_id: str) -> str | None:

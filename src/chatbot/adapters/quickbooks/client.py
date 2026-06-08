@@ -143,6 +143,12 @@ class QuickBooksClient:
             return None
         return {"email": email.strip().lower()}
 
+    def get_current_item_prices(
+        self, customer: str, item_codes: list[str]
+    ) -> dict[str, dict[str, Any]]:
+        _ = customer, item_codes
+        return {}
+
 
 def _normalize_invoice(row: dict[str, Any]) -> dict[str, Any]:
     return {

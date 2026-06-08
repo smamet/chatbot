@@ -89,7 +89,7 @@ def test_format_context_includes_company_and_contact() -> None:
                 },
             },
             contact={
-                "name": "Alice Smith",
+                "full_name": "Alice Smith",
                 "email": "alice@example.com",
                 "mobile": "12345678",
                 "designation": "Buyer",
@@ -100,16 +100,57 @@ def test_format_context_includes_company_and_contact() -> None:
     assert "Contact:" in text
     assert "customer_type: Company" in text
     assert "alice@example.com" in text
+    assert "full_name: Alice Smith" in text
     assert "1 Main St, Port Louis, Mauritius" in text
+
+
+def test_format_context_includes_current_prices() -> None:
+    text = format_context(
+        CustomerContext(
+            customer_name="Alice Corp",
+            orders=[
+                {
+                    "name": "SINV-1",
+                    "transaction_date": "2026-01-01",
+                    "status": "Paid",
+                    "grand_total": 100,
+                    "items": [{"item_name": "Widget", "item_code": "W-1", "qty": 2, "rate": 50, "uom": "Nos"}],
+                }
+            ],
+            quotations=[],
+            source_label="ERPNext",
+            current_prices={
+                "W-1": {
+                    "current_rate": 55,
+                    "currency": "MUR",
+                    "uom": "Nos",
+                    "source": "price_list",
+                    "price_list": "Standard Selling",
+                }
+            },
+        )
+    )
+    assert "Current list prices" in text
+    assert "W-1: 55 MUR/Nos (Standard Selling)" in text
+    assert "current list @55" in text
 
 
 def test_gate_enrich_whatsapp_customer() -> None:
     client = MagicMock()
     client.find_customer.return_value = "Alice Corp"
     client.get_customer_profile.return_value = {"name": "Alice Corp"}
-    client.get_matched_contact.return_value = {"name": "Alice", "mobile": "33612345678"}
-    client.get_orders.return_value = [{"name": "SO-1", "transaction_date": "2026-01-01", "status": "Open", "grand_total": 10}]
+    client.get_matched_contact.return_value = {"full_name": "Alice", "mobile": "33612345678"}
+    client.get_orders.return_value = [
+        {
+            "name": "SO-1",
+            "transaction_date": "2026-01-01",
+            "status": "Open",
+            "grand_total": 10,
+            "items": [{"item_code": "W-1", "item_name": "Widget", "qty": 1, "rate": 10}],
+        }
+    ]
     client.get_quotations.return_value = []
+    client.get_current_item_prices.return_value = {"W-1": {"current_rate": 12, "source": "price_list"}}
     gate = CustomerAccessGate(
         client,
         {"fetch_orders": True, "fetch_quotations": True, "max_items": 5},
@@ -118,6 +159,7 @@ def test_gate_enrich_whatsapp_customer() -> None:
     block = gate.enrich("whatsapp:33612345678")
     assert block is not None
     assert "Alice Corp" in block
+    client.get_current_item_prices.assert_called_once()
     client.find_customer.assert_called_once_with(email=None, phone="33612345678")
 
 

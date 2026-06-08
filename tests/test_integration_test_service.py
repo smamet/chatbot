@@ -20,7 +20,7 @@ def test_run_integration_test_success() -> None:
         "customer_type": "Company",
     }
     client.get_matched_contact.return_value = {
-        "name": "Alice Smith",
+        "full_name": "Alice Smith",
         "email": "alice@example.com",
     }
     client.get_orders.return_value = [{"name": "SO-1", "transaction_date": "2026-01-01", "status": "Open", "grand_total": 1}]
@@ -55,3 +55,4 @@ def test_run_integration_test_success() -> None:
     assert "Alice Corp" in (result.preview or "")
     assert "Company:" in (result.preview or "")
     assert "Contact:" in (result.preview or "")
+    assert "full_name: Alice Smith" in (result.preview or "")

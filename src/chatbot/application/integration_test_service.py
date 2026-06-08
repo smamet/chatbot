@@ -84,6 +84,7 @@ def run_integration_test(
             source_label=ctx.source_label,
             company=ctx.company,
             contact=ctx.contact,
+            current_prices=ctx.current_prices,
         )
     )
     return IntegrationTestResult(
