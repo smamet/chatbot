@@ -23,6 +23,11 @@ from chatbot.application.bot_bundle_service import (
     import_bundle,
 )
 from chatbot.application.channel_outbound import approve_pending_reply
+from chatbot.application.hook_prompt_composer import compose_hook_instructions
+from chatbot.application.product_resolver import resolved_lines_from_json, resolved_lines_to_json
+from chatbot.application.quote_fulfillment_service import QuoteFulfillmentError, QuoteFulfillmentService
+from chatbot.automation.modules.registry import all_modules
+from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.application.connector_service import ConnectorService
 from chatbot.adapters.quickbooks.oauth import (
     build_authorize_url,
@@ -141,6 +146,64 @@ def _integration_endpoint(integration: Integration) -> str:
         realm = str(integration.config.get("realm_id") or "").strip()
         return f"realm {realm}" if realm else "Not connected"
     return "—"
+
+
+def _active_integration_types(integrations: list[Integration]) -> set[str]:
+    return {i.type.value for i in integrations if i.active}
+
+
+def _automation_modules_for_ui(integrations: list[Integration]) -> list[dict]:
+    active = _active_integration_types(integrations)
+    rows: list[dict] = []
+    for mod in all_modules():
+        available = mod.requires_integration is None or mod.requires_integration in active
+        rows.append(
+            {
+                "id": mod.id,
+                "label": mod.label,
+                "description": mod.description,
+                "ui_enabled": mod.ui_enabled,
+                "available": available,
+                "requires_integration": mod.requires_integration,
+            }
+        )
+    return rows
+
+
+def _pending_replies_for_ui(pending: list) -> list[dict]:
+    out: list[dict] = []
+    for reply in pending:
+        resolved = resolved_lines_from_json(reply.quote_resolved_json)
+        out.append(
+            {
+                "reply": reply,
+                "resolved_lines": resolved,
+                "is_quote": reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE,
+            }
+        )
+    return out
+
+
+def _merge_resolved_selection(form, reply) -> str | None:
+    lines = resolved_lines_from_json(reply.quote_resolved_json)
+    if not lines:
+        return reply.quote_resolved_json
+    updated: list[dict] = []
+    for idx, line in enumerate(lines):
+        selected = str(form.get(f"line_{idx}_item_code", "")).strip()
+        row = dict(line)
+        if selected:
+            for cand in row.get("candidates") or []:
+                if str(cand.get("item_code")) == selected:
+                    row["item_code"] = cand.get("item_code")
+                    row["item_name"] = cand.get("item_name")
+                    row["rate"] = cand.get("rate")
+                    row["uom"] = cand.get("uom")
+                    row["status"] = "resolved"
+                    row["match_score"] = cand.get("score", row.get("match_score"))
+                    break
+        updated.append(row)
+    return json.dumps(updated, ensure_ascii=True)
 
 
 async def _integration_config_from_request(
@@ -588,6 +651,13 @@ def bot_detail(
         "integration_types_list": [t.value for t in IntegrationType],
         "pending_count": pending_repo.count_pending(tenant.id),
         "has_validation_connectors": any(c.mode == ConnectorMode.VALIDATION for c in connectors),
+        "automation_modules_ui": _automation_modules_for_ui(integrations),
+        "composed_hook_instructions": compose_hook_instructions(
+            tenant,
+            active_integrations=_active_integration_types(integrations),
+        ),
+        "erpnext_integration_active": IntegrationType.ERPNEXT.value
+        in _active_integration_types(integrations),
     }
     if tab == "documents":
         ctx["documents"] = _list_documents(settings, slug)
@@ -609,6 +679,8 @@ def bot_detail(
         )
     elif tab == "validation":
         ctx["pending_replies"] = pending_repo.list_pending(tenant.id)
+        ctx["pending_replies_ui"] = _pending_replies_for_ui(ctx["pending_replies"])
+        ctx["fulfillment_kind_quote"] = FulfillmentKind.ERPNEXT_QUOTE.value
     elif tab == "integrations":
         by_type = {i.type.value: i for i in integrations}
         ctx["integrations_by_type"] = by_type
@@ -710,6 +782,7 @@ def bot_save_rag_config(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    existing = tenant.config
     cfg = TenantConfig(
         chat_model=chat_model.strip(),
         embedding_model=embedding_model.strip(),
@@ -722,6 +795,8 @@ def bot_save_rag_config(
         chunk_overlap=chunk_overlap,
         retrieval_language=retrieval_language.strip(),
         dev_mode=dev_mode == "on",
+        automation_modules=existing.automation_modules,
+        hook_instructions_extra=existing.hook_instructions_extra,
     )
     tenant_service.update_tenant(tenant.id, config=cfg)
     session.commit()
@@ -732,7 +807,6 @@ def bot_save_rag_config(
 def bot_save_config(
     slug: str,
     prompt: str = Form(""),
-    hook_instructions: str = Form(""),
     gemini_api_key: str = Form(""),
     user: User = Depends(require_editor),
     tenant_service: TenantService = Depends(get_tenant_service),
@@ -744,11 +818,79 @@ def bot_save_config(
     tenant_service.update_tenant(
         tenant.id,
         prompt=prompt,
-        hook_instructions=hook_instructions.strip() or None,
-        update_hook_instructions=True,
         gemini_api_key=gemini_api_key.strip() or None,
         update_gemini_api_key=bool(gemini_api_key.strip()),
     )
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.post("/bots/{slug}/automation-config")
+async def bot_save_automation_config(
+    request: Request,
+    slug: str,
+    hook_instructions_extra: str = Form(""),
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    selected = [
+        mod.id
+        for mod in all_modules()
+        if mod.ui_enabled and form.get(f"module_{mod.id}") == "on"
+    ]
+    cfg = tenant.config
+    updated = TenantConfig(
+        chat_model=cfg.chat_model,
+        embedding_model=cfg.embedding_model,
+        rewrite_model=cfg.rewrite_model,
+        rag_enabled=cfg.rag_enabled,
+        rag_rewrite_enabled=cfg.rag_rewrite_enabled,
+        rag_rewrite_lang_filter=cfg.rag_rewrite_lang_filter,
+        rag_top_k=cfg.rag_top_k,
+        chunk_size=cfg.chunk_size,
+        chunk_overlap=cfg.chunk_overlap,
+        retrieval_language=cfg.retrieval_language,
+        dev_mode=cfg.dev_mode,
+        automation_modules=tuple(selected),
+        hook_instructions_extra=hook_instructions_extra.strip(),
+    )
+    tenant_service.update_tenant(tenant.id, config=updated, hook_instructions=None, update_hook_instructions=True)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.post("/bots/{slug}/automation-config/reset")
+def bot_reset_automation_config(
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    cfg = tenant.config
+    updated = TenantConfig(
+        chat_model=cfg.chat_model,
+        embedding_model=cfg.embedding_model,
+        rewrite_model=cfg.rewrite_model,
+        rag_enabled=cfg.rag_enabled,
+        rag_rewrite_enabled=cfg.rag_rewrite_enabled,
+        rag_rewrite_lang_filter=cfg.rag_rewrite_lang_filter,
+        rag_top_k=cfg.rag_top_k,
+        chunk_size=cfg.chunk_size,
+        chunk_overlap=cfg.chunk_overlap,
+        retrieval_language=cfg.retrieval_language,
+        dev_mode=cfg.dev_mode,
+        automation_modules=("core.orders",),
+        hook_instructions_extra="",
+    )
+    tenant_service.update_tenant(tenant.id, config=updated, hook_instructions=None, update_hook_instructions=True)
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
 
@@ -761,15 +903,13 @@ def bot_restore_hook_instructions(
     user_service: UserService = Depends(get_user_service),
     session: Session = Depends(get_session),
 ):
-    tenant = _tenant_or_404(tenant_service, slug)
-    _require_access(user, user_service, tenant)
-    tenant_service.update_tenant(
-        tenant.id,
-        hook_instructions=DEFAULT_HOOK_INSTRUCTIONS,
-        update_hook_instructions=True,
+    return bot_reset_automation_config(
+        slug,
+        user=user,
+        tenant_service=tenant_service,
+        user_service=user_service,
+        session=session,
     )
-    session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
 
 
 @router.post("/bots/{slug}/documents")
@@ -1183,7 +1323,8 @@ def delete_connector(
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/approve")
-def approve_validation_reply(
+async def approve_validation_reply(
+    request: Request,
     slug: str,
     reply_id: int,
     user: User = Depends(require_editor),
@@ -1203,7 +1344,65 @@ def approve_validation_reply(
     conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
     connector = conn_svc.get(reply.connector_id)
     config = connector.config if connector else {}
-    approve_pending_reply(session, reply, config=config, settings=settings)
+    form = await request.form()
+    resolved_json = _merge_resolved_selection(form, reply)
+    fulfillment = QuoteFulfillmentService(session, settings=settings, tenant_slug=slug)
+    try:
+        fulfillment.fulfill_and_approve(
+            reply,
+            config=config,
+            quote_resolved_json=resolved_json,
+        )
+    except QuoteFulfillmentError as exc:
+        pending_repo.update_quote_fields(reply.id, fulfillment_error=str(exc))
+        session.commit()
+        request.session["validation_error"] = str(exc)
+        return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/resolve")
+async def resolve_validation_quote(
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    from chatbot.adapters.erpnext.client import ErpNextClient
+    from chatbot.application.outbound_orchestrator import _erpnext_client_for_tenant
+    from chatbot.application.product_resolver import ProductResolver
+    from chatbot.automation.modules.erpnext.quote import parse_quote_proposal
+
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.fulfillment_kind != FulfillmentKind.ERPNEXT_QUOTE:
+        raise HTTPException(status_code=400, detail="Not a quote reply")
+    client = _erpnext_client_for_tenant(session, tenant.id)
+    if client is None:
+        raise HTTPException(status_code=400, detail="ERPNext integration not active")
+    if not reply.quote_proposal_json:
+        raise HTTPException(status_code=400, detail="Missing quote proposal")
+    payload = json.loads(reply.quote_proposal_json)
+    proposal = parse_quote_proposal(payload) if isinstance(payload, dict) else None
+    if proposal is None:
+        raise HTTPException(status_code=400, detail="Invalid quote proposal")
+    resolver = ProductResolver(client)
+    lines = [
+        {"product": line.product, "qty": line.qty, "item_code": line.item_code}
+        for line in proposal.lines
+    ]
+    pending_repo.update_quote_fields(
+        reply.id,
+        quote_resolved_json=resolved_lines_to_json(resolver.resolve_all(lines)),
+        fulfillment_error=None,
+    )
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
 

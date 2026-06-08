@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from chatbot.adapters.mail.factory import build_email_sender
 from chatbot.adapters.mail.smtp_sender import EmailSendError
-from chatbot.adapters.mail.types import EmailMessage
+from chatbot.adapters.mail.types import EmailAttachment, EmailMessage
+from chatbot.domain.models.outbound_attachment import OutboundAttachment
 
 
 def send_email_reply(
@@ -11,6 +12,7 @@ def send_email_reply(
     to_addr: str,
     body: str,
     subject: str | None = None,
+    attachments: list[OutboundAttachment] | None = None,
 ) -> None:
     to = to_addr.strip()
     if not to:
@@ -19,6 +21,10 @@ def send_email_reply(
     if not from_addr:
         raise EmailSendError("Missing from_addr in email connector config")
     resolved_subject = (subject or str(config.get("default_subject", "")).strip() or "Reply").strip()
+    email_attachments = tuple(
+        EmailAttachment(filename=a.filename, data=a.data, mime_type=a.mime_type)
+        for a in (attachments or [])
+    )
     sender = build_email_sender(config)
     sender.send(
         EmailMessage(
@@ -26,5 +32,6 @@ def send_email_reply(
             subject=resolved_subject,
             body_text=body,
             from_addr=from_addr,
+            attachments=email_attachments,
         )
     )

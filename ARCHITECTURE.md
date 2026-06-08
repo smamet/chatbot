@@ -9,7 +9,7 @@
 | **Public API** | `POST /c/{slug}/chat` — Bearer token must match slug |
 | **Admin API** | `/admin/*` with `ADMIN_TOKEN` |
 | **Dashboard** | FastAPI + Jinja2 + HTMX — `/auth/login`, `/dashboard/bots`, connectors, hooks |
-| **Hooks** | `===HOOK===` in LLM reply → `hook_events` (outbox) → automation worker |
+| **Hooks** | `===HOOK===` in LLM reply → `hook_events`; worker runs `core.orders`; `erpnext.quote` queues validation → ERPNext on approve |
 | **Orders** | `automation/handlers/order_handler.py` + `order_service.py` (not in chat path) |
 | **Deploy** | `./sail up -d` — MySQL, api, worker-automation, Caddy; `alembic upgrade head` on API start |
 
@@ -56,7 +56,7 @@ flowchart TB
 
 1. Append user message (`tenant_id` scoped).
 2. Load history (last 50).
-3. System instruction = `tenant.prompt` + `tenant.hook_instructions` (if hooks enabled).
+3. System instruction = `tenant.prompt` + composed hook instructions from enabled **automation modules** (`config_json.automation_modules`) + optional `hook_instructions_extra`.
 4. Optional RAG context.
 5. Gemini `generate_chat`.
 6. `extract_hook()` — strip `===HOOK===` / legacy `===JF030A===`, parse JSON → `type` + payload.
@@ -68,9 +68,11 @@ flowchart TB
 
 ## Automation worker
 
-`interfaces/worker_automation.py`: poll `hook_events`, claim `pending` → `processing`, `automation.handlers.dispatch_hook`, mark `done` / `failed`.
+`interfaces/worker_automation.py`: poll `hook_events`, claim `pending` → `processing`, `automation.modules.registry.dispatch_hook`, mark `done` / `failed`.
 
-Order hooks (`order`, `order.*`, or legacy payload with `action`) → `order_handler` → `OrderService` → SQLite orders + optional WhatsApp admin notify (connector creds).
+Order hooks → `core.orders` module → `OrderService` → orders table + optional WhatsApp admin notify.
+
+Quote hooks (`quote.create`) → validation queue with product resolution (ERPNext REST + fuzzy match) → on approve: create Quotation, PDF, send via email/WhatsApp attachment.
 
 ---
 

@@ -42,21 +42,72 @@
   </div>
 
   <div class="card">
-    <h2 class="card-title">Prompt &amp; hooks</h2>
+    <h2 class="card-title">Prompt</h2>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/config">
       <label>System prompt<textarea name="prompt" rows="12">{{ tenant.prompt }}</textarea></label>
-      <label>Hook instructions
-        {% if not tenant.hooks_enabled %}<span class="badge off">Hooks OFF</span>{% endif %}
-        <textarea name="hook_instructions" rows="10">{{ tenant.hook_instructions or '' }}</textarea>
-      </label>
       <label>Gemini API key override<input type="password" name="gemini_api_key" placeholder="Leave blank to keep"></label>
       <div class="form-actions">
         <button type="submit" class="btn-primary" data-loading="Saving…">Save prompt</button>
       </div>
     </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Automation modules</h2>
+    <p class="text-muted">Choose which actions the bot may trigger via <code>===HOOK===</code> blocks. Each module adds its own instructions to the composed hook prompt below.</p>
+    {% if not tenant.hooks_enabled %}<p class="field-hint"><span class="badge off">Hooks OFF</span> Enable at least one module or add extra hook instructions.</p>{% endif %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/automation-config">
+      <div class="form-section">
+        <h3 class="form-section-title">Modules</h3>
+        <div class="checkbox-panel">
+          <div class="checkbox-grid checkbox-grid--stack">
+            {% for mod in automation_modules_ui %}
+            {% if mod.ui_enabled %}
+            <div class="checkbox-row">
+              <input type="checkbox" name="module_{{ mod.id }}" id="mod-{{ mod.id|replace('.', '-') }}"
+                {% if mod.id in tenant.config.automation_modules %}checked{% endif %}
+                {% if not mod.available %}disabled{% endif %}>
+              <label for="mod-{{ mod.id|replace('.', '-') }}">{{ mod.label }}</label>
+              {% if mod.id == 'erpnext.quote' and not mod.available %}
+              {{ help_tip(mod.description ~ " This checkbox stays disabled until ERPNext is saved and active on the Integrations tab (URL, API key, and secret).") }}
+              {% else %}
+              {{ help_tip(mod.description) }}
+              {% endif %}
+            </div>
+            {% if mod.id == 'erpnext.quote' and mod.id in tenant.config.automation_modules and not erpnext_integration_active %}
+            <p class="field-hint automation-warning">ERPNext quotes require an active ERPNext integration. <a href="?tab=integrations&amp;integration_type=erpnext">Configure integration</a></p>
+            {% endif %}
+            {% else %}
+            <div class="checkbox-row automation-module-disabled">
+              <input type="checkbox" disabled id="mod-{{ mod.id|replace('.', '-') }}">
+              <label for="mod-{{ mod.id|replace('.', '-') }}">{{ mod.label }} <span class="badge off">Soon</span></label>
+              {{ help_tip(mod.description) }}
+            </div>
+            {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      <details class="automation-advanced">
+        <summary>Advanced hook instructions</summary>
+        <div class="automation-advanced__body">
+          <label>Extra instructions (optional)
+            {{ help_tip("Optional custom rules appended after module instructions. Leave empty unless you need tenant-specific behavior.") }}
+            <textarea name="hook_instructions_extra" rows="6">{{ tenant.config.hook_instructions_extra }}</textarea>
+          </label>
+          <label>Composed hook prompt preview
+            {{ help_tip("This is what the bot receives for hook behavior when hooks are enabled. It updates after you save automation settings.") }}
+            <pre class="hook-preview">{{ composed_hook_instructions }}</pre>
+          </label>
+        </div>
+      </details>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save automation</button>
+      </div>
+    </form>
     <div class="form-actions--bordered">
-      <form method="post" action="/dashboard/bots/{{ tenant.slug }}/hooks/restore-default">
-        <button type="submit" class="btn-secondary">Restore default hook instructions</button>
+      <form method="post" action="/dashboard/bots/{{ tenant.slug }}/automation-config/reset">
+        <button type="submit" class="btn-secondary">Reset modules to defaults</button>
       </form>
     </div>
   </div>
@@ -685,32 +736,104 @@
 
 {% elif tab == 'validation' %}
 <div class="card">
-  <h2 class="card-title">Pending replies</h2>
-  <p class="text-muted">Replies queued because an outbound connector is in <strong>validation</strong> mode. Approve to send to the customer, or reject to discard.</p>
+  <h2 class="card-title">Pending replies {{ help_tip("Quote replies are held until you approve. ERPNext records are created only when you click Approve. Check product matches before sending.") }}</h2>
+  <p class="text-muted">Replies queued because an outbound connector is in <strong>validation</strong> mode, or because the bot emitted a quote hook. Approve to send to the customer, or reject to discard.</p>
+  {% if request.session.get('validation_error') %}
+  <p class="validation-error">{{ request.session.pop('validation_error') }}</p>
+  {% endif %}
 </div>
 <div class="table-wrap">
   <table class="data-table">
-    <thead><tr><th>ID</th><th>Channel</th><th>Session</th><th>Recipient</th><th>Draft</th><th>Created</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+    <thead><tr><th>ID</th><th>Kind</th><th>Channel</th><th>Session</th><th>Recipient</th><th>Created</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
     <tbody>
-    {% for r in pending_replies %}
+    {% for item in pending_replies_ui %}
+    {% set r = item.reply %}
     <tr>
       <td>{{ r.id }}</td>
+      <td><code>{% if item.is_quote %}quote{% else %}reply{% endif %}</code></td>
       <td><code>{{ r.channel }}</code></td>
       <td><code>{{ r.session_id }}</code></td>
       <td><code>{{ r.recipient_id }}</code></td>
-      <td><pre class="draft-preview">{{ r.draft_text }}</pre></td>
       <td class="text-muted">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}</td>
-      {% if can_edit %}
+      {% if can_edit and not item.is_quote %}
       <td class="actions">
-        <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/approve">
-          <button type="submit" class="btn-primary btn-sm" data-loading="Sending…">Approve</button>
-        </form>
-        <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/reject">
-          <button type="submit" class="btn-secondary btn-sm">Reject</button>
-        </form>
+        <details class="validation-reply-details">
+          <summary>Review</summary>
+          <div class="validation-reply-body">
+            <pre class="draft-preview">{{ r.draft_text }}</pre>
+            <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/approve">
+              <button type="submit" class="btn-primary btn-sm" data-loading="Sending…">Approve</button>
+            </form>
+            <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/reject">
+              <button type="submit" class="btn-secondary btn-sm">Reject</button>
+            </form>
+          </div>
+        </details>
       </td>
+      {% elif can_edit %}
+      <td></td>
       {% endif %}
     </tr>
+    {% if item.is_quote %}
+    <tr class="validation-quote-row">
+      <td colspan="{% if can_edit %}7{% else %}6{% endif %}">
+        <div class="validation-quote-card card card--flat">
+          {% if r.fulfillment_error %}<p class="validation-error">{{ r.fulfillment_error }}</p>{% endif %}
+          <h4>Draft message</h4>
+          <pre class="draft-preview">{{ r.draft_text }}</pre>
+          {% if item.resolved_lines %}
+          <h4>Quote lines</h4>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/approve">
+            <table class="data-table data-table--compact">
+              <thead><tr><th>Requested</th><th>SKU</th><th>Name</th><th>Rate</th><th>Qty</th><th>Score</th><th>Status</th></tr></thead>
+              <tbody>
+              {% for line in item.resolved_lines %}
+              <tr>
+                <td>{{ line.requested_label }}</td>
+                <td>
+                  {% if line.status == 'ambiguous' and line.candidates %}
+                  <select name="line_{{ loop.index0 }}_item_code">
+                    {% for c in line.candidates %}
+                    <option value="{{ c.item_code }}" {% if c.item_code == line.item_code %}selected{% endif %}>{{ c.item_code }}</option>
+                    {% endfor %}
+                  </select>
+                  {% else %}
+                  <code>{{ line.item_code or '—' }}</code>
+                  {% endif %}
+                </td>
+                <td>{{ line.item_name or '—' }}</td>
+                <td>{{ line.rate if line.rate is not none else '—' }}</td>
+                <td>{{ line.qty }}</td>
+                <td>{{ '%.0f'|format(line.match_score) if line.match_score else '—' }}%</td>
+                <td><span class="match-badge match-badge--{{ line.status }}">{{ line.status }}</span></td>
+              </tr>
+              {% endfor %}
+              </tbody>
+            </table>
+            {% if can_edit %}
+            <div class="form-actions form-actions--compact">
+              <button type="submit" class="btn-primary btn-sm" data-loading="Creating…">Approve &amp; send</button>
+            </div>
+          </form>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/resolve" class="inline-form">
+            <button type="submit" class="btn-secondary btn-sm">Re-resolve products</button>
+          </form>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/reject" class="inline-form">
+            <button type="submit" class="btn-secondary btn-sm">Reject</button>
+          </form>
+          {% endif %}
+          {% else %}
+          <p class="text-muted">No product resolution yet.</p>
+          {% if can_edit %}
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/resolve">
+            <button type="submit" class="btn-secondary btn-sm">Resolve products</button>
+          </form>
+          {% endif %}
+          {% endif %}
+        </div>
+      </td>
+    </tr>
+    {% endif %}
     {% else %}
     <tr><td colspan="7" class="empty-state">No replies awaiting validation</td></tr>
     {% endfor %}

@@ -46,7 +46,7 @@ class TenantService:
         slug: str | None = None,
         prompt: str = "You are a helpful assistant.",
         config: TenantConfig | None = None,
-        hook_instructions: str | None = DEFAULT_HOOK_INSTRUCTIONS,
+        hook_instructions: str | None = None,
         gemini_api_key: str | None = None,
     ) -> TenantCreateResult:
         base_slug = slugify(slug or name)

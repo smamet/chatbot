@@ -57,15 +57,16 @@ def run_integration_test(
             message="Connection failed.",
             error=str(exc),
         )
+    session_id = f"email:{email}" if email else f"whatsapp:{phone}"
     try:
-        customer = gate._client.find_customer(email=email, phone=phone)  # noqa: SLF001
+        ctx = gate.resolve(session_id)
     except Exception as exc:
         return IntegrationTestResult(
             ok=False,
             message="Customer lookup failed.",
             error=str(exc),
         )
-    if not customer:
+    if ctx is None:
         return IntegrationTestResult(
             ok=True,
             message="Connection OK, but no customer matched the test identity.",
@@ -74,35 +75,23 @@ def run_integration_test(
             quotations=[],
             preview="Connection OK — no matching customer.",
         )
-    orders: list[dict[str, Any]] = []
-    quotations: list[dict[str, Any]] = []
-    try:
-        preview_limit = min(3, gate._max_items)  # noqa: SLF001
-        if gate._fetch_orders:  # noqa: SLF001
-            orders = gate._client.get_orders(customer, preview_limit)  # noqa: SLF001
-        if gate._fetch_quotations:  # noqa: SLF001
-            quotations = gate._client.get_quotations(customer, preview_limit)  # noqa: SLF001
-    except Exception as exc:
-        return IntegrationTestResult(
-            ok=False,
-            message=f"Customer found ({customer}), but fetching records failed.",
-            customer=customer,
-            error=str(exc),
-        )
+    preview_limit = min(3, gate._max_items)  # noqa: SLF001
     preview = format_context(
         CustomerContext(
-            customer_name=customer,
-            orders=orders,
-            quotations=quotations,
-            source_label=gate._source_label,  # noqa: SLF001
+            customer_name=ctx.customer_name,
+            orders=ctx.orders[:preview_limit],
+            quotations=ctx.quotations[:preview_limit],
+            source_label=ctx.source_label,
+            company=ctx.company,
+            contact=ctx.contact,
         )
     )
     return IntegrationTestResult(
         ok=True,
-        message=f"Connection OK — customer {customer} found.",
-        customer=customer,
-        orders=orders,
-        quotations=quotations,
+        message=f"Connection OK — customer {ctx.customer_name} found.",
+        customer=ctx.customer_name,
+        orders=ctx.orders[:preview_limit],
+        quotations=ctx.quotations[:preview_limit],
         preview=preview,
     )
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from chatbot.application.hook_extractor import extract_hook
+from chatbot.application.hook_prompt_composer import compose_hook_instructions, hooks_enabled_for_tenant
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.config.settings import Settings
@@ -41,8 +42,8 @@ class ChatService:
         prompt = (self._tenant.prompt or "").strip()
         if prompt:
             parts.append(prompt)
-        if self._tenant.hooks_enabled:
-            hook = (self._tenant.hook_instructions or "").strip()
+        if hooks_enabled_for_tenant(self._tenant):
+            hook = compose_hook_instructions(self._tenant).strip()
             if hook:
                 parts.append(hook)
         return "\n\n".join(parts) if parts else "You are a helpful assistant."
@@ -95,18 +96,26 @@ class ChatService:
             session_id,
             ChatMessage(role=MessageRole.ASSISTANT, content=extracted.clean_reply),
         )
+        hook_event_id: int | None = None
         if (
             self._hook_repo
-            and self._tenant.hooks_enabled
+            and hooks_enabled_for_tenant(self._tenant)
             and extracted.hook_type
             and extracted.payload_json
         ):
-            self._hook_repo.create(
+            hook_event = self._hook_repo.create(
                 session_id=session_id,
                 hook_type=extracted.hook_type,
                 payload_json=extracted.payload_json,
             )
-        return LlmResult(text=extracted.clean_reply, usage=result.usage)
+            hook_event_id = hook_event.id
+        return LlmResult(
+            text=extracted.clean_reply,
+            usage=result.usage,
+            hook_type=extracted.hook_type,
+            hook_payload_json=extracted.payload_json,
+            hook_event_id=hook_event_id,
+        )
 
     def draft_reply(self, session_id: str, inbound_text: str) -> LlmResult:
         return self.handle_user_message(session_id, inbound_text)

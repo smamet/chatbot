@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+from chatbot.domain.models.fulfillment import FulfillmentKind
+
 
 class PendingReplyStatus(StrEnum):
     PENDING = "pending"
@@ -23,3 +25,10 @@ class PendingReply:
     status: PendingReplyStatus
     created_at: datetime
     updated_at: datetime
+    hook_event_id: int | None = None
+    fulfillment_kind: FulfillmentKind = FulfillmentKind.REPLY_ONLY
+    quote_proposal_json: str | None = None
+    quote_resolved_json: str | None = None
+    quote_external_id: str | None = None
+    attachments_json: str | None = None
+    fulfillment_error: str | None = None

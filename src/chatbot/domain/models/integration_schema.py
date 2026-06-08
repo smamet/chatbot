@@ -75,15 +75,15 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
         ),
         IntegrationField(
             key="fetch_orders",
-            label="Fetch sales orders",
-            help="Include recent Sales Orders in the customer context injected into the bot prompt.",
+            label="Fetch sales invoices",
+            help="Include recent Sales Invoices (with line items) in the customer context injected into the bot prompt.",
             input_type="checkbox",
             default="true",
         ),
         IntegrationField(
             key="fetch_quotations",
             label="Fetch quotations",
-            help="Include open Quotations in the customer context injected into the bot prompt.",
+            help="Include recent Quotations (with line items) in the customer context injected into the bot prompt.",
             input_type="checkbox",
             default="true",
         ),

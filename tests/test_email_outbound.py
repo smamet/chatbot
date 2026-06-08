@@ -122,6 +122,7 @@ def test_dispatch_channel_reply_email(mock_send) -> None:
         config={"from_addr": "bot@example.com"},
         to_addr="user@test.com",
         body="Draft body",
+        attachments=None,
     )
 
 

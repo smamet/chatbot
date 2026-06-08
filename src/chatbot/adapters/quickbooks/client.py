@@ -128,6 +128,21 @@ class QuickBooksClient:
         )
         return [_normalize_estimate(row) for row in rows]
 
+    def get_customer_profile(self, customer: str) -> dict[str, Any]:
+        return {"name": customer}
+
+    def get_matched_contact(
+        self,
+        *,
+        email: str | None = None,
+        phone: str | None = None,
+        customer: str,
+    ) -> dict[str, Any] | None:
+        _ = phone, customer
+        if not email:
+            return None
+        return {"email": email.strip().lower()}
+
 
 def _normalize_invoice(row: dict[str, Any]) -> dict[str, Any]:
     return {

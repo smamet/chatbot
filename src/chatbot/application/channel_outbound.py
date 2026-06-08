@@ -6,6 +6,8 @@ from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPend
 from chatbot.application.connector_service import ConnectorService
 from chatbot.config.settings import Settings
 from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
+from chatbot.domain.models.fulfillment import FulfillmentKind
+from chatbot.domain.models.outbound_attachment import OutboundAttachment
 from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
 from sqlalchemy.orm import Session
 
@@ -37,6 +39,10 @@ def queue_pending_reply(
     channel: str,
     recipient_id: str,
     draft_text: str,
+    hook_event_id: int | None = None,
+    fulfillment_kind: FulfillmentKind = FulfillmentKind.REPLY_ONLY,
+    quote_proposal_json: str | None = None,
+    quote_resolved_json: str | None = None,
 ) -> PendingReply:
     return SqlAlchemyPendingReplyRepository(session).create(
         tenant_id=tenant_id,
@@ -45,6 +51,10 @@ def queue_pending_reply(
         channel=channel,
         recipient_id=recipient_id,
         draft_text=draft_text,
+        hook_event_id=hook_event_id,
+        fulfillment_kind=fulfillment_kind,
+        quote_proposal_json=quote_proposal_json,
+        quote_resolved_json=quote_resolved_json,
     )
 
 
@@ -55,40 +65,71 @@ def dispatch_channel_reply(
     text: str,
     config: dict,
     settings: Settings,
+    attachments: list[OutboundAttachment] | None = None,
 ) -> None:
     if channel == ConnectorType.WHATSAPP.value:
         phone_id = str(config.get("phone_number_id", "")).strip()
         token = str(config.get("access_token", "")).strip() or settings.whatsapp_access_token
         if phone_id and token:
-            whatsapp_meta.send_whatsapp_text(
-                phone_number_id=phone_id,
-                access_token=token,
-                to_wa_id=recipient_id,
-                text=text,
-            )
+            if attachments:
+                for att in attachments:
+                    media_id = whatsapp_meta.upload_media(
+                        phone_number_id=phone_id,
+                        access_token=token,
+                        data=att.data,
+                        mime_type=att.mime_type,
+                    )
+                    whatsapp_meta.send_whatsapp_document(
+                        phone_number_id=phone_id,
+                        access_token=token,
+                        to_wa_id=recipient_id,
+                        media_id=media_id,
+                        filename=att.filename,
+                        caption=text if att == attachments[0] else None,
+                    )
+            else:
+                whatsapp_meta.send_whatsapp_text(
+                    phone_number_id=phone_id,
+                    access_token=token,
+                    to_wa_id=recipient_id,
+                    text=text,
+                )
         return
     if channel == ConnectorType.MESSENGER.value:
         token = str(config.get("page_access_token", "")).strip() or settings.messenger_page_access_token
         if token:
+            body = text
+            if attachments:
+                names = ", ".join(a.filename for a in attachments)
+                body = f"{text}\n\n[Attachment: {names}]"
             messenger_meta.send_messenger_text(
                 page_access_token=token,
                 recipient_psid=recipient_id,
-                text=text,
+                text=body,
             )
         return
     if channel == ConnectorType.INSTAGRAM.value:
         token = str(config.get("access_token", "")).strip() or settings.instagram_access_token
         ig_user = str(config.get("ig_user_id", "")).strip() or settings.instagram_ig_user_id
         if token and ig_user:
+            body = text
+            if attachments:
+                names = ", ".join(a.filename for a in attachments)
+                body = f"{text}\n\n[Attachment: {names}]"
             instagram_meta.send_instagram_text(
                 access_token=token,
                 ig_user_id=ig_user,
                 recipient_igsid=recipient_id,
-                text=text,
+                text=body,
             )
         return
     if channel == ConnectorType.EMAIL.value:
-        send_email_reply(config=config, to_addr=recipient_id, body=text)
+        send_email_reply(
+            config=config,
+            to_addr=recipient_id,
+            body=text,
+            attachments=attachments,
+        )
 
 
 def approve_pending_reply(
@@ -97,6 +138,7 @@ def approve_pending_reply(
     *,
     config: dict,
     settings: Settings,
+    attachments: list[OutboundAttachment] | None = None,
 ) -> PendingReply | None:
     dispatch_channel_reply(
         channel=reply.channel,
@@ -104,6 +146,7 @@ def approve_pending_reply(
         text=reply.draft_text,
         config=config,
         settings=settings,
+        attachments=attachments,
     )
     return SqlAlchemyPendingReplyRepository(session).update_status(
         reply.id, PendingReplyStatus.APPROVED

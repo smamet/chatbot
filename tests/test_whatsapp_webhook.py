@@ -47,7 +47,10 @@ class _FakeConnectors:
             direction=direction,
             type=ConnectorType.WHATSAPP,
             mode=ConnectorMode.DIRECT,
-            config={},
+            config={
+                "phone_number_id": "phone-id",
+                "access_token": "access-token",
+            },
             active=True,
             created_at=datetime.now(UTC),
             updated_at=datetime.now(UTC),
@@ -97,7 +100,7 @@ def test_whatsapp_post_sends_clean_reply(monkeypatch: pytest.MonkeyPatch, whatsa
         sent.append(text)
 
     monkeypatch.setattr(
-        "chatbot.interfaces.api.routers.whatsapp_webhook.whatsapp_meta.send_whatsapp_text",
+        "chatbot.application.channel_outbound.whatsapp_meta.send_whatsapp_text",
         _fake_send_whatsapp_text,
     )
     body = {

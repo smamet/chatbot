@@ -14,5 +14,17 @@ class CustomerDataClient(Protocol):
     def get_quotations(self, customer: str, limit: int) -> list[dict[str, Any]]:
         """Return recent quotations/estimates for the customer."""
 
+    def get_customer_profile(self, customer: str) -> dict[str, Any]:
+        """Return company/customer master data for prompt enrichment."""
+
+    def get_matched_contact(
+        self,
+        *,
+        email: str | None = None,
+        phone: str | None = None,
+        customer: str,
+    ) -> dict[str, Any] | None:
+        """Return the matched contact person when channel identity is known."""
+
     def ping(self) -> None:
         """Verify credentials and API reachability."""

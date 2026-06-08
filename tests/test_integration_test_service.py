@@ -15,6 +15,14 @@ def test_run_integration_test_success() -> None:
     client = MagicMock()
     client.ping.return_value = None
     client.find_customer.return_value = "Alice Corp"
+    client.get_customer_profile.return_value = {
+        "name": "Alice Corp",
+        "customer_type": "Company",
+    }
+    client.get_matched_contact.return_value = {
+        "name": "Alice Smith",
+        "email": "alice@example.com",
+    }
     client.get_orders.return_value = [{"name": "SO-1", "transaction_date": "2026-01-01", "status": "Open", "grand_total": 1}]
     client.get_quotations.return_value = []
 
@@ -45,3 +53,5 @@ def test_run_integration_test_success() -> None:
     assert result.ok is True
     assert result.customer == "Alice Corp"
     assert "Alice Corp" in (result.preview or "")
+    assert "Company:" in (result.preview or "")
+    assert "Contact:" in (result.preview or "")

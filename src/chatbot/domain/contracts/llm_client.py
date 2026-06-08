@@ -18,6 +18,9 @@ class LlmUsage:
 class LlmResult:
     text: str
     usage: LlmUsage
+    hook_type: str | None = None
+    hook_payload_json: str | None = None
+    hook_event_id: int | None = None
 
 
 @runtime_checkable

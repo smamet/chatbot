@@ -6,12 +6,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.orm import PendingReplyRow
+from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
 
 
 def _row_to_pending(row: PendingReplyRow) -> PendingReply:
     created = row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at
     updated = row.updated_at.replace(tzinfo=UTC) if row.updated_at.tzinfo is None else row.updated_at
+    try:
+        fulfillment_kind = FulfillmentKind(row.fulfillment_kind)
+    except ValueError:
+        fulfillment_kind = FulfillmentKind.REPLY_ONLY
     return PendingReply(
         id=row.id,
         tenant_id=row.tenant_id,
@@ -23,6 +28,13 @@ def _row_to_pending(row: PendingReplyRow) -> PendingReply:
         status=PendingReplyStatus(row.status),
         created_at=created,
         updated_at=updated,
+        hook_event_id=row.hook_event_id,
+        fulfillment_kind=fulfillment_kind,
+        quote_proposal_json=row.quote_proposal_json,
+        quote_resolved_json=row.quote_resolved_json,
+        quote_external_id=row.quote_external_id,
+        attachments_json=row.attachments_json,
+        fulfillment_error=row.fulfillment_error,
     )
 
 
@@ -39,6 +51,10 @@ class SqlAlchemyPendingReplyRepository:
         channel: str,
         recipient_id: str,
         draft_text: str,
+        hook_event_id: int | None = None,
+        fulfillment_kind: FulfillmentKind = FulfillmentKind.REPLY_ONLY,
+        quote_proposal_json: str | None = None,
+        quote_resolved_json: str | None = None,
     ) -> PendingReply:
         now = datetime.now(UTC)
         row = PendingReplyRow(
@@ -49,6 +65,10 @@ class SqlAlchemyPendingReplyRepository:
             recipient_id=recipient_id,
             draft_text=draft_text,
             status=PendingReplyStatus.PENDING.value,
+            hook_event_id=hook_event_id,
+            fulfillment_kind=fulfillment_kind.value,
+            quote_proposal_json=quote_proposal_json,
+            quote_resolved_json=quote_resolved_json,
             created_at=now,
             updated_at=now,
         )
@@ -81,6 +101,31 @@ class SqlAlchemyPendingReplyRepository:
         if row is None:
             return None
         row.status = status.value
+        row.updated_at = datetime.now(UTC)
+        self._session.flush()
+        self._session.refresh(row)
+        return _row_to_pending(row)
+
+    def update_quote_fields(
+        self,
+        reply_id: int,
+        *,
+        quote_resolved_json: str | None = None,
+        quote_external_id: str | None = None,
+        attachments_json: str | None = None,
+        fulfillment_error: str | None = None,
+    ) -> PendingReply | None:
+        row = self._session.get(PendingReplyRow, reply_id)
+        if row is None:
+            return None
+        if quote_resolved_json is not None:
+            row.quote_resolved_json = quote_resolved_json
+        if quote_external_id is not None:
+            row.quote_external_id = quote_external_id
+        if attachments_json is not None:
+            row.attachments_json = attachments_json
+        if fulfillment_error is not None:
+            row.fulfillment_error = fulfillment_error
         row.updated_at = datetime.now(UTC)
         self._session.flush()
         self._session.refresh(row)

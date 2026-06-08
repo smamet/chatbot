@@ -197,6 +197,13 @@ class PendingReplyRow(Base):
     recipient_id: Mapped[str] = mapped_column(String(256))
     draft_text: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(String(32), default="pending")
+    hook_event_id: Mapped[int | None] = mapped_column(ForeignKey("hook_events.id"), nullable=True)
+    fulfillment_kind: Mapped[str] = mapped_column(String(32), default="reply_only")
+    quote_proposal_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    quote_resolved_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    quote_external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    attachments_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    fulfillment_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

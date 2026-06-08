@@ -30,6 +30,7 @@ dependencies = [
     "xlrd>=2.0.0",
     "lancedb>=0.14.0",
     "numpy>=1.26.0",
+    "rapidfuzz>=3.0.0",
 ]
 
 [project.optional-dependencies]

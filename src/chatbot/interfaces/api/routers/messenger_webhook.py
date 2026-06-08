@@ -7,11 +7,7 @@ from sqlalchemy.orm import Session
 
 from chatbot.adapters.channels import messenger_meta
 from chatbot.adapters.channels.meta_signature import verify_signature
-from chatbot.application.channel_outbound import (
-    get_outbound_connector,
-    queue_pending_reply,
-    should_queue_for_validation,
-)
+from chatbot.application.outbound_orchestrator import get_outbound_connector_for_channel, queue_after_chat
 from chatbot.application.chat_service import ChatService
 from chatbot.application.connector_service import ConnectorService
 from chatbot.config.settings import Settings
@@ -76,19 +72,17 @@ async def messenger_inbound(
         return {"status": "ignored"}
     session_id = f"messenger:{psid}"
     result = service.handle_user_message(session_id, text)
-    out_conn = get_outbound_connector(connectors, tenant.id, ConnectorType.MESSENGER)
-    if should_queue_for_validation(out_conn):
-        queue_pending_reply(
-            session,
-            tenant_id=tenant.id,
-            connector_id=out_conn.id,
-            session_id=session_id,
-            channel=ConnectorType.MESSENGER.value,
-            recipient_id=psid,
-            draft_text=result.text,
-        )
-        return {"status": "queued"}
-    token = str(cfg.get("page_access_token", "")).strip() or settings.messenger_page_access_token
-    if token:
-        messenger_meta.send_messenger_text(page_access_token=token, recipient_psid=psid, text=result.text)
-    return {"status": "ok"}
+    out_conn = get_outbound_connector_for_channel(connectors, tenant.id, ConnectorType.MESSENGER)
+    if out_conn is None:
+        return {"status": "ok"}
+    status, _pending = queue_after_chat(
+        session,
+        tenant_id=tenant.id,
+        connector=out_conn,
+        session_id=session_id,
+        recipient_id=psid,
+        result=result,
+        settings=settings,
+    )
+    session.commit()
+    return {"status": status}

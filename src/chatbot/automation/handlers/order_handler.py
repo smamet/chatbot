@@ -146,7 +146,6 @@ def _load_context(session: Session, hook: HookEvent) -> list[ChatMessage]:
 
 
 def dispatch_hook(session: Session, hook: HookEvent) -> None:
-    if hook.type == "order" or hook.type.startswith("order."):
-        handle_order_hook(session, hook)
-        return
-    raise ValueError(f"No handler for hook type: {hook.type}")
+    from chatbot.automation.modules.registry import dispatch_hook as registry_dispatch
+
+    registry_dispatch(session, hook)

@@ -42,9 +42,72 @@ def test_format_context_includes_orders_and_quotations() -> None:
     assert "QT-1" in text
 
 
+def test_format_context_includes_product_lines() -> None:
+    text = format_context(
+        CustomerContext(
+            customer_name="Alice Corp",
+            orders=[
+                {
+                    "name": "SINV-1",
+                    "transaction_date": "2026-01-01",
+                    "status": "Paid",
+                    "grand_total": 100,
+                    "items": [{"item_name": "Widget", "item_code": "W-1", "qty": 2, "rate": 50, "uom": "Nos"}],
+                }
+            ],
+            quotations=[
+                {
+                    "name": "QT-1",
+                    "transaction_date": "2026-02-01",
+                    "status": "Open",
+                    "grand_total": 50,
+                    "items": [{"item_name": "Gadget", "item_code": "G-1", "qty": 1, "rate": 50, "uom": "Nos"}],
+                }
+            ],
+            source_label="ERPNext",
+        )
+    )
+    assert "Widget x2 Nos @50" in text
+    assert "Gadget x1 Nos @50" in text
+
+
+def test_format_context_includes_company_and_contact() -> None:
+    text = format_context(
+        CustomerContext(
+            customer_name="Alice Corp",
+            orders=[],
+            quotations=[],
+            source_label="ERPNext",
+            company={
+                "name": "Alice Corp",
+                "customer_type": "Company",
+                "email": "info@alice.example",
+                "address": {
+                    "line1": "1 Main St",
+                    "city": "Port Louis",
+                    "country": "Mauritius",
+                },
+            },
+            contact={
+                "name": "Alice Smith",
+                "email": "alice@example.com",
+                "mobile": "12345678",
+                "designation": "Buyer",
+            },
+        )
+    )
+    assert "Company:" in text
+    assert "Contact:" in text
+    assert "customer_type: Company" in text
+    assert "alice@example.com" in text
+    assert "1 Main St, Port Louis, Mauritius" in text
+
+
 def test_gate_enrich_whatsapp_customer() -> None:
     client = MagicMock()
     client.find_customer.return_value = "Alice Corp"
+    client.get_customer_profile.return_value = {"name": "Alice Corp"}
+    client.get_matched_contact.return_value = {"name": "Alice", "mobile": "33612345678"}
     client.get_orders.return_value = [{"name": "SO-1", "transaction_date": "2026-01-01", "status": "Open", "grand_total": 10}]
     client.get_quotations.return_value = []
     gate = CustomerAccessGate(

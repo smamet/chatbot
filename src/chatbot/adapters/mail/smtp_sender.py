@@ -29,7 +29,17 @@ class SmtpEmailSender:
         msg["From"] = message.from_addr
         msg["To"] = message.to_addr
         msg["Subject"] = message.subject
-        msg.set_content(message.body_text)
+        if message.attachments:
+            msg.set_content(message.body_text)
+            for att in message.attachments:
+                msg.add_attachment(
+                    att.data,
+                    maintype="application",
+                    subtype=att.mime_type.split("/")[-1] if "/" in att.mime_type else "octet-stream",
+                    filename=att.filename,
+                )
+        else:
+            msg.set_content(message.body_text)
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
                 smtp.starttls()

@@ -18,6 +18,8 @@ class TenantConfig:
     chunk_overlap: int = 100
     retrieval_language: str = "en"
     dev_mode: bool = False
+    automation_modules: tuple[str, ...] = ("core.orders",)
+    hook_instructions_extra: str = ""
 
     def to_json(self) -> str:
         return json.dumps(
@@ -33,9 +35,18 @@ class TenantConfig:
                 "chunk_overlap": self.chunk_overlap,
                 "retrieval_language": self.retrieval_language,
                 "dev_mode": self.dev_mode,
+                "automation_modules": list(self.automation_modules),
+                "hook_instructions_extra": self.hook_instructions_extra,
             },
             ensure_ascii=True,
         )
+
+    def resolved_automation_modules(self, legacy_hook_instructions: str | None) -> list[str]:
+        if self.automation_modules:
+            return list(self.automation_modules)
+        if legacy_hook_instructions and str(legacy_hook_instructions).strip():
+            return ["core.orders"]
+        return []
 
     @classmethod
     def from_json(cls, raw: str | None) -> TenantConfig:
@@ -47,6 +58,13 @@ class TenantConfig:
             return cls()
         if not isinstance(data, dict):
             return cls()
+        modules_raw = data.get("automation_modules")
+        if "automation_modules" in data and isinstance(modules_raw, list):
+            automation_modules = tuple(str(m).strip() for m in modules_raw if str(m).strip())
+        elif "automation_modules" not in data:
+            automation_modules = cls().automation_modules
+        else:
+            automation_modules = ()
         return cls(
             chat_model=str(data.get("chat_model", cls.chat_model)),
             embedding_model=str(data.get("embedding_model", cls.embedding_model)),
@@ -59,6 +77,8 @@ class TenantConfig:
             chunk_overlap=int(data.get("chunk_overlap", 100)),
             retrieval_language=str(data.get("retrieval_language", "en")),
             dev_mode=bool(data.get("dev_mode", False)),
+            automation_modules=automation_modules,
+            hook_instructions_extra=str(data.get("hook_instructions_extra", "")),
         )
 
 
@@ -77,7 +97,9 @@ class Tenant:
 
     @property
     def hooks_enabled(self) -> bool:
-        return bool((self.hook_instructions or "").strip())
+        from chatbot.application.hook_prompt_composer import hooks_enabled_for_tenant
+
+        return hooks_enabled_for_tenant(self)
 
 
 @dataclass(frozen=True)
