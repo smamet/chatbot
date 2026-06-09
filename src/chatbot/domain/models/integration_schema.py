@@ -101,6 +101,34 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
             input_type="checkbox",
             default="true",
         ),
+        IntegrationField(
+            key="default_customer_group",
+            label="Default customer group",
+            help="Leaf Customer Group in ERPNext (not a parent group like “All Customer Groups”). Common values: Individual, Commercial.",
+            placeholder="Individual",
+            default="Individual",
+        ),
+        IntegrationField(
+            key="allow_create_customer",
+            label="Allow customer creation",
+            help="Create a new ERPNext Customer (+ Contact) when none matches the channel identity.",
+            input_type="checkbox",
+            default="false",
+        ),
+        IntegrationField(
+            key="allow_create_quotation",
+            label="Allow quotation creation",
+            help="Create ERPNext Quotations when a quote hook is approved. Disable for read-only connectors.",
+            input_type="checkbox",
+            default="false",
+        ),
+        IntegrationField(
+            key="quotation_print_format",
+            label="Quotation print format",
+            help="Optional ERPNext Print Format name for quotation PDFs (e.g. Vdtec Quotation). Leave blank to use the ERPNext default.",
+            placeholder="Vdtec Quotation",
+            default="",
+        ),
     ],
     IntegrationType.QUICKBOOKS.value: [
         IntegrationField(

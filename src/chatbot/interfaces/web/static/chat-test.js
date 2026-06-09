@@ -3,18 +3,45 @@
   if (!panel) return;
 
   const sendUrl = panel.dataset.sendUrl;
+  const validationUrl = panel.dataset.validationUrl || "";
+  const requireIdentity = panel.dataset.requireIdentity === "true";
   const thread = document.getElementById("chat-thread");
   const form = document.getElementById("chat-form");
   const input = document.getElementById("chat-input");
   const sendBtn = document.getElementById("chat-send");
   const stopBtn = document.getElementById("chat-stop");
   const initialEl = document.getElementById("chat-initial");
+  const hookStatusEl = document.getElementById("chat-hook-status");
+  const sessionLabelEl = document.getElementById("chat-session-label");
+  const testEmailInput = document.getElementById("chat-test-email");
+  const testPhoneInput = document.getElementById("chat-test-phone");
+  const resetEmailInput = document.getElementById("chat-reset-email");
+  const resetPhoneInput = document.getElementById("chat-reset-phone");
 
   let abortController = null;
   let loading = false;
 
   const renderMarkdown = (text) =>
     window.ChatbotMarkdown?.renderMarkdown(text) ?? text;
+
+  function identityValues() {
+    return {
+      email: testEmailInput?.value?.trim() || "",
+      phone: testPhoneInput?.value?.trim() || "",
+    };
+  }
+
+  function syncIdentityFields() {
+    const { email, phone } = identityValues();
+    if (resetEmailInput) resetEmailInput.value = email;
+    if (resetPhoneInput) resetPhoneInput.value = phone;
+    if (sessionLabelEl) {
+      if (email) sessionLabelEl.textContent = `email:${email.toLowerCase()}`;
+      else if (phone) sessionLabelEl.textContent = `whatsapp:${phone}`;
+      else if (requireIdentity) sessionLabelEl.textContent = "(set test email or phone)";
+      else sessionLabelEl.textContent = sessionLabelEl.dataset.defaultSession || sessionLabelEl.textContent;
+    }
+  }
 
   function scrollThread() {
     if (thread) thread.scrollTop = thread.scrollHeight;
@@ -66,6 +93,21 @@
     document.getElementById("chat-typing")?.remove();
   }
 
+  function showHookStatus(data) {
+    if (!hookStatusEl) return;
+    hookStatusEl.hidden = false;
+    if (data.queued && validationUrl) {
+      hookStatusEl.innerHTML = `${data.message || "Quote queued."} <a href="${validationUrl}">Open Validation</a>`;
+      return;
+    }
+    if (data.hook_type || data.message) {
+      hookStatusEl.textContent = data.message || `Hook detected: ${data.hook_type}`;
+      return;
+    }
+    hookStatusEl.hidden = true;
+    hookStatusEl.textContent = "";
+  }
+
   function loadInitial() {
     if (!initialEl) return;
     try {
@@ -81,6 +123,12 @@
 
   async function sendMessage(text) {
     if (loading || !text.trim()) return;
+    const { email, phone } = identityValues();
+    if (requireIdentity && !email && !phone) {
+      appendMessage("assistant", "Error: test email or phone is required.");
+      return;
+    }
+    syncIdentityFields();
     abortController = new AbortController();
     setLoading(true);
     appendMessage("user", text.trim());
@@ -89,6 +137,8 @@
 
     const body = new FormData();
     body.append("message", text.trim());
+    body.append("test_email", email);
+    body.append("test_phone", phone);
 
     try {
       const res = await fetch(sendUrl, {
@@ -106,6 +156,7 @@
       }
       const data = await res.json();
       appendMessage("assistant", data.reply || "", { markdown: true });
+      showHookStatus(data);
     } catch (err) {
       hideTyping();
       if (err.name === "AbortError") return;
@@ -136,6 +187,13 @@
     input.focus();
   });
 
+  testEmailInput?.addEventListener("input", syncIdentityFields);
+  testPhoneInput?.addEventListener("input", syncIdentityFields);
+
+  if (sessionLabelEl && !sessionLabelEl.dataset.defaultSession) {
+    sessionLabelEl.dataset.defaultSession = sessionLabelEl.textContent;
+  }
+  syncIdentityFields();
   loadInitial();
   scrollThread();
   input?.focus();

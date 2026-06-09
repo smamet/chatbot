@@ -1,5 +1,5 @@
 (function () {
-  const SKIP_FORM_IDS = new Set(["chat-form"]);
+  const SKIP_FORM_IDS = new Set(["chat-form", "chat-reset-form"]);
 
   function setPageLoading(on) {
     document.getElementById("page-loader")?.classList.toggle("active", on);
@@ -75,6 +75,149 @@
       } catch (err) {
         resultEl.classList.add("err");
         resultEl.textContent = String(err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+
+  document.querySelectorAll(".integration-customer-create-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const form = document.getElementById("integration-form");
+      const resultEl = document.querySelector(".integration-customer-create-result");
+      if (!form || !resultEl) return;
+      const slug = btn.dataset.slug;
+      const fd = new FormData(form);
+      const card = form.closest(".integration-editor");
+      const customerName = card?.querySelector(".integration-customer-name")?.value?.trim() || "";
+      const companyName = card?.querySelector(".integration-customer-company")?.value?.trim() || "";
+      const email = card?.querySelector(".integration-customer-email")?.value?.trim() || "";
+      const phone = card?.querySelector(".integration-customer-phone")?.value?.trim() || "";
+      fd.set("customer_name", customerName);
+      fd.set("company_name", companyName);
+      fd.set("test_email", email);
+      fd.set("test_phone", phone);
+      btn.disabled = true;
+      resultEl.hidden = false;
+      resultEl.className = "integration-customer-create-result integration-test-result";
+      resultEl.textContent = "Creating…";
+      try {
+        const res = await fetch(`/dashboard/bots/${slug}/integrations/erpnext/create-customer`, {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
+        const data = await res.json();
+        resultEl.classList.add(data.ok ? "ok" : "err");
+        resultEl.textContent = data.message || data.error || "Done";
+        if (data.error && !data.ok) {
+          resultEl.textContent = `${data.message}\n${data.error}`;
+        }
+      } catch (err) {
+        resultEl.classList.add("err");
+        resultEl.textContent = String(err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+
+  document.querySelectorAll(".integration-quotation-create-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const form = document.getElementById("integration-form");
+      const resultEl = document.querySelector(".integration-quotation-create-result");
+      const logEl = resultEl?.querySelector(".integration-quotation-create-log");
+      const pdfBtn = resultEl?.querySelector(".integration-quotation-pdf-btn");
+      if (!form || !resultEl || !logEl || !pdfBtn) return;
+      const slug = btn.dataset.slug;
+      const fd = new FormData(form);
+      const card = form.closest(".integration-editor");
+      const email = card?.querySelector(".integration-quotation-email")?.value?.trim() || "";
+      const phone = card?.querySelector(".integration-quotation-phone")?.value?.trim() || "";
+      const companyName = card?.querySelector(".integration-quotation-company")?.value?.trim() || "";
+      const itemCode = card?.querySelector(".integration-quotation-item")?.value?.trim() || "";
+      const qty = card?.querySelector(".integration-quotation-qty")?.value?.trim() || "1";
+      const notes = card?.querySelector(".integration-quotation-notes")?.value?.trim() || "";
+      fd.set("test_email", email);
+      fd.set("test_phone", phone);
+      fd.set("company_name", companyName);
+      fd.set("item_code", itemCode);
+      fd.set("qty", qty);
+      fd.set("notes", notes);
+      fd.set("stream", "1");
+      btn.disabled = true;
+      resultEl.hidden = false;
+      resultEl.className = "integration-quotation-create-result integration-test-result";
+      logEl.textContent = "";
+      pdfBtn.hidden = true;
+      pdfBtn.removeAttribute("href");
+
+      const appendLog = (message) => {
+        logEl.textContent = logEl.textContent ? `${logEl.textContent}\n${message}` : message;
+        logEl.scrollTop = logEl.scrollHeight;
+      };
+
+      const applyDone = (data) => {
+        resultEl.classList.add(data.ok ? "ok" : "err");
+        if (data.ok && data.pdf_url) {
+          appendLog(data.message || "Done");
+          pdfBtn.href = data.pdf_url;
+          if (data.pdf_filename) {
+            pdfBtn.setAttribute("download", data.pdf_filename);
+          }
+          pdfBtn.hidden = false;
+        } else if (data.ok && data.pdf_warning) {
+          appendLog(`${data.message || "Done"}\n${data.pdf_warning}`);
+        } else {
+          appendLog(data.message || data.error || "Done");
+          if (data.error && !data.ok) {
+            appendLog(data.error);
+          }
+        }
+      };
+
+      try {
+        const res = await fetch(`/dashboard/bots/${slug}/integrations/erpnext/create-quotation`, {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
+        const contentType = res.headers.get("content-type") || "";
+        if (contentType.includes("application/x-ndjson") && res.body) {
+          const reader = res.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = "";
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split("\n");
+            buffer = lines.pop() || "";
+            for (const line of lines) {
+              if (!line.trim()) continue;
+              const event = JSON.parse(line);
+              if (event.event === "log" && event.message) {
+                appendLog(event.message);
+              } else if (event.event === "done") {
+                applyDone(event);
+              }
+            }
+          }
+          if (buffer.trim()) {
+            const event = JSON.parse(buffer);
+            if (event.event === "log" && event.message) {
+              appendLog(event.message);
+            } else if (event.event === "done") {
+              applyDone(event);
+            }
+          }
+        } else {
+          const data = await res.json();
+          applyDone(data);
+        }
+      } catch (err) {
+        resultEl.classList.add("err");
+        appendLog(String(err));
       } finally {
         btn.disabled = false;
       }

@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import asyncio
 from datetime import UTC
 from pathlib import Path
+from queue import Empty, Queue
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
@@ -24,10 +26,17 @@ from chatbot.application.bot_bundle_service import (
     build_export,
     import_bundle,
 )
+from chatbot.adapters.erpnext.client import ErpNextClient
 from chatbot.application.channel_outbound import approve_pending_reply
+from chatbot.application.customer_access_gate import resolve_manual_identity
+from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
+from chatbot.application.quote_test_service import create_erpnext_quotation_for_test
 from chatbot.application.hook_prompt_composer import compose_hook_instructions
+from chatbot.application.outbound_orchestrator import queue_after_chat
+from chatbot.application.progress_log import ProgressLog
 from chatbot.application.product_resolver import resolved_lines_from_json, resolved_lines_to_json
 from chatbot.application.quote_fulfillment_service import QuoteFulfillmentError, QuoteFulfillmentService
+from chatbot.application.quote_pdf_storage import cleanup_pending_reply_attachments, quote_pdf_path, safe_quote_filename
 from chatbot.automation.modules.registry import all_modules
 from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.application.connector_service import ConnectorService
@@ -338,8 +347,40 @@ def _list_documents(settings: Settings, slug: str) -> list[str]:
     return sorted(str(p.relative_to(docs)) for p in docs.rglob("*") if p.is_file())
 
 
-def _dashboard_chat_session_id(user: User) -> str:
+def _dashboard_chat_session_id(
+    user: User,
+    *,
+    test_email: str = "",
+    test_phone: str = "",
+    require_identity: bool = False,
+) -> str:
+    email, phone = resolve_manual_identity(test_email=test_email, test_phone=test_phone)
+    if email:
+        return f"email:{email}"
+    if phone:
+        return f"whatsapp:{phone}"
+    if require_identity:
+        raise HTTPException(
+            status_code=400,
+            detail="Test email or phone is required when a customer integration is active",
+        )
     return f"dashboard:{user.id}"
+
+
+def _has_customer_integration(session: Session, tenant_id: int) -> bool:
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    for itype in (IntegrationType.ERPNEXT, IntegrationType.QUICKBOOKS):
+        if svc.find_active(tenant_id, type=itype):
+            return True
+    return False
+
+
+def _first_active_outbound_connector(session: Session, tenant_id: int) -> Connector | None:
+    svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    for conn in svc.list_for_tenant(tenant_id):
+        if conn.direction == ConnectorDirection.OUT and conn.active:
+            return conn
+    return None
 
 
 def _run_dashboard_chat(
@@ -349,15 +390,30 @@ def _run_dashboard_chat(
     user: User,
     message: str,
     session: Session,
+    *,
+    test_email: str = "",
+    test_phone: str = "",
 ):
+    require_identity = _has_customer_integration(session, tenant.id)
+    session_id = _dashboard_chat_session_id(
+        user,
+        test_email=test_email,
+        test_phone=test_phone,
+        require_identity=require_identity,
+    )
     repo = SqlAlchemyConversationRepository(session, tenant.id)
     hook_repo = SqlAlchemyHookEventRepository(session, tenant.id)
     chat = _build_chat_service(request, settings, tenant, repo, hook_repo, db_session=session)
-    return chat.handle_user_message(_dashboard_chat_session_id(user), message.strip())
+    return session_id, chat.handle_user_message(session_id, message.strip())
 
 
 class ChatTestSendOut(BaseModel):
     reply: str
+    hook_type: str | None = None
+    queued: bool = False
+    validation_url: str | None = None
+    pending_reply_id: int | None = None
+    message: str | None = None
 
 
 class EmailTestSendOut(BaseModel):
@@ -738,6 +794,10 @@ def bot_detail(
         ),
         "erpnext_integration_active": IntegrationType.ERPNEXT.value
         in _active_integration_types(integrations),
+        "has_customer_integration": bool(
+            _active_integration_types(integrations)
+            & {IntegrationType.ERPNEXT.value, IntegrationType.QUICKBOOKS.value}
+        ),
         "has_email_in_connector": any(
             c.type == ConnectorType.EMAIL
             and c.direction == ConnectorDirection.IN
@@ -767,8 +827,20 @@ def bot_detail(
             ctx["history_messages"] = repo.list_messages(sid, limit=500)
     elif tab == "chat":
         repo = SqlAlchemyConversationRepository(session, tenant.id)
-        test_sid = _dashboard_chat_session_id(user)
+        require_identity = ctx["has_customer_integration"]
+        test_email = request.query_params.get("test_email", "").strip()
+        test_phone = request.query_params.get("test_phone", "").strip()
+        test_sid = _dashboard_chat_session_id(
+            user,
+            test_email=test_email,
+            test_phone=test_phone,
+            require_identity=False,
+        )
         ctx["chat_session_id"] = test_sid
+        ctx["chat_test_email"] = test_email
+        ctx["chat_test_phone"] = test_phone
+        ctx["chat_require_identity"] = require_identity
+        ctx["chat_validation_url"] = f"/dashboard/bots/{slug}?tab=validation"
         messages = repo.list_messages(test_sid, limit=200)
         ctx["chat_messages_json"] = json.dumps(
             [{"role": m.role.value, "content": m.content} for m in messages]
@@ -1229,6 +1301,198 @@ def delete_integration(
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=integrations", status_code=303)
 
 
+@router.post("/bots/{slug}/integrations/erpnext/create-customer")
+async def create_erpnext_customer(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    test_email = str(form.get("test_email", "")).strip() or None
+    test_phone = str(form.get("test_phone", "")).strip() or None
+    customer_name = str(form.get("customer_name", "")).strip() or None
+    company_name = str(form.get("company_name", "")).strip() or None
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    existing = svc.find(tenant.id, type=IntegrationType.ERPNEXT)
+    cfg = await _integration_config_from_request(
+        IntegrationType.ERPNEXT.value,
+        form,
+        existing=existing,
+    )
+    integration = svc.find_active(tenant.id, type=IntegrationType.ERPNEXT)
+    if integration is None:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "Save and activate the ERPNext integration first.",
+                "error": "integration_inactive",
+                "customer": None,
+                "created": False,
+            }
+        )
+    client = ErpNextClient(cfg)
+    result = create_erpnext_customer_for_test(
+        client,
+        cfg,
+        test_email=test_email,
+        test_phone=test_phone,
+        customer_name=customer_name,
+        company_name=company_name,
+    )
+    return JSONResponse(result)
+
+
+@router.post("/bots/{slug}/integrations/erpnext/create-quotation")
+async def create_erpnext_quotation(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    test_email = str(form.get("test_email", "")).strip() or None
+    test_phone = str(form.get("test_phone", "")).strip() or None
+    item_code = str(form.get("item_code", "")).strip()
+    notes = str(form.get("notes", "")).strip() or None
+    company_name = str(form.get("company_name", "")).strip() or None
+    try:
+        qty = int(str(form.get("qty", "1")).strip() or "1")
+    except ValueError:
+        qty = 0
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    existing = svc.find(tenant.id, type=IntegrationType.ERPNEXT)
+    cfg = await _integration_config_from_request(
+        IntegrationType.ERPNEXT.value,
+        form,
+        existing=existing,
+    )
+    integration = svc.find_active(tenant.id, type=IntegrationType.ERPNEXT)
+    stream = str(form.get("stream", "")).strip() == "1"
+    inactive_payload = {
+        "ok": False,
+        "message": "Save and activate the ERPNext integration first.",
+        "error": "integration_inactive",
+        "customer": None,
+        "quote_name": None,
+        "pdf_url": None,
+    }
+    if integration is None:
+        if stream:
+
+            async def inactive_stream():
+                yield json.dumps({"event": "done", **inactive_payload}, ensure_ascii=False) + "\n"
+
+            return StreamingResponse(inactive_stream(), media_type="application/x-ndjson")
+        return JSONResponse(inactive_payload)
+
+    if stream:
+
+        async def quotation_stream():
+            queue: Queue[dict] = Queue()
+
+            def emit(message: str) -> None:
+                queue.put({"event": "log", "message": message})
+
+            progress = ProgressLog(emit=emit)
+
+            def run() -> None:
+                try:
+                    client = ErpNextClient(cfg)
+                    result = create_erpnext_quotation_for_test(
+                        client,
+                        cfg,
+                        settings=settings,
+                        tenant_slug=slug,
+                        test_email=test_email,
+                        test_phone=test_phone,
+                        item_code=item_code,
+                        qty=qty,
+                        notes=notes,
+                        company_name=company_name,
+                        on_log=progress,
+                    )
+                    queue.put({"event": "done", **result})
+                except Exception as exc:
+                    queue.put(
+                        {
+                            "event": "done",
+                            "ok": False,
+                            "message": str(exc),
+                            "error": "internal_error",
+                            "customer": None,
+                            "quote_name": None,
+                            "pdf_url": None,
+                        }
+                    )
+
+            loop = asyncio.get_running_loop()
+            task = loop.run_in_executor(None, run)
+            while True:
+                try:
+                    while True:
+                        item = queue.get_nowait()
+                        yield json.dumps(item, ensure_ascii=False) + "\n"
+                        if item.get("event") == "done":
+                            await task
+                            return
+                except Empty:
+                    pass
+                if task.done() and queue.empty():
+                    return
+                await asyncio.sleep(0.05)
+
+        return StreamingResponse(quotation_stream(), media_type="application/x-ndjson")
+
+    client = ErpNextClient(cfg)
+    result = create_erpnext_quotation_for_test(
+        client,
+        cfg,
+        settings=settings,
+        tenant_slug=slug,
+        test_email=test_email,
+        test_phone=test_phone,
+        item_code=item_code,
+        qty=qty,
+        notes=notes,
+        company_name=company_name,
+    )
+    return JSONResponse(result)
+
+
+@router.get("/bots/{slug}/integrations/erpnext/quotation-pdf/{quote_name}")
+def download_test_quotation_pdf(
+    slug: str,
+    quote_name: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    safe = safe_quote_filename(quote_name)
+    if not safe:
+        raise HTTPException(status_code=400, detail="Invalid quotation name")
+    path = quote_pdf_path(settings, slug, quote_name)
+    if path is None:
+        raise HTTPException(status_code=404, detail="PDF not found")
+    return Response(
+        content=path.read_bytes(),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'},
+    )
+
+
 @router.post("/bots/{slug}/integrations/test")
 async def test_integration(
     request: Request,
@@ -1526,6 +1790,7 @@ def reject_validation_reply(
         raise HTTPException(status_code=404)
     if reply.status != PendingReplyStatus.PENDING:
         raise HTTPException(status_code=400, detail="Reply is not pending")
+    cleanup_pending_reply_attachments(reply)
     pending_repo.update_status(reply_id, PendingReplyStatus.REJECTED)
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
@@ -1535,6 +1800,8 @@ def reject_validation_reply(
 def bot_chat_test_reset(
     request: Request,
     slug: str,
+    test_email: str = Form(""),
+    test_phone: str = Form(""),
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -1543,9 +1810,21 @@ def bot_chat_test_reset(
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     repo = SqlAlchemyConversationRepository(session, tenant.id)
-    repo.clear_session(_dashboard_chat_session_id(user))
+    session_id = _dashboard_chat_session_id(
+        user,
+        test_email=test_email,
+        test_phone=test_phone,
+        require_identity=False,
+    )
+    repo.clear_session(session_id)
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=chat", status_code=303)
+    params = []
+    if test_email.strip():
+        params.append(f"test_email={test_email.strip()}")
+    if test_phone.strip():
+        params.append(f"test_phone={test_phone.strip()}")
+    query = f"?tab=chat{'&' + '&'.join(params) if params else ''}"
+    return RedirectResponse(url=f"/dashboard/bots/{slug}{query}", status_code=303)
 
 
 @router.post("/bots/{slug}/chat-test/send", response_model=ChatTestSendOut)
@@ -1553,6 +1832,8 @@ def bot_chat_test_send(
     request: Request,
     slug: str,
     message: str = Form(...),
+    test_email: str = Form(""),
+    test_phone: str = Form(""),
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -1564,9 +1845,61 @@ def bot_chat_test_send(
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is empty")
     try:
-        result = _run_dashboard_chat(request, settings, tenant, user, message, session)
+        session_id, result = _run_dashboard_chat(
+            request,
+            settings,
+            tenant,
+            user,
+            message,
+            session,
+            test_email=test_email,
+            test_phone=test_phone,
+        )
+        hook_type = getattr(result, "hook_type", None)
+        queued = False
+        pending_reply_id: int | None = None
+        validation_url: str | None = None
+        status_message: str | None = None
+        if hook_type:
+            connector = _first_active_outbound_connector(session, tenant.id)
+            if connector is None:
+                status_message = (
+                    "Hook detected but no active outbound connector is configured."
+                )
+            else:
+                email, phone = resolve_manual_identity(
+                    test_email=test_email,
+                    test_phone=test_phone,
+                )
+                recipient_id = email or phone or session_id
+                queue_status, pending = queue_after_chat(
+                    session,
+                    tenant_id=tenant.id,
+                    connector=connector,
+                    session_id=session_id,
+                    recipient_id=recipient_id,
+                    result=result,
+                    settings=settings,
+                )
+                if queue_status == "queued" and pending is not None:
+                    queued = True
+                    pending_reply_id = pending.id
+                    validation_url = f"/dashboard/bots/{slug}?tab=validation"
+                    status_message = "Reply queued for validation."
+                elif not status_message:
+                    status_message = "Hook detected but reply was not queued."
         session.commit()
-        return ChatTestSendOut(reply=result.text)
+        return ChatTestSendOut(
+            reply=result.text,
+            hook_type=hook_type,
+            queued=queued,
+            validation_url=validation_url,
+            pending_reply_id=pending_reply_id,
+            message=status_message,
+        )
+    except HTTPException:
+        session.rollback()
+        raise
     except Exception as exc:
         session.rollback()
         raise HTTPException(status_code=500, detail=str(exc)) from exc

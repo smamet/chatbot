@@ -7,6 +7,7 @@ from chatbot.application.customer_access_gate import (
     CustomerContext,
     format_context,
     parse_session_identity,
+    resolve_manual_identity,
     session_display_label,
 )
 
@@ -20,6 +21,15 @@ def test_parse_session_identity_whatsapp() -> None:
 def test_parse_session_identity_email() -> None:
     email, phone = parse_session_identity("email:Alice@Example.com")
     assert email == "alice@example.com"
+    assert phone is None
+
+
+def test_resolve_manual_identity_ignores_email_in_phone_field() -> None:
+    email, phone = resolve_manual_identity(
+        test_email="matis@ann.com",
+        test_phone="matis@ann.com",
+    )
+    assert email == "matis@ann.com"
     assert phone is None
 
 

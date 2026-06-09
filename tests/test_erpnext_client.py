@@ -22,6 +22,138 @@ def test_phone_variants() -> None:
     assert "33612345678" in variants
 
 
+def test_create_customer_posts_customer_and_contact() -> None:
+    client = ErpNextClient(_config())
+    posts: list[tuple[str, dict]] = []
+    puts: list[tuple[str, dict]] = []
+
+    def fake_post(path: str, *, json_body: dict) -> dict:
+        posts.append((path, json_body))
+        if path.endswith("/Customer"):
+            return {"data": {"name": "Alice Corp", "customer_name": "Alice Corp"}}
+        if path.endswith("/Contact"):
+            return {"data": {"name": "Contact-1"}}
+        return {}
+
+    def fake_put(path: str, *, json_body: dict) -> dict:
+        puts.append((path, json_body))
+        return {"data": {"name": "Alice Corp"}}
+
+    def fake_get(path: str, *, params: dict | None = None) -> dict:
+        if path.endswith("/Customer/Alice%20Corp") or path.endswith("/Customer/Alice Corp"):
+            return {"data": {"name": "Alice Corp", "customer_name": "Alice Corp"}}
+        return {}
+
+    with patch.object(client, "_post_write", side_effect=fake_post), patch.object(
+        client, "_put", side_effect=fake_put
+    ), patch.object(client, "_get", side_effect=fake_get), patch.object(
+        client, "_find_contact", return_value=None
+    ):
+        out = client.create_customer(
+            "Alice Corp",
+            email="alice@example.com",
+            phone="33612345678",
+            customer_group="Commercial",
+        )
+
+    assert out["customer_name"] == "Alice Corp"
+    assert out["contact_name"] == "Contact-1"
+    assert posts[0][0].endswith("/Customer")
+    assert posts[0][1]["data"]["customer_group"] == "Commercial"
+    assert posts[1][0].endswith("/Contact")
+    assert posts[1][1]["data"]["links"][0]["link_name"] == "Alice Corp"
+    assert puts[0][1]["data"]["customer_primary_contact"] == "Contact-1"
+
+
+def test_create_customer_company_type() -> None:
+    client = ErpNextClient(_config())
+    posts: list[tuple[str, dict]] = []
+
+    def fake_post(path: str, *, json_body: dict) -> dict:
+        posts.append((path, json_body))
+        if path.endswith("/Customer"):
+            return {"data": {"name": "Acme Corp", "customer_name": "Acme Corp"}}
+        if path.endswith("/Contact"):
+            return {"data": {"name": "Contact-1"}}
+        return {}
+
+    def fake_put(path: str, *, json_body: dict) -> dict:
+        return {"data": {"name": "Acme Corp"}}
+
+    def fake_get(path: str, *, params: dict | None = None) -> dict:
+        if "Customer" in path:
+            return {"data": {"name": "Acme Corp", "customer_name": "Acme Corp"}}
+        return {}
+
+    with patch.object(client, "_post_write", side_effect=fake_post), patch.object(
+        client, "_put", side_effect=fake_put
+    ), patch.object(client, "_get", side_effect=fake_get), patch.object(
+        client, "_find_contact", return_value=None
+    ):
+        out = client.create_customer(
+            "Samuel MAMET",
+            email="samuel@example.com",
+            company_name="Acme Corp",
+        )
+
+    assert out["customer_name"] == "Acme Corp"
+    assert out["company_name"] == "Acme Corp"
+    assert posts[0][1]["data"]["customer_type"] == "Company"
+    assert posts[0][1]["data"]["customer_name"] == "Acme Corp"
+    assert posts[1][1]["data"]["first_name"] == "Samuel"
+    assert posts[1][1]["data"]["last_name"] == "MAMET"
+    assert posts[1][1]["data"]["company_name"] == "Acme Corp"
+    assert posts[0][1]["data"]["customer_group"] == "Individual"
+
+
+def test_create_customer_uses_default_customer_group() -> None:
+    client = ErpNextClient(_config())
+    posts: list[tuple[str, dict]] = []
+
+    def fake_post(path: str, *, json_body: dict) -> dict:
+        posts.append((path, json_body))
+        if path.endswith("/Customer"):
+            return {"data": {"name": "Bob", "customer_name": "Bob"}}
+        if path.endswith("/Contact"):
+            return {"data": {"name": "Contact-1"}}
+        return {}
+
+    with patch.object(client, "_post_write", side_effect=fake_post), patch.object(
+        client, "_put", return_value={"data": {}}
+    ), patch.object(client, "_get", return_value={"data": {"name": "Bob"}}), patch.object(
+        client, "_find_contact", return_value=None
+    ):
+        client.create_customer("Bob", email="bob@example.com")
+
+    assert posts[0][1]["data"]["customer_group"] == "Individual"
+
+
+def test_get_item_by_code_returns_row() -> None:
+    client = ErpNextClient(_config())
+    with patch.object(
+        client,
+        "_list_resource",
+        return_value=[{"item_code": "OKI Consumables", "item_name": "EP-M C650"}],
+    ):
+        row = client.get_item_by_code("OKI Consumables")
+    assert row is not None
+    assert row["item_code"] == "OKI Consumables"
+
+
+def test_resolve_item_by_name() -> None:
+    client = ErpNextClient(_config())
+    with patch.object(client, "get_item_by_code", return_value=None), patch.object(
+        client,
+        "search_items",
+        return_value=[
+            {"item_code": "OKI Consumables", "item_name": "EP-M C650 (Image Drum)"},
+        ],
+    ):
+        row = client.resolve_item("EP-M C650 (Image Drum)")
+    assert row is not None
+    assert row["item_code"] == "OKI Consumables"
+
+
 def test_find_customer_by_email() -> None:
     client = ErpNextClient(_config())
 
@@ -365,3 +497,60 @@ def test_find_customer_returns_none_on_http_error() -> None:
     client = ErpNextClient(_config())
     with patch.object(client, "_get", return_value={}):
         assert client.find_customer(email="missing@example.com") is None
+
+
+def test_download_quotation_pdf_uses_print_template_endpoint() -> None:
+    client = ErpNextClient(_config())
+    calls: list[tuple[str, dict[str, str] | None]] = []
+
+    def fake_fetch_bytes(path: str, *, params: dict[str, str] | None = None) -> tuple[bytes, str | None]:
+        calls.append((path, params))
+        if path.endswith("frappe.templates.pages.print.download_pdf") and params and params.get("format") == "Standard":
+            return b"%PDF-1.4", None
+        return b"", "Print format not found"
+
+    with patch.object(client, "_fetch_bytes", side_effect=fake_fetch_bytes), patch.object(
+        client, "_discover_quotation_print_formats", return_value=[]
+    ), patch.object(client, "_default_quotation_print_format", return_value=None):
+        data = client.download_quotation_pdf("QTN-0001")
+
+    assert data == b"%PDF-1.4"
+    assert calls[0][0].endswith("frappe.templates.pages.print.download_pdf")
+    assert calls[0][1] == {"doctype": "Quotation", "name": "QTN-0001", "no_letterhead": "0"}
+    assert any(call[1] and call[1].get("format") == "Standard" for call in calls)
+
+
+def test_download_quotation_pdf_uses_configured_format_first() -> None:
+    cfg = _config()
+    cfg["quotation_print_format"] = "Custom Quote"
+    client = ErpNextClient(cfg)
+
+    def fake_fetch_bytes(path: str, *, params: dict[str, str] | None = None) -> tuple[bytes, str | None]:
+        if params and params.get("format") == "Custom Quote":
+            return b"%PDF-custom", None
+        return b"", "not found"
+
+    with patch.object(client, "_fetch_bytes", side_effect=fake_fetch_bytes), patch.object(
+        client, "_discover_quotation_print_formats", return_value=["Other"]
+    ), patch.object(client, "_default_quotation_print_format", return_value=None):
+        data = client.download_quotation_pdf("QTN-0002")
+
+    assert data == b"%PDF-custom"
+
+
+def test_default_quotation_print_format_from_property_setter() -> None:
+    client = ErpNextClient(_config())
+
+    def fake_list(doctype: str, **kwargs) -> list[dict]:
+        if doctype == "Property Setter":
+            return [{"value": "Vdtec Quotation"}]
+        return []
+
+    with patch.object(client, "_list_resource", side_effect=fake_list):
+        assert client._default_quotation_print_format() == "Vdtec Quotation"
+
+
+def test_pdf_failure_hint_broken_images() -> None:
+    hint = ErpNextClient._pdf_failure_hint("PDF generation failed because of broken image links")
+    assert "host_name" in hint
+    assert "broken image" not in hint.lower() or "load images" in hint.lower()

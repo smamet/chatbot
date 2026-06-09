@@ -23,11 +23,18 @@ from chatbot.domain.models.pending_reply import PendingReply
 
 
 def _erpnext_client_for_tenant(session: Session, tenant_id: int) -> ErpNextClient | None:
+    pair = erpnext_integration_for_tenant(session, tenant_id)
+    return pair[0] if pair else None
+
+
+def erpnext_integration_for_tenant(
+    session: Session, tenant_id: int
+) -> tuple[ErpNextClient, dict[str, Any]] | None:
     integ_svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
     integration = integ_svc.find_active(tenant_id, type=IntegrationType.ERPNEXT)
     if not integration:
         return None
-    return ErpNextClient(integration.config)
+    return ErpNextClient(integration.config), integration.config
 
 
 def queue_after_chat(

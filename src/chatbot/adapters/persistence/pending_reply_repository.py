@@ -113,6 +113,7 @@ class SqlAlchemyPendingReplyRepository:
         quote_resolved_json: str | None = None,
         quote_external_id: str | None = None,
         attachments_json: str | None = None,
+        clear_attachments_json: bool = False,
         fulfillment_error: str | None = None,
     ) -> PendingReply | None:
         row = self._session.get(PendingReplyRow, reply_id)
@@ -122,7 +123,9 @@ class SqlAlchemyPendingReplyRepository:
             row.quote_resolved_json = quote_resolved_json
         if quote_external_id is not None:
             row.quote_external_id = quote_external_id
-        if attachments_json is not None:
+        if clear_attachments_json:
+            row.attachments_json = None
+        elif attachments_json is not None:
             row.attachments_json = attachments_json
         if fulfillment_error is not None:
             row.fulfillment_error = fulfillment_error

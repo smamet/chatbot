@@ -694,6 +694,41 @@
           <pre class="integration-test-result" hidden></pre>
         </div>
       </details>
+
+      <details class="integration-test integration-customer-create" id="integration-customer-create-panel" hidden>
+        <summary>Test customer creation</summary>
+        <div class="integration-test__body">
+          <p class="field-hint">Creates a real ERPNext Customer (+ Contact). With a <strong>company name</strong>, the Customer is created as Company and the contact person is linked to it.</p>
+          <div class="form-grid integration-test__inputs">
+            <label>Company name<input type="text" class="integration-customer-company" placeholder="Acme Corp"></label>
+            <label>Contact name (optional)<input type="text" class="integration-customer-name" placeholder="Jane Doe"></label>
+            <label>Test email<input type="email" class="integration-customer-email" placeholder="customer@example.com"></label>
+            <label>Test phone<input type="text" class="integration-customer-phone" placeholder="+33612345678"></label>
+          </div>
+          <button type="button" class="btn-secondary btn-sm integration-customer-create-btn" data-slug="{{ tenant.slug }}">Create customer</button>
+          <pre class="integration-customer-create-result" hidden></pre>
+        </div>
+      </details>
+
+      <details class="integration-test integration-quotation-create" id="integration-quotation-create-panel" hidden>
+        <summary>Test quotation creation</summary>
+        <div class="integration-test__body">
+          <p class="field-hint">Creates a real ERPNext Quotation (+ PDF). Requires <strong>Allow quotation creation</strong>. Uses test identity to find or create the customer.</p>
+          <div class="form-grid integration-test__inputs">
+            <label>Company name (optional)<input type="text" class="integration-quotation-company" placeholder="Acme Corp"></label>
+            <label>Test email<input type="email" class="integration-quotation-email" placeholder="customer@example.com"></label>
+            <label>Test phone<input type="text" class="integration-quotation-phone" placeholder="+33612345678"></label>
+            <label>Item code or name<input type="text" class="integration-quotation-item" placeholder="OKI Consumables or EP-M C650 (Image Drum)" required></label>
+            <label>Qty<input type="number" class="integration-quotation-qty" value="1" min="1" step="1"></label>
+            <label>Notes (optional)<input type="text" class="integration-quotation-notes" placeholder="Delivery note…"></label>
+          </div>
+          <button type="button" class="btn-secondary btn-sm integration-quotation-create-btn" data-slug="{{ tenant.slug }}">Create quotation</button>
+          <div class="integration-quotation-create-result integration-test-result" hidden>
+            <pre class="integration-quotation-create-log"></pre>
+            <a class="btn-secondary btn-sm integration-quotation-pdf-btn" hidden download>Download PDF</a>
+          </div>
+        </div>
+      </details>
     </div>
 
     <script type="application/json" id="integration-schemas-data">{{ integration_schemas_json|safe }}</script>
@@ -845,6 +880,28 @@
           document.querySelectorAll('.integration-list__link').forEach((link) => {
             link.classList.toggle('is-selected', link.getAttribute('href').includes('integration_type=' + type));
           });
+          syncCustomerCreatePanel(type);
+          syncQuotationCreatePanel(type);
+          container.querySelector('input[name="allow_create_customer"]')?.addEventListener('change', () => {
+            syncCustomerCreatePanel(type);
+          });
+          container.querySelector('input[name="allow_create_quotation"]')?.addEventListener('change', () => {
+            syncQuotationCreatePanel(type);
+          });
+        }
+
+        function syncCustomerCreatePanel(type) {
+          const panel = document.getElementById('integration-customer-create-panel');
+          if (!panel) return;
+          const checkbox = document.querySelector('#integration-form input[name="allow_create_customer"]');
+          panel.hidden = !(type === 'erpnext' && checkbox && checkbox.checked);
+        }
+
+        function syncQuotationCreatePanel(type) {
+          const panel = document.getElementById('integration-quotation-create-panel');
+          if (!panel) return;
+          const checkbox = document.querySelector('#integration-form input[name="allow_create_quotation"]');
+          panel.hidden = !(type === 'erpnext' && checkbox && checkbox.checked);
         }
 
         function makeHint(text) {
@@ -1048,16 +1105,28 @@
 {{ markdown_scripts() }}
 
 {% elif tab == 'chat' %}
-<div class="card chat-panel" id="chat-panel" data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send">
+<div class="card chat-panel" id="chat-panel"
+     data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send"
+     data-validation-url="{{ chat_validation_url }}"
+     data-require-identity="{{ 'true' if chat_require_identity else 'false' }}">
   <div class="chat-header">
     <h2 class="card-title">Test chat</h2>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/chat-test/reset" onsubmit="return confirm('Clear this test conversation?');">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/chat-test/reset" class="no-loader" id="chat-reset-form" onsubmit="return confirm('Clear this test conversation?');">
+      <input type="hidden" name="test_email" id="chat-reset-email" value="{{ chat_test_email }}">
+      <input type="hidden" name="test_phone" id="chat-reset-phone" value="{{ chat_test_phone }}">
       <button type="submit" class="btn-secondary btn-sm">Clear history</button>
     </form>
   </div>
+  {% if has_customer_integration %}
+  <div class="form-grid chat-identity-grid">
+    <label>Test email<input type="email" id="chat-test-email" value="{{ chat_test_email }}" placeholder="customer@example.com"></label>
+    <label>Test phone<input type="text" id="chat-test-phone" value="{{ chat_test_phone }}" placeholder="+33612345678"></label>
+  </div>
+  <p class="text-muted field-hint">Used to match an ERPNext / QuickBooks customer (orders, quotes, prices). At least one is required.</p>
+  {% endif %}
   <div class="chat-thread" id="chat-thread"></div>
   <script id="chat-initial" type="application/json">{{ chat_messages_json|safe }}</script>
-  <form id="chat-form">
+  <form id="chat-form" class="no-loader">
     <label>Message<textarea name="message" id="chat-input" rows="3" placeholder="Type a test message…"></textarea></label>
     <p class="text-muted chat-hint">Enter to send · Shift+Enter for new line</p>
     <div class="form-actions form-actions--compact chat-compose-actions">
@@ -1065,7 +1134,8 @@
       <button type="button" class="btn-danger" id="chat-stop" hidden>Stop</button>
     </div>
   </form>
-  <p class="text-muted" style="margin-top:1rem">Session: <code>{{ chat_session_id }}</code></p>
+  <p id="chat-hook-status" class="text-muted" style="margin-top:1rem" hidden></p>
+  <p class="text-muted" style="margin-top:1rem">Session: <code id="chat-session-label">{{ chat_session_id }}</code></p>
   {{ markdown_scripts() }}
   <script src="/static/chat-test.js"></script>
 </div>

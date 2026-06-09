@@ -289,6 +289,10 @@ class CustomerAccessGate:
 def resolve_manual_identity(*, test_email: str | None, test_phone: str | None) -> tuple[str | None, str | None]:
     email = test_email.strip().lower() if test_email and test_email.strip() else None
     phone = test_phone.strip() if test_phone and test_phone.strip() else None
+    if phone and "@" in phone:
+        phone = None
+    if phone and email and phone.lower() == email.lower():
+        phone = None
     return email, phone
 
 
@@ -298,6 +302,14 @@ def _config_bool(value: Any, *, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     return str(value).strip().lower() in {"1", "true", "on", "yes"}
+
+
+def can_create_customer(config: dict[str, Any]) -> bool:
+    return _config_bool(config.get("allow_create_customer"), default=False)
+
+
+def can_create_quotation(config: dict[str, Any]) -> bool:
+    return _config_bool(config.get("allow_create_quotation"), default=False)
 
 
 def _config_int(value: Any, *, default: int) -> int:

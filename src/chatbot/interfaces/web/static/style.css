@@ -1754,6 +1754,25 @@ button.is-loading,
   color: #b71c1c;
 }
 
+.integration-test-result .integration-quotation-pdf-btn {
+  display: inline-block;
+  margin-top: var(--space-sm);
+}
+
+.integration-test-result .integration-quotation-pdf-btn[hidden] {
+  display: none !important;
+}
+
+.integration-quotation-create-log {
+  margin: 0;
+  max-height: 12rem;
+  overflow-y: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.75rem;
+  white-space: pre-wrap;
+  line-height: 1.4;
+}
+
 .card--flat {
   box-shadow: none;
   border: none;
