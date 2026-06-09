@@ -22,6 +22,7 @@ from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegr
 from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir
+from chatbot.adapters.persistence.test_chat_session_repository import TestChatSessionRepository
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.bot_bundle_service import (
     BotBundleError,
@@ -31,9 +32,12 @@ from chatbot.application.bot_bundle_service import (
 )
 from chatbot.adapters.erpnext.client import ErpNextClient
 from chatbot.application.channel_outbound import approve_pending_reply
-from chatbot.application.customer_access_gate import resolve_manual_identity
+from chatbot.application.customer_access_gate import build_channel_session_id, resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
 from chatbot.application.erpnext_catalog_sync_service import (
+    apply_catalog_rag_transition,
+    catalog_rag_effective_enabled,
+    purge_catalog_files_and_rag,
     sync_erpnext_catalog_for_tenant,
     update_catalog_sync_metadata,
 )
@@ -42,8 +46,19 @@ from chatbot.application.hook_prompt_composer import compose_hook_instructions
 from chatbot.application.outbound_orchestrator import queue_after_chat
 from chatbot.application.progress_log import ProgressLog
 from chatbot.application.product_resolver import resolved_lines_from_json, resolved_lines_to_json
-from chatbot.application.quote_fulfillment_service import QuoteFulfillmentError, QuoteFulfillmentService
-from chatbot.application.quote_pdf_storage import cleanup_pending_reply_attachments, quote_pdf_path, safe_quote_filename
+from chatbot.application.quote_fulfillment_service import (
+    QuoteFulfillmentError,
+    QuoteFulfillmentService,
+    all_lines_resolved,
+    create_quote_for_session,
+    resolve_quote_hook,
+)
+from chatbot.application.quote_pdf_storage import (
+    cleanup_pending_reply_attachments,
+    quote_pdf_dashboard_url,
+    quote_pdf_path,
+    safe_quote_filename,
+)
 from chatbot.automation.modules.registry import all_modules
 from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.application.connector_service import ConnectorService
@@ -222,11 +237,18 @@ def _inbound_for_pending_reply(session: Session, tenant_id: int, reply) -> dict[
     return {"subject": subject, "text": text}
 
 
-def _pending_replies_for_ui(session: Session, tenant_id: int, pending: list) -> list[dict]:
+def _pending_replies_for_ui(
+    session: Session, tenant_id: int, pending: list, *, tenant_slug: str
+) -> list[dict]:
     out: list[dict] = []
     for reply in pending:
         resolved = resolved_lines_from_json(reply.quote_resolved_json)
         inbound = _inbound_for_pending_reply(session, tenant_id, reply)
+        quote_pdf_url = (
+            quote_pdf_dashboard_url(tenant_slug, reply.quote_external_id)
+            if reply.quote_external_id
+            else None
+        )
         out.append(
             {
                 "reply": reply,
@@ -234,6 +256,7 @@ def _pending_replies_for_ui(session: Session, tenant_id: int, pending: list) -> 
                 "is_quote": reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE,
                 "inbound_subject": inbound["subject"],
                 "inbound_text": inbound["text"],
+                "quote_pdf_url": quote_pdf_url,
             }
         )
     return out
@@ -364,10 +387,9 @@ def _dashboard_chat_session_id(
     require_identity: bool = False,
 ) -> str:
     email, phone = resolve_manual_identity(test_email=test_email, test_phone=test_phone)
-    if email:
-        return f"email:{email}"
-    if phone:
-        return f"whatsapp:{phone}"
+    channel_session = build_channel_session_id(email=email, phone=phone)
+    if channel_session:
+        return channel_session
     if require_identity:
         raise HTTPException(
             status_code=400,
@@ -403,12 +425,11 @@ def _run_dashboard_chat(
     test_email: str = "",
     test_phone: str = "",
 ):
-    require_identity = _has_customer_integration(session, tenant.id)
     session_id = _dashboard_chat_session_id(
         user,
         test_email=test_email,
         test_phone=test_phone,
-        require_identity=require_identity,
+        require_identity=False,
     )
     repo = SqlAlchemyConversationRepository(session, tenant.id)
     hook_repo = SqlAlchemyHookEventRepository(session, tenant.id)
@@ -423,6 +444,10 @@ class ChatTestSendOut(BaseModel):
     validation_url: str | None = None
     pending_reply_id: int | None = None
     message: str | None = None
+    quote_name: str | None = None
+    pdf_url: str | None = None
+    pdf_filename: str | None = None
+    pdf_warning: str | None = None
 
 
 class EmailTestSendOut(BaseModel):
@@ -854,9 +879,26 @@ def bot_detail(
         ctx["chat_messages_json"] = json.dumps(
             [{"role": m.role.value, "content": m.content} for m in messages]
         )
+        session_repo = TestChatSessionRepository(session, tenant.id)
+        ctx["test_chat_sessions"] = session_repo.list_recent()
+        chat_quote_pdf: dict[str, str] | None = None
+        session_row = session_repo.find(test_sid)
+        if session_row and session_row.last_quote_name:
+            pdf_path = quote_pdf_path(settings, slug, session_row.last_quote_name)
+            if pdf_path is not None:
+                safe_name = safe_quote_filename(session_row.last_quote_name)
+                chat_quote_pdf = {
+                    "quote_name": session_row.last_quote_name,
+                    "pdf_url": quote_pdf_dashboard_url(slug, session_row.last_quote_name),
+                    "pdf_filename": f"{safe_name}.pdf",
+                    "message": f"Quotation: {session_row.last_quote_name}",
+                }
+        ctx["chat_quote_pdf_json"] = json.dumps(chat_quote_pdf) if chat_quote_pdf else "null"
     elif tab == "validation":
         ctx["pending_replies"] = pending_repo.list_pending(tenant.id)
-        ctx["pending_replies_ui"] = _pending_replies_for_ui(session, tenant.id, ctx["pending_replies"])
+        ctx["pending_replies_ui"] = _pending_replies_for_ui(
+            session, tenant.id, ctx["pending_replies"], tenant_slug=slug
+        )
         ctx["fulfillment_kind_quote"] = FulfillmentKind.ERPNEXT_QUOTE.value
     elif tab == "integrations":
         by_type = {i.type.value: i for i in integrations}
@@ -1239,6 +1281,7 @@ async def save_integration(
     user: User = Depends(require_editor),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
 ):
     tenant = _tenant_or_404(tenant_service, slug)
@@ -1258,8 +1301,29 @@ async def save_integration(
     incoming = _integration_config_from_form(integration_type, field_values)
     svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
     existing = svc.find(tenant.id, type=itype)
+    prev_enabled = (
+        catalog_rag_effective_enabled(
+            active=existing.active if existing else False,
+            config=existing.config if existing else {},
+        )
+        if itype == IntegrationType.ERPNEXT
+        else False
+    )
     cfg = _merge_integration_config(existing.config if existing else None, incoming)
-    svc.upsert(tenant_id=tenant.id, type=itype, config=cfg, active=active == "on")
+    saved = svc.upsert(tenant_id=tenant.id, type=itype, config=cfg, active=active == "on")
+    if itype == IntegrationType.ERPNEXT:
+        now_enabled = catalog_rag_effective_enabled(active=saved.active, config=saved.config)
+        apply_catalog_rag_transition(
+            session,
+            settings,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            integration_id=saved.id,
+            config=saved.config,
+            prev_enabled=prev_enabled,
+            now_enabled=now_enabled,
+            run_sync_background=_run_catalog_sync_background,
+        )
     session.commit()
     return RedirectResponse(
         url=f"/dashboard/bots/{slug}?tab=integrations&integration_type={integration_type}",
@@ -1274,6 +1338,7 @@ def toggle_integration(
     user: User = Depends(require_editor),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
 ):
     tenant = _tenant_or_404(tenant_service, slug)
@@ -1282,7 +1347,25 @@ def toggle_integration(
     integration = svc.get(integration_id)
     if integration is None or integration.tenant_id != tenant.id:
         raise HTTPException(status_code=404)
-    svc.set_active(integration_id, not integration.active)
+    prev_enabled = (
+        catalog_rag_effective_enabled(active=integration.active, config=integration.config)
+        if integration.type == IntegrationType.ERPNEXT
+        else False
+    )
+    updated = svc.set_active(integration_id, not integration.active)
+    if updated and updated.type == IntegrationType.ERPNEXT:
+        now_enabled = catalog_rag_effective_enabled(active=updated.active, config=updated.config)
+        apply_catalog_rag_transition(
+            session,
+            settings,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            integration_id=updated.id,
+            config=updated.config,
+            prev_enabled=prev_enabled,
+            now_enabled=now_enabled,
+            run_sync_background=_run_catalog_sync_background,
+        )
     session.commit()
     return RedirectResponse(
         url=f"/dashboard/bots/{slug}?tab=integrations&integration_type={integration.type.value}",
@@ -1297,6 +1380,7 @@ def delete_integration(
     user: User = Depends(require_editor),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
 ):
     tenant = _tenant_or_404(tenant_service, slug)
@@ -1305,6 +1389,21 @@ def delete_integration(
     integration = svc.get(integration_id)
     if integration is None or integration.tenant_id != tenant.id:
         raise HTTPException(status_code=404)
+    if (
+        integration.type == IntegrationType.ERPNEXT
+        and catalog_rag_effective_enabled(active=integration.active, config=integration.config)
+    ):
+        apply_catalog_rag_transition(
+            session,
+            settings,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            integration_id=integration.id,
+            config=integration.config,
+            prev_enabled=True,
+            now_enabled=False,
+            run_sync_background=_run_catalog_sync_background,
+        )
     svc.delete(integration_id)
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=integrations", status_code=303)
@@ -1553,6 +1652,27 @@ async def sync_erpnext_catalog(
             "message": "Catalog sync started in background. Refresh this page to see status.",
         }
     )
+
+
+@router.post("/bots/{slug}/integrations/erpnext/purge-catalog")
+def purge_erpnext_catalog(
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    logs = purge_catalog_files_and_rag(
+        session,
+        settings=settings,
+        tenant_id=tenant.id,
+        tenant_slug=tenant.slug,
+    )
+    session.commit()
+    return JSONResponse({"ok": True, "message": "Catalog files and RAG vectors purged.", "logs": logs})
 
 
 @router.get("/bots/{slug}/integrations/erpnext/quotation-pdf/{quote_name}")
@@ -1891,6 +2011,7 @@ def bot_chat_test_reset(
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
 ):
     tenant = _tenant_or_404(tenant_service, slug)
@@ -1903,6 +2024,16 @@ def bot_chat_test_reset(
         require_identity=False,
     )
     repo.clear_session(session_id)
+    session_repo = TestChatSessionRepository(session, tenant.id)
+    row = session_repo.find(session_id)
+    if row and row.last_quote_name:
+        pdf = quote_pdf_path(settings, slug, row.last_quote_name)
+        if pdf is not None:
+            try:
+                pdf.unlink()
+            except OSError:
+                pass
+    session_repo.clear_quote(session_id)
     session.commit()
     params = []
     if test_email.strip():
@@ -1946,6 +2077,11 @@ def bot_chat_test_send(
         pending_reply_id: int | None = None
         validation_url: str | None = None
         status_message: str | None = None
+        quote_name: str | None = None
+        pdf_url: str | None = None
+        pdf_filename: str | None = None
+        pdf_warning: str | None = None
+        TestChatSessionRepository(session, tenant.id).upsert(session_id)
         if hook_type:
             connector = _first_active_outbound_connector(session, tenant.id)
             if connector is None:
@@ -1953,27 +2089,66 @@ def bot_chat_test_send(
                     "Hook detected but no active outbound connector is configured."
                 )
             else:
-                email, phone = resolve_manual_identity(
-                    test_email=test_email,
-                    test_phone=test_phone,
-                )
-                recipient_id = email or phone or session_id
-                queue_status, pending = queue_after_chat(
-                    session,
-                    tenant_id=tenant.id,
-                    connector=connector,
-                    session_id=session_id,
-                    recipient_id=recipient_id,
-                    result=result,
-                    settings=settings,
-                )
-                if queue_status == "queued" and pending is not None:
-                    queued = True
-                    pending_reply_id = pending.id
-                    validation_url = f"/dashboard/bots/{slug}?tab=validation"
-                    status_message = "Reply queued for validation."
-                elif not status_message:
-                    status_message = "Hook detected but reply was not queued."
+                quote_created = False
+                quote_hook = resolve_quote_hook(session, tenant.id, result)
+                if quote_hook is not None:
+                    proposal, resolved_json = quote_hook
+                    from chatbot.application.customer_access_gate import can_create_quotation
+                    from chatbot.application.outbound_orchestrator import erpnext_integration_for_tenant
+
+                    integration = erpnext_integration_for_tenant(session, tenant.id)
+                    if (
+                        integration
+                        and can_create_quotation(integration[1])
+                        and all_lines_resolved(resolved_json)
+                    ):
+                        try:
+                            created = create_quote_for_session(
+                                session,
+                                tenant_id=tenant.id,
+                                settings=settings,
+                                tenant_slug=tenant.slug,
+                                session_id=session_id,
+                                proposal=proposal,
+                                resolved_json=resolved_json,
+                                ttl_seconds=None,
+                            )
+                            quote_name = created.quote_name
+                            pdf_url = created.pdf_url
+                            pdf_filename = created.pdf_filename
+                            pdf_warning = created.pdf_warning
+                            status_message = f"Quotation created: {quote_name}"
+                            quote_created = True
+                            TestChatSessionRepository(session, tenant.id).upsert(
+                                session_id,
+                                last_quote_name=quote_name,
+                            )
+                        except QuoteFulfillmentError as exc:
+                            status_message = str(exc)
+                if not quote_created:
+                    email, phone = resolve_manual_identity(
+                        test_email=test_email,
+                        test_phone=test_phone,
+                    )
+                    recipient_id = email or phone or session_id
+                    queue_status, pending = queue_after_chat(
+                        session,
+                        tenant_id=tenant.id,
+                        connector=connector,
+                        session_id=session_id,
+                        recipient_id=recipient_id,
+                        result=result,
+                        settings=settings,
+                        tenant_slug=tenant.slug,
+                    )
+                    if queue_status == "queued" and pending is not None:
+                        queued = True
+                        pending_reply_id = pending.id
+                        validation_url = f"/dashboard/bots/{slug}?tab=validation"
+                        if not status_message:
+                            status_message = "Reply queued for validation."
+                    elif not status_message:
+                        status_message = "Hook detected but reply was not queued."
         session.commit()
         return ChatTestSendOut(
             reply=result.text,
@@ -1982,6 +2157,10 @@ def bot_chat_test_send(
             validation_url=validation_url,
             pending_reply_id=pending_reply_id,
             message=status_message,
+            quote_name=quote_name,
+            pdf_url=pdf_url,
+            pdf_filename=pdf_filename,
+            pdf_warning=pdf_warning,
         )
     except HTTPException:
         session.rollback()

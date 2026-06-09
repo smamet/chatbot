@@ -82,6 +82,7 @@ async def whatsapp_inbound(
         recipient_id=wa_id,
         result=result,
         settings=settings,
+        tenant_slug=tenant.slug,
     )
     session.commit()
     return {"status": status}

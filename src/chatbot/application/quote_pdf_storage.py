@@ -5,6 +5,7 @@ import threading
 from pathlib import Path
 
 from chatbot.config.settings import Settings
+from chatbot.domain.models.outbound_attachment import OutboundAttachment
 from chatbot.domain.models.pending_reply import PendingReply
 
 TEST_QUOTE_PDF_TTL_SECONDS = 120
@@ -87,6 +88,37 @@ def parse_attachment_paths(attachments_json: str | None) -> list[Path]:
         if path_str:
             paths.append(Path(path_str))
     return paths
+
+
+def load_attachments_from_json(attachments_json: str | None) -> list[OutboundAttachment]:
+    if not attachments_json:
+        return []
+    try:
+        raw = json.loads(attachments_json)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    attachments: list[OutboundAttachment] = []
+    for row in raw:
+        if not isinstance(row, dict):
+            continue
+        path_str = str(row.get("path", "")).strip()
+        filename = str(row.get("filename", "")).strip() or "attachment.pdf"
+        mime_type = str(row.get("mime_type", "application/pdf")).strip() or "application/pdf"
+        if not path_str:
+            continue
+        path = Path(path_str)
+        if not path.is_file():
+            continue
+        attachments.append(
+            OutboundAttachment(
+                filename=filename,
+                data=path.read_bytes(),
+                mime_type=mime_type,
+            )
+        )
+    return attachments
 
 
 def delete_attachment_files(attachments_json: str | None) -> None:

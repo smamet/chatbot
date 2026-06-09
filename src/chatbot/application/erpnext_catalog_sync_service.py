@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from sqlalchemy.orm import Session
 
@@ -333,3 +333,84 @@ def run_due_catalog_syncs(
         status = "ok" if result.ok else "failed"
         logs.append(f"{tenant.slug}: {status} — {result.message}")
     return logs
+
+
+def catalog_rag_effective_enabled(*, active: bool, config: dict[str, Any]) -> bool:
+    return active and catalog_sync_enabled(config)
+
+
+def _purge_catalog_rag_vectors(
+    session: Session,
+    *,
+    settings: Settings,
+    tenant_id: int,
+    tenant_slug: str,
+) -> list[str]:
+    catalog_dir = tenant_catalog_dir(settings, tenant_slug)
+    embedder = GeminiEmbedder()
+    vector_store = LanceVectorStore(settings.lancedb_root / tenant_slug)
+    sync = IngestSyncService(
+        settings=settings,
+        embedder=embedder,
+        vector_store=vector_store,
+        session=session,
+        tenant_id=tenant_id,
+    )
+    return sync.purge_under_root(catalog_dir)
+
+
+def purge_catalog_files_and_rag(
+    session: Session,
+    *,
+    settings: Settings,
+    tenant_id: int,
+    tenant_slug: str,
+) -> list[str]:
+    catalog_dir = tenant_catalog_dir(settings, tenant_slug)
+    logs = _purge_catalog_rag_vectors(
+        session,
+        settings=settings,
+        tenant_id=tenant_id,
+        tenant_slug=tenant_slug,
+    )
+    removed = 0
+    if catalog_dir.is_dir():
+        for path in catalog_dir.glob("*.md"):
+            try:
+                path.unlink()
+                removed += 1
+            except OSError:
+                logs.append(f"failed to delete: {path}")
+    logs.append(f"removed {removed} catalog markdown files")
+    return logs
+
+
+def apply_catalog_rag_transition(
+    session: Session,
+    settings: Settings,
+    *,
+    tenant_id: int,
+    tenant_slug: str,
+    integration_id: int,
+    config: dict[str, Any],
+    prev_enabled: bool,
+    now_enabled: bool,
+    run_sync_background: Callable[..., None],
+) -> None:
+    if prev_enabled == now_enabled:
+        return
+    if now_enabled:
+        run_sync_background(
+            settings,
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+            integration_id=integration_id,
+            config=dict(config),
+        )
+        return
+    _purge_catalog_rag_vectors(
+        session,
+        settings=settings,
+        tenant_id=tenant_id,
+        tenant_slug=tenant_slug,
+    )

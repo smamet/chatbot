@@ -9,6 +9,7 @@ from chatbot.adapters.erpnext.client import ErpNextClient
 from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.application.connector_service import ConnectorService
+from chatbot.application.customer_access_gate import can_create_quotation
 from chatbot.application.integration_service import IntegrationService
 from chatbot.application.product_resolver import ProductResolver, resolved_lines_to_json
 from chatbot.automation.modules.base import FulfillmentMode
@@ -37,6 +38,38 @@ def erpnext_integration_for_tenant(
     return ErpNextClient(integration.config), integration.config
 
 
+def _queue_quote_pending(
+    session: Session,
+    *,
+    tenant_id: int,
+    connector: Connector,
+    session_id: str,
+    recipient_id: str,
+    result: LlmResult,
+    resolved_json: str | None,
+    quote_external_id: str | None = None,
+    attachments_json: str | None = None,
+) -> PendingReply:
+    from chatbot.application.channel_outbound import queue_pending_reply
+
+    pending = queue_pending_reply(
+        session,
+        tenant_id=tenant_id,
+        connector_id=connector.id,
+        session_id=session_id,
+        channel=connector.type.value,
+        recipient_id=recipient_id,
+        draft_text=result.text,
+        hook_event_id=getattr(result, "hook_event_id", None),
+        fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
+        quote_proposal_json=getattr(result, "hook_payload_json", None),
+        quote_resolved_json=resolved_json,
+        quote_external_id=quote_external_id,
+        attachments_json=attachments_json,
+    )
+    return pending
+
+
 def queue_after_chat(
     session: Session,
     *,
@@ -46,6 +79,7 @@ def queue_after_chat(
     recipient_id: str,
     result: LlmResult,
     settings: Settings,
+    tenant_slug: str,
 ) -> tuple[str, PendingReply | None]:
     """Return (status, pending_reply_if_queued)."""
     from chatbot.application.channel_outbound import (
@@ -64,6 +98,11 @@ def queue_after_chat(
         if proposal is None:
             is_quote = False
         else:
+            from chatbot.application.quote_fulfillment_service import (
+                all_lines_resolved,
+                create_quote_for_session,
+            )
+
             client = _erpnext_client_for_tenant(session, tenant_id)
             resolved_json = None
             if client:
@@ -77,18 +116,53 @@ def queue_after_chat(
                     for line in proposal.lines
                 ]
                 resolved_json = resolved_lines_to_json(resolver.resolve_all(lines))
-            pending = queue_pending_reply(
+
+            integration = erpnext_integration_for_tenant(session, tenant_id)
+            integration_config = integration[1] if integration else {}
+            quote_external_id: str | None = None
+            attachments_json: str | None = None
+            if (
+                integration
+                and can_create_quotation(integration_config)
+                and all_lines_resolved(resolved_json)
+            ):
+                try:
+                    created = create_quote_for_session(
+                        session,
+                        tenant_id=tenant_id,
+                        settings=settings,
+                        tenant_slug=tenant_slug,
+                        session_id=session_id,
+                        proposal=proposal,
+                        resolved_json=resolved_json or "[]",
+                    )
+                    quote_external_id = created.quote_name
+                    attachments_json = created.attachments_json
+                    resolved_json = created.resolved_json
+                except Exception as exc:
+                    repo = SqlAlchemyPendingReplyRepository(session)
+                    pending = _queue_quote_pending(
+                        session,
+                        tenant_id=tenant_id,
+                        connector=connector,
+                        session_id=session_id,
+                        recipient_id=recipient_id,
+                        result=result,
+                        resolved_json=resolved_json,
+                    )
+                    repo.update_quote_fields(pending.id, fulfillment_error=str(exc))
+                    return "queued", pending
+
+            pending = _queue_quote_pending(
                 session,
                 tenant_id=tenant_id,
-                connector_id=connector.id,
+                connector=connector,
                 session_id=session_id,
-                channel=connector.type.value,
                 recipient_id=recipient_id,
-                draft_text=result.text,
-                hook_event_id=getattr(result, "hook_event_id", None),
-                fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
-                quote_proposal_json=getattr(result, "hook_payload_json", None),
-                quote_resolved_json=resolved_json,
+                result=result,
+                resolved_json=resolved_json,
+                quote_external_id=quote_external_id,
+                attachments_json=attachments_json,
             )
             return "queued", pending
 

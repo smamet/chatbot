@@ -55,6 +55,8 @@ class SqlAlchemyPendingReplyRepository:
         fulfillment_kind: FulfillmentKind = FulfillmentKind.REPLY_ONLY,
         quote_proposal_json: str | None = None,
         quote_resolved_json: str | None = None,
+        quote_external_id: str | None = None,
+        attachments_json: str | None = None,
     ) -> PendingReply:
         now = datetime.now(UTC)
         row = PendingReplyRow(
@@ -69,6 +71,8 @@ class SqlAlchemyPendingReplyRepository:
             fulfillment_kind=fulfillment_kind.value,
             quote_proposal_json=quote_proposal_json,
             quote_resolved_json=quote_resolved_json,
+            quote_external_id=quote_external_id,
+            attachments_json=attachments_json,
             created_at=now,
             updated_at=now,
         )

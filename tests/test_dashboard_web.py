@@ -767,16 +767,45 @@ def _save_erpnext_integration(client: TestClient, slug: str, **extra: str) -> No
     assert r.status_code == 303
 
 
-def test_chat_test_requires_identity_when_integration_active(dashboard_env) -> None:
-    client, admin, _, slug, *_ = dashboard_env
+def test_chat_test_works_without_identity_when_integration_active(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
     _save_erpnext_integration(client, slug)
     r = client.post(
         f"/dashboard/bots/{slug}/chat-test/send",
         data={"message": "hello"},
     )
-    assert r.status_code == 400
-    assert "email or phone" in r.json()["detail"].lower()
+    assert r.status_code == 200
+    with factory() as session:
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+
+        msgs = SqlAlchemyConversationRepository(session, tenant_id).list_messages(
+            f"dashboard:{admin.id}", limit=10
+        )
+        assert len(msgs) == 2
+
+
+def test_chat_test_lists_previous_sessions(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/chat-test/send",
+        data={"message": "hello", "test_email": "client@example.com"},
+    )
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    assert r.status_code == 200
+    assert "Previous conversations" in r.text
+    assert "client@example.com" in r.text
+    with factory() as session:
+        from chatbot.adapters.persistence.test_chat_session_repository import (
+            TestChatSessionRepository,
+        )
+
+        rows = TestChatSessionRepository(session, tenant_id).list_recent()
+        assert len(rows) == 1
+        assert rows[0].session_id == "email:client@example.com"
 
 
 def test_chat_test_uses_identity_session_id(dashboard_env) -> None:
@@ -934,7 +963,7 @@ def test_create_quotation_stream_ndjson(dashboard_env) -> None:
     assert events[-1]["quote_name"] == "QTN-STREAM"
 
 
-def test_chat_test_queues_quote_hook(dashboard_env) -> None:
+def test_chat_test_auto_creates_quote_when_resolved(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
     _save_erpnext_integration(client, slug, allow_create_quotation="on")
@@ -963,7 +992,90 @@ def test_chat_test_queues_quote_hook(dashboard_env) -> None:
             user,
             test_email=test_email,
             test_phone=test_phone,
-            require_identity=True,
+            require_identity=False,
+        )
+        result = SimpleNamespace(
+            text="Your quote is ready.",
+            usage=SimpleNamespace(prompt_tokens=1, candidates_tokens=1, total_tokens=2),
+            hook_type="quote.create",
+            hook_payload_json='{"type":"quote.create","lines":[{"product":"Widget","qty":1}]}',
+            hook_event_id=None,
+        )
+        return session_id, result
+
+    created = SimpleNamespace(
+        quote_name="QTN-TEST",
+        pdf_url=f"/dashboard/bots/{slug}/integrations/erpnext/quotation-pdf/QTN-TEST",
+        pdf_filename="QTN-TEST.pdf",
+        pdf_warning=None,
+    )
+
+    dash_mod._run_dashboard_chat = _hook_run  # type: ignore[assignment]
+    try:
+        with patch(
+            "chatbot.interfaces.api.routers.dashboard_web.resolve_quote_hook",
+            return_value=(
+                SimpleNamespace(lines=(SimpleNamespace(product="Widget", qty=1, item_code=None),), notes=None),
+                '[{"requested_label":"Widget","qty":1,"item_code":"SKU-1","status":"resolved"}]',
+            ),
+        ), patch(
+            "chatbot.interfaces.api.routers.dashboard_web.create_quote_for_session",
+            return_value=created,
+        ):
+            r = client.post(
+                f"/dashboard/bots/{slug}/chat-test/send",
+                data={
+                    "message": "I need a quote",
+                    "test_email": "client@example.com",
+                },
+            )
+    finally:
+        dash_mod._run_dashboard_chat = original_run  # type: ignore[assignment]
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["queued"] is False
+    assert body["pdf_url"] == created.pdf_url
+    assert body["quote_name"] == "QTN-TEST"
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).list_pending(tenant_id)
+        assert pending == []
+
+
+def test_chat_test_queues_quote_hook_when_unresolved(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    _save_erpnext_integration(client, slug, allow_create_quotation="on")
+    client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "email",
+            "direction": "out",
+            "mode": "validation",
+            "active": "on",
+            "smtp_host": "smtp.example.com",
+            "smtp_port": "587",
+            "username": "bot@example.com",
+            "password": "secret",
+            "from_addr": "bot@example.com",
+        },
+        follow_redirects=False,
+    )
+
+    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+
+    original_run = dash_mod._run_dashboard_chat
+
+    def _hook_run(request, settings, tenant, user, message, session, *, test_email="", test_phone=""):
+        session_id = dash_mod._dashboard_chat_session_id(
+            user,
+            test_email=test_email,
+            test_phone=test_phone,
+            require_identity=False,
         )
         result = SimpleNamespace(
             text="Your quote is ready for review.",
@@ -978,7 +1090,7 @@ def test_chat_test_queues_quote_hook(dashboard_env) -> None:
     try:
         with patch(
             "chatbot.application.outbound_orchestrator.resolved_lines_to_json",
-            return_value='[{"requested_label":"Widget","qty":1,"item_code":"SKU-1","status":"resolved"}]',
+            return_value='[{"requested_label":"Widget","qty":1,"status":"ambiguous"}]',
         ):
             r = client.post(
                 f"/dashboard/bots/{slug}/chat-test/send",
@@ -1017,3 +1129,16 @@ def test_sync_catalog_endpoint_starts_background_job(dashboard_env) -> None:
     assert body["ok"] is True
     assert "background" in body["message"].lower()
     mock_run.assert_called_once()
+
+
+def test_purge_catalog_endpoint(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    _save_erpnext_integration(client, slug)
+    catalog_dir = data / "catalog" / slug
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    (catalog_dir / "item.md").write_text("# item", encoding="utf-8")
+    r = client.post(f"/dashboard/bots/{slug}/integrations/erpnext/purge-catalog")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert not list(catalog_dir.glob("*.md"))

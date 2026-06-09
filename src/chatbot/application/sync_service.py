@@ -67,6 +67,25 @@ class IngestSyncService:
         self._session.flush()
         return logs
 
+    def purge_under_root(self, root: Path) -> list[str]:
+        """Remove vector rows and ingested_files records under root; keep source files on disk."""
+        root = root.resolve()
+        logs: list[str] = []
+        rows = list(
+            self._session.scalars(
+                select(IngestedFileRow).where(IngestedFileRow.tenant_id == self._tenant_id)
+            ).all()
+        )
+        under = [r for r in rows if _is_path_under_root(r.path, root)]
+        for row in under:
+            self._store.delete_by_source_path(row.path)
+            self._session.delete(row)
+            logs.append(f"purged index: {row.path}")
+        self._session.flush()
+        if not under:
+            logs.append("no ingested paths under root")
+        return logs
+
     def clear_tenant_index(self) -> list[str]:
         n = (
             self._session.scalar(

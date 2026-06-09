@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
@@ -118,3 +119,40 @@ def test_fulfill_fails_when_customer_missing_and_creation_disabled() -> None:
     ):
         with pytest.raises(QuoteFulfillmentError, match="Customer creation is disabled"):
             svc.fulfill_and_approve(reply, config={})
+
+
+def test_fulfill_sends_precreated_quote_without_recreating() -> None:
+    session = MagicMock()
+    settings = get_settings()
+    svc = QuoteFulfillmentService(session, settings=settings, tenant_slug="bot")
+    base = _quote_reply()
+    reply = replace(
+        base,
+        quote_external_id="QTN-0001",
+        attachments_json=json.dumps(
+            [{"filename": "QTN-0001.pdf", "path": "/tmp/QTN-0001.pdf", "mime_type": "application/pdf"}]
+        ),
+    )
+    integration_config = {"allow_create_quotation": True, "allow_create_customer": True}
+    client = MagicMock()
+
+    with patch(
+        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        return_value=(client, integration_config),
+    ), patch(
+        "chatbot.application.quote_fulfillment_service.load_attachments_from_json",
+        return_value=[MagicMock()],
+    ) as load_mock, patch(
+        "chatbot.application.quote_fulfillment_service.approve_pending_reply",
+        return_value=reply,
+    ) as approve_mock, patch(
+        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+    ) as repo_cls, patch(
+        "chatbot.application.quote_fulfillment_service.delete_attachment_files",
+    ):
+        repo = repo_cls.return_value
+        svc.fulfill_and_approve(reply, config={})
+        client.create_quotation.assert_not_called()
+        load_mock.assert_called_once_with(reply.attachments_json)
+        approve_mock.assert_called_once()
+        repo.update_quote_fields.assert_any_call(reply.id, clear_attachments_json=True)

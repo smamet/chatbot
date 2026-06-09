@@ -277,3 +277,24 @@ class MailImapUidRow(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
+
+
+class TestChatSessionRow(Base):
+    __tablename__ = "test_chat_sessions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "session_id", name="uq_test_chat_sessions_tenant_session"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    session_id: Mapped[str] = mapped_column(String(256))
+    label: Mapped[str] = mapped_column(String(256))
+    last_quote_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )

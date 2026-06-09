@@ -5,10 +5,12 @@ from unittest.mock import MagicMock
 from chatbot.application.customer_access_gate import (
     CustomerAccessGate,
     CustomerContext,
+    build_channel_session_id,
     format_context,
     parse_session_identity,
     resolve_manual_identity,
     session_display_label,
+    session_resume_params,
 )
 
 
@@ -22,6 +24,16 @@ def test_parse_session_identity_email() -> None:
     email, phone = parse_session_identity("email:Alice@Example.com")
     assert email == "alice@example.com"
     assert phone is None
+
+
+def test_parse_session_identity_email_with_phone() -> None:
+    email, phone = parse_session_identity("email:alice@example.com|+33612345678")
+    assert email == "alice@example.com"
+    assert phone == "+33612345678"
+
+
+def test_session_display_label_hides_phone_suffix() -> None:
+    assert session_display_label("email:alice@example.com|+33612345678") == "alice@example.com"
 
 
 def test_resolve_manual_identity_ignores_email_in_phone_field() -> None:

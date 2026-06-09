@@ -345,4 +345,31 @@
       }
     });
   });
+
+  document.querySelectorAll(".integration-catalog-purge-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Delete all catalog markdown files and remove them from RAG?")) return;
+      const resultEl = document.querySelector(".integration-catalog-sync-result");
+      if (!resultEl) return;
+      const slug = btn.dataset.slug;
+      btn.disabled = true;
+      resultEl.hidden = false;
+      resultEl.className = "integration-catalog-sync-result integration-test-result";
+      resultEl.textContent = "Purging catalog…";
+      try {
+        const res = await fetch(`/dashboard/bots/${slug}/integrations/erpnext/purge-catalog`, {
+          method: "POST",
+          credentials: "same-origin",
+        });
+        const data = await res.json();
+        resultEl.classList.add(data.ok ? "ok" : "err");
+        resultEl.textContent = data.message || data.error || "Done";
+      } catch (err) {
+        resultEl.classList.add("err");
+        resultEl.textContent = String(err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
 })();

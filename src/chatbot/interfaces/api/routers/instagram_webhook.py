@@ -83,6 +83,7 @@ async def instagram_inbound(
         recipient_id=ig_id,
         result=result,
         settings=settings,
+        tenant_slug=tenant.slug,
     )
     session.commit()
     return {"status": status}

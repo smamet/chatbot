@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import uuid
 from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
 
 import pytest
 from sqlalchemy import select
@@ -188,3 +188,49 @@ def test_ingest_paths_batched_flushes_in_chunks(sync_session) -> None:
     logs = svc.ingest_paths_batched(files, batch_size=2)
     assert logs == ["ingested", "ingested", "ingested"]
     assert svc._ingest.ingest_path.call_count == 3
+
+
+def test_purge_under_root_removes_vectors_keeps_files(
+    test_settings, test_tenant, monkeypatch
+) -> None:
+    tenant, _token = test_tenant
+    catalog_dir = test_settings.data_root / "catalog" / tenant.slug
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    md_path = catalog_dir / "item.md"
+    md_path.write_text("# item", encoding="utf-8")
+
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    deleted_paths: list[str] = []
+
+    class FakeStore:
+        def delete_by_source_path(self, path: str) -> None:
+            deleted_paths.append(path)
+
+    with factory() as session:
+        from chatbot.adapters.persistence.orm import IngestedFileRow
+
+        session.add(
+            IngestedFileRow(
+                tenant_id=tenant.id,
+                path=str(md_path),
+                content_hash="abc",
+            )
+        )
+        session.commit()
+
+        from chatbot.application.sync_service import IngestSyncService
+
+        svc = IngestSyncService(
+            settings=test_settings,
+            embedder=MagicMock(),
+            vector_store=FakeStore(),
+            session=session,
+            tenant_id=tenant.id,
+        )
+        logs = svc.purge_under_root(catalog_dir)
+        session.commit()
+
+    assert md_path.is_file()
+    assert str(md_path) in deleted_paths
+    assert any("purged index" in line for line in logs)

@@ -60,9 +60,15 @@
 
   function initIdentityFields() {
     if (!testEmailInput && !testPhoneInput) return;
-    const { email, phone } = loadStoredIdentity();
-    if (testEmailInput) testEmailInput.value = email;
-    if (testPhoneInput) testPhoneInput.value = phone;
+    const urlEmail = testEmailInput?.value?.trim() || "";
+    const urlPhone = testPhoneInput?.value?.trim() || "";
+    if (urlEmail || urlPhone) {
+      saveStoredIdentity(urlEmail, urlPhone);
+    } else {
+      const { email, phone } = loadStoredIdentity();
+      if (testEmailInput) testEmailInput.value = email;
+      if (testPhoneInput) testPhoneInput.value = phone;
+    }
     syncIdentityFields();
   }
 
@@ -71,7 +77,8 @@
     if (resetEmailInput) resetEmailInput.value = email;
     if (resetPhoneInput) resetPhoneInput.value = phone;
     if (sessionLabelEl) {
-      if (email) sessionLabelEl.textContent = `email:${email.toLowerCase()}`;
+      if (email && phone) sessionLabelEl.textContent = `email:${email.toLowerCase()}|${phone}`;
+      else if (email) sessionLabelEl.textContent = `email:${email.toLowerCase()}`;
       else if (phone) sessionLabelEl.textContent = `whatsapp:${phone}`;
       else if (requireIdentity) sessionLabelEl.textContent = "(set test email or phone)";
       else sessionLabelEl.textContent = sessionLabelEl.dataset.defaultSession || sessionLabelEl.textContent;
@@ -130,7 +137,20 @@
 
   function showHookStatus(data) {
     if (!hookStatusEl) return;
+    if (!data || (!data.pdf_url && !data.queued && !data.hook_type && !data.message)) {
+      hookStatusEl.hidden = true;
+      hookStatusEl.textContent = "";
+      return;
+    }
     hookStatusEl.hidden = false;
+    if (data.pdf_url) {
+      const label = data.pdf_filename || "Download PDF";
+      hookStatusEl.innerHTML = `${data.message || "Quotation available."} <a class="btn-secondary btn-sm" href="${data.pdf_url}" download>${label}</a>`;
+      if (data.pdf_warning) {
+        hookStatusEl.innerHTML += ` <span class="text-muted">${data.pdf_warning}</span>`;
+      }
+      return;
+    }
     if (data.queued && validationUrl) {
       hookStatusEl.innerHTML = `${data.message || "Quote queued."} <a href="${validationUrl}">Open Validation</a>`;
       return;
@@ -141,6 +161,17 @@
     }
     hookStatusEl.hidden = true;
     hookStatusEl.textContent = "";
+  }
+
+  function loadInitialQuotePdf() {
+    const raw = panel.dataset.quotePdf;
+    if (!raw || raw === "null") return;
+    try {
+      const data = JSON.parse(raw);
+      if (data?.pdf_url) showHookStatus(data);
+    } catch (_) {
+      /* ignore malformed bootstrap JSON */
+    }
   }
 
   function loadInitial() {
@@ -159,11 +190,8 @@
   async function sendMessage(text) {
     if (loading || !text.trim()) return;
     const { email, phone } = identityValues();
-    if (requireIdentity && !email && !phone) {
-      appendMessage("assistant", "Error: test email or phone is required.");
-      return;
-    }
     syncIdentityFields();
+    saveStoredIdentity(email, phone);
     abortController = new AbortController();
     setLoading(true);
     appendMessage("user", text.trim());
@@ -238,6 +266,7 @@
   }
   initIdentityFields();
   loadInitial();
+  loadInitialQuotePdf();
   scrollThread();
   input?.focus();
 })();

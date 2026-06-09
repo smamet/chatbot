@@ -41,7 +41,10 @@ def parse_session_identity(session_id: str) -> tuple[str | None, str | None]:
     if not raw_id:
         return None, None
     if channel == "email":
-        return raw_id.lower(), None
+        email_part, sep, phone_part = raw_id.partition("|")
+        email = email_part.strip().lower() or None
+        phone = phone_part.strip() if sep and phone_part.strip() else None
+        return email, phone
     if channel == "whatsapp":
         return None, raw_id
     return None, None
@@ -49,9 +52,29 @@ def parse_session_identity(session_id: str) -> tuple[str | None, str | None]:
 
 def session_display_label(session_id: str) -> str:
     """Human-readable session id for dashboard display (strips channel prefix)."""
-    if ":" in session_id:
-        return session_id.split(":", 1)[1]
-    return session_id
+    if ":" not in session_id:
+        return session_id
+    channel, raw_id = session_id.split(":", 1)
+    if channel == "email":
+        return raw_id.partition("|")[0]
+    return raw_id
+
+
+def session_resume_params(session_id: str) -> dict[str, str]:
+    """Query-string fields to reopen a dashboard test chat session."""
+    email, phone = parse_session_identity(session_id)
+    return {"email": email or "", "phone": phone or ""}
+
+
+def build_channel_session_id(*, email: str | None, phone: str | None) -> str | None:
+    """Build session_id for channel-bound identity (email + optional phone)."""
+    if email and phone:
+        return f"email:{email}|{phone}"
+    if email:
+        return f"email:{email}"
+    if phone:
+        return f"whatsapp:{phone}"
+    return None
 
 
 def format_context(ctx: CustomerContext) -> str:

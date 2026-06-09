@@ -740,6 +740,7 @@
             <div><dt>Last error</dt><dd class="integration-catalog-last-error">—</dd></div>
           </dl>
           <button type="button" class="btn-secondary btn-sm integration-catalog-sync-btn" data-slug="{{ tenant.slug }}">Sync catalog now</button>
+          <button type="button" class="btn-danger btn-sm integration-catalog-purge-btn" data-slug="{{ tenant.slug }}">Purge catalog files</button>
           <pre class="integration-catalog-sync-result integration-test-result" hidden></pre>
         </div>
       </details>
@@ -1046,6 +1047,9 @@
           </div>
         <div class="validation-quote-card card card--flat">
           {% if r.fulfillment_error %}<p class="validation-error">{{ r.fulfillment_error }}</p>{% endif %}
+          {% if item.quote_pdf_url %}
+          <p><a class="btn-secondary btn-sm" href="{{ item.quote_pdf_url }}" download>Download PDF</a> <code>{{ r.quote_external_id }}</code></p>
+          {% endif %}
           {% if item.resolved_lines %}
           <h4>Quote lines</h4>
           <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}/approve">
@@ -1141,7 +1145,8 @@
      data-bot-slug="{{ tenant.slug }}"
      data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send"
      data-validation-url="{{ chat_validation_url }}"
-     data-require-identity="{{ 'true' if chat_require_identity else 'false' }}">
+     data-require-identity="{{ 'true' if chat_require_identity else 'false' }}"
+     data-quote-pdf='{{ chat_quote_pdf_json|safe }}'>
   <div class="chat-header">
     <h2 class="card-title">Test chat</h2>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/chat-test/reset" class="no-loader" id="chat-reset-form" onsubmit="return confirm('Clear this test conversation?');">
@@ -1155,7 +1160,23 @@
     <label>Test email<input type="email" id="chat-test-email" value="{{ chat_test_email }}" placeholder="customer@example.com"></label>
     <label>Test phone<input type="text" id="chat-test-phone" value="{{ chat_test_phone }}" placeholder="+33612345678"></label>
   </div>
-  <p class="text-muted field-hint">Used to match an ERPNext / QuickBooks customer (orders, quotes, prices). At least one is required.</p>
+  <p class="text-muted field-hint">Optional — email and phone are both sent to ERPNext / QuickBooks when filled (better customer match).</p>
+  {% endif %}
+  {% if test_chat_sessions %}
+  <details class="chat-session-resume"{% if test_chat_sessions|length <= 4 %} open{% endif %}>
+    <summary class="chat-session-resume__summary">Previous conversations <span class="chat-session-resume__count">{{ test_chat_sessions|length }}</span></summary>
+    <ul class="session-link-list">
+      {% for s in test_chat_sessions %}
+      {% set resume = s.session_id | session_resume_params %}
+      <li>
+        <a href="?tab=chat{% if resume.email %}&amp;test_email={{ resume.email|urlencode }}{% endif %}{% if resume.phone %}&amp;test_phone={{ resume.phone|urlencode }}{% endif %}"{% if s.session_id == chat_session_id %} class="active"{% endif %}>
+          {{ s.label }}
+          <span class="session-link-list__meta">{{ s.updated_at.strftime('%d %b %Y, %H:%M') }}{% if s.last_quote_name %} · {{ s.last_quote_name }}{% endif %}</span>
+        </a>
+      </li>
+      {% endfor %}
+    </ul>
+  </details>
   {% endif %}
   <div class="chat-thread" id="chat-thread"></div>
   <script id="chat-initial" type="application/json">{{ chat_messages_json|safe }}</script>
@@ -1167,7 +1188,7 @@
       <button type="button" class="btn-danger" id="chat-stop" hidden>Stop</button>
     </div>
   </form>
-  <p id="chat-hook-status" class="text-muted" style="margin-top:1rem" hidden></p>
+  <p id="chat-hook-status" class="chat-hook-status" hidden></p>
   <p class="text-muted" style="margin-top:1rem">Session: <code id="chat-session-label">{{ chat_session_id }}</code></p>
   {{ markdown_scripts() }}
   <script src="/static/chat-test.js"></script>
@@ -1196,11 +1217,11 @@
 
 {% elif tab == 'hooks' %}
 <div class="table-wrap">
-  <table class="data-table">
-    <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Session</th><th>Error</th><th></th></tr></thead>
+  <table class="data-table validation-table">
+    <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Session</th><th>Error</th><th></th><th></th></tr></thead>
     <tbody>
     {% for h in hooks %}
-    <tr class="hook-{{ status_class(h.status.value) }}">
+    <tr class="validation-row hook-{{ status_class(h.status.value) }}" data-panel="hook-panel-{{ h.id }}" tabindex="0" role="button" aria-expanded="false" aria-controls="hook-panel-{{ h.id }}">
       <td>{{ h.id }}</td>
       <td><code>{{ h.type }}</code></td>
       <td><span class="badge">{{ h.status.value }}</span></td>
@@ -1208,15 +1229,25 @@
       <td class="text-muted">{{ h.error or '—' }}</td>
       <td>
         {% if can_edit and h.status.value in ('failed','done') %}
-        <form method="post" action="/dashboard/hooks/{{ h.id }}/replay"><button type="submit" class="btn-secondary btn-sm">Replay</button></form>
+        <form method="post" action="/dashboard/hooks/{{ h.id }}/replay" class="no-loader" onclick="event.stopPropagation()"><button type="submit" class="btn-secondary btn-sm">Replay</button></form>
         {% endif %}
+      </td>
+      <td class="validation-row-chevron" aria-hidden="true">▶</td>
+    </tr>
+    <tr id="hook-panel-{{ h.id }}" class="validation-expand-row" hidden>
+      <td colspan="7">
+        <div class="validation-panel">
+          <h4>Hook payload</h4>
+          <pre class="validation-message-body">{{ h.payload_json | pretty_json }}</pre>
+        </div>
       </td>
     </tr>
     {% else %}
-    <tr><td colspan="6" class="empty-state">No hooks yet</td></tr>
+    <tr><td colspan="7" class="empty-state">No hooks yet</td></tr>
     {% endfor %}
     </tbody>
   </table>
 </div>
+<script src="/static/validation.js"></script>
 {% endif %}
 {% endblock %}

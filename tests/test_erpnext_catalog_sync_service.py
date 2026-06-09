@@ -402,3 +402,82 @@ def test_sync_skips_price_fetch_when_price_list_blank(
         engine.dispose()
 
     client.fetch_price_list_rates.assert_not_called()
+
+
+def test_apply_catalog_rag_transition_purges_on_disable(test_settings, test_tenant) -> None:
+    tenant, _token = test_tenant
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    catalog_dir = tenant_catalog_dir(test_settings, tenant.slug)
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    md_path = catalog_dir / "item.md"
+    md_path.write_text("# item", encoding="utf-8")
+
+    with factory() as session:
+        from chatbot.adapters.persistence.orm import IngestedFileRow
+
+        session.add(
+            IngestedFileRow(
+                tenant_id=tenant.id,
+                path=str(md_path),
+                content_hash="abc",
+            )
+        )
+        session.commit()
+
+        deleted: list[str] = []
+
+        class FakeStore:
+            def delete_by_source_path(self, path: str) -> None:
+                deleted.append(path)
+
+        with patch(
+            "chatbot.application.erpnext_catalog_sync_service.LanceVectorStore",
+            return_value=FakeStore(),
+        ), patch(
+            "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder",
+        ):
+            from chatbot.application.erpnext_catalog_sync_service import apply_catalog_rag_transition
+
+            apply_catalog_rag_transition(
+                session,
+                test_settings,
+                tenant_id=tenant.id,
+                tenant_slug=tenant.slug,
+                integration_id=1,
+                config={"sync_catalog_to_rag": False},
+                prev_enabled=True,
+                now_enabled=False,
+                run_sync_background=lambda *a, **k: None,
+            )
+            session.commit()
+
+    assert md_path.is_file()
+    assert str(md_path) in deleted
+
+
+def test_apply_catalog_rag_transition_starts_import_on_enable(test_settings, test_tenant) -> None:
+    tenant, _token = test_tenant
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    started: list[tuple] = []
+
+    def fake_sync(settings, **kwargs):
+        started.append((settings, kwargs))
+
+    with factory() as session:
+        from chatbot.application.erpnext_catalog_sync_service import apply_catalog_rag_transition
+
+        apply_catalog_rag_transition(
+            session,
+            test_settings,
+            tenant_id=tenant.id,
+            tenant_slug=tenant.slug,
+            integration_id=42,
+            config={"sync_catalog_to_rag": True},
+            prev_enabled=False,
+            now_enabled=True,
+            run_sync_background=fake_sync,
+        )
+    assert len(started) == 1
+    assert started[0][1]["integration_id"] == 42

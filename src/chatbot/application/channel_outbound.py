@@ -43,6 +43,8 @@ def queue_pending_reply(
     fulfillment_kind: FulfillmentKind = FulfillmentKind.REPLY_ONLY,
     quote_proposal_json: str | None = None,
     quote_resolved_json: str | None = None,
+    quote_external_id: str | None = None,
+    attachments_json: str | None = None,
 ) -> PendingReply:
     return SqlAlchemyPendingReplyRepository(session).create(
         tenant_id=tenant_id,
@@ -55,6 +57,8 @@ def queue_pending_reply(
         fulfillment_kind=fulfillment_kind,
         quote_proposal_json=quote_proposal_json,
         quote_resolved_json=quote_resolved_json,
+        quote_external_id=quote_external_id,
+        attachments_json=attachments_json,
     )
 
 

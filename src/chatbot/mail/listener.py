@@ -97,6 +97,7 @@ def _process_one_mail(
         recipient_id=mail.from_addr,
         result=result,
         settings=settings,
+        tenant_slug=tenant.slug,
     )
     draft_repo.mark_processed(draft.id, draft_reply=result.text)
     uid_repo.record_processed(mail.uid, received_at=mail.received_at)
