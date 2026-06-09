@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     app_secret_key: str = Field(default="", validation_alias="APP_SECRET_KEY")
     hook_poll_seconds: int = Field(default=5, validation_alias="HOOK_POLL_SECONDS")
     mail_poll_seconds: int = Field(default=60, validation_alias="MAIL_POLL_SECONDS")
+    catalog_poll_seconds: int = Field(default=300, validation_alias="CATALOG_POLL_SECONDS")
 
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     chat_model: str = Field(default="gemini-2.0-flash", validation_alias="CHAT_MODEL")

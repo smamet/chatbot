@@ -44,6 +44,102 @@
     if (event.persisted) setPageLoading(false);
   });
 
+  const integrationEditor = document.querySelector(".integration-editor");
+  const integrationSlug =
+    integrationEditor?.querySelector("[data-slug]")?.dataset.slug || "";
+  const erpnextTestStorageKey = integrationSlug
+    ? `chatbot:erpnext-test:${integrationSlug}`
+    : "chatbot:erpnext-test";
+  const erpnextTestDefaults = {
+    email: "customer@example.com",
+    phone: "+33612345678",
+    company: "",
+    customerName: "",
+    item: "",
+    qty: "1",
+    notes: "",
+  };
+  const erpnextTestFieldGroups = [
+    {
+      key: "email",
+      selectors: [
+        ".integration-test-email",
+        ".integration-customer-email",
+        ".integration-quotation-email",
+      ],
+    },
+    {
+      key: "phone",
+      selectors: [
+        ".integration-test-phone",
+        ".integration-customer-phone",
+        ".integration-quotation-phone",
+      ],
+    },
+    {
+      key: "company",
+      selectors: [".integration-customer-company", ".integration-quotation-company"],
+    },
+    { key: "customerName", selectors: [".integration-customer-name"] },
+    { key: "item", selectors: [".integration-quotation-item"] },
+    { key: "qty", selectors: [".integration-quotation-qty"] },
+    { key: "notes", selectors: [".integration-quotation-notes"] },
+  ];
+
+  function loadErpnextTestValues() {
+    try {
+      const raw = localStorage.getItem(erpnextTestStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return { ...erpnextTestDefaults, ...parsed };
+      }
+    } catch (_) {
+      /* ignore corrupt storage */
+    }
+    return { ...erpnextTestDefaults };
+  }
+
+  function saveErpnextTestValues(values) {
+    try {
+      localStorage.setItem(erpnextTestStorageKey, JSON.stringify(values));
+    } catch (_) {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function applyErpnextTestValues(values) {
+    if (!integrationEditor) return;
+    for (const group of erpnextTestFieldGroups) {
+      const value = values[group.key] ?? erpnextTestDefaults[group.key];
+      for (const selector of group.selectors) {
+        integrationEditor.querySelectorAll(selector).forEach((el) => {
+          el.value = value;
+        });
+      }
+    }
+  }
+
+  function bindErpnextTestPersistence() {
+    if (!integrationEditor) return;
+    for (const group of erpnextTestFieldGroups) {
+      for (const selector of group.selectors) {
+        integrationEditor.querySelectorAll(selector).forEach((el) => {
+          el.addEventListener("input", () => {
+            const stored = loadErpnextTestValues();
+            stored[group.key] = el.value;
+            saveErpnextTestValues(stored);
+            applyErpnextTestValues(stored);
+          });
+        });
+      }
+    }
+  }
+
+  if (integrationEditor) {
+    applyErpnextTestValues(loadErpnextTestValues());
+    bindErpnextTestPersistence();
+  }
+
   document.querySelectorAll(".integration-test-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       const form = document.getElementById("integration-form");
@@ -218,6 +314,32 @@
       } catch (err) {
         resultEl.classList.add("err");
         appendLog(String(err));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+
+  document.querySelectorAll(".integration-catalog-sync-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const resultEl = document.querySelector(".integration-catalog-sync-result");
+      if (!resultEl) return;
+      const slug = btn.dataset.slug;
+      btn.disabled = true;
+      resultEl.hidden = false;
+      resultEl.className = "integration-catalog-sync-result integration-test-result";
+      resultEl.textContent = "Starting catalog sync…";
+      try {
+        const res = await fetch(`/dashboard/bots/${slug}/integrations/erpnext/sync-catalog`, {
+          method: "POST",
+          credentials: "same-origin",
+        });
+        const data = await res.json();
+        resultEl.classList.add(data.ok ? "ok" : "err");
+        resultEl.textContent = data.message || data.error || "Done";
+      } catch (err) {
+        resultEl.classList.add("err");
+        resultEl.textContent = String(err);
       } finally {
         btn.disabled = false;
       }

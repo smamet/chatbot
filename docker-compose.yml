@@ -75,6 +75,27 @@ services:
       api:
         condition: service_started
 
+  worker-catalog:
+    build: .
+    command: python -m chatbot.interfaces.worker_catalog
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DATA_ROOT: /app/data
+      LANCEDB_ROOT: /app/data/lancedb
+      CATALOG_POLL_SECONDS: ${CATALOG_POLL_SECONDS:-300}
+    volumes:
+      - app_data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
   caddy:
     image: caddy:2-alpine
     ports:

@@ -1002,3 +1002,18 @@ def test_chat_test_queues_quote_hook(dashboard_env) -> None:
         pending = SqlAlchemyPendingReplyRepository(session).list_pending(tenant_id)
         assert len(pending) == 1
         assert pending[0].session_id == "email:client@example.com"
+
+
+def test_sync_catalog_endpoint_starts_background_job(dashboard_env) -> None:
+    client, admin, _, slug, *_ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    _save_erpnext_integration(client, slug)
+    with patch(
+        "chatbot.interfaces.api.routers.dashboard_web._run_catalog_sync_background"
+    ) as mock_run:
+        r = client.post(f"/dashboard/bots/{slug}/integrations/erpnext/sync-catalog")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert "background" in body["message"].lower()
+    mock_run.assert_called_once()

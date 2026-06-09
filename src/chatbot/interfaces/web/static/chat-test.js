@@ -17,6 +17,9 @@
   const testPhoneInput = document.getElementById("chat-test-phone");
   const resetEmailInput = document.getElementById("chat-reset-email");
   const resetPhoneInput = document.getElementById("chat-reset-phone");
+  const botSlug = panel.dataset.botSlug || "";
+  const identityStorageKey = botSlug ? `chatbot:test-chat:${botSlug}` : "chatbot:test-chat";
+  const defaultIdentity = { email: "customer@example.com", phone: "+33612345678" };
 
   let abortController = null;
   let loading = false;
@@ -29,6 +32,38 @@
       email: testEmailInput?.value?.trim() || "",
       phone: testPhoneInput?.value?.trim() || "",
     };
+  }
+
+  function loadStoredIdentity() {
+    try {
+      const raw = localStorage.getItem(identityStorageKey);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        return {
+          email: String(parsed.email ?? defaultIdentity.email).trim() || defaultIdentity.email,
+          phone: String(parsed.phone ?? defaultIdentity.phone).trim() || defaultIdentity.phone,
+        };
+      }
+    } catch (_) {
+      /* ignore corrupt storage */
+    }
+    return { ...defaultIdentity };
+  }
+
+  function saveStoredIdentity(email, phone) {
+    try {
+      localStorage.setItem(identityStorageKey, JSON.stringify({ email, phone }));
+    } catch (_) {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function initIdentityFields() {
+    if (!testEmailInput && !testPhoneInput) return;
+    const { email, phone } = loadStoredIdentity();
+    if (testEmailInput) testEmailInput.value = email;
+    if (testPhoneInput) testPhoneInput.value = phone;
+    syncIdentityFields();
   }
 
   function syncIdentityFields() {
@@ -187,13 +222,21 @@
     input.focus();
   });
 
-  testEmailInput?.addEventListener("input", syncIdentityFields);
-  testPhoneInput?.addEventListener("input", syncIdentityFields);
+  testEmailInput?.addEventListener("input", () => {
+    const { email, phone } = identityValues();
+    saveStoredIdentity(email, phone);
+    syncIdentityFields();
+  });
+  testPhoneInput?.addEventListener("input", () => {
+    const { email, phone } = identityValues();
+    saveStoredIdentity(email, phone);
+    syncIdentityFields();
+  });
 
   if (sessionLabelEl && !sessionLabelEl.dataset.defaultSession) {
     sessionLabelEl.dataset.defaultSession = sessionLabelEl.textContent;
   }
-  syncIdentityFields();
+  initIdentityFields();
   loadInitial();
   scrollThread();
   input?.focus();

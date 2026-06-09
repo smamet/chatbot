@@ -25,7 +25,7 @@ cp .env.example .env
 **Sail commands**
 
 ```bash
-./sail up -d          # start db, api, worker-automation, caddy
+./sail up -d          # start db, api, workers, caddy
 ./sail down           # stop stack
 ./sail logs           # follow logs
 ./sail shell          # bash in API container
@@ -34,11 +34,21 @@ cp .env.example .env
 ./sail migrate        # alembic upgrade head
 ./sail test           # pytest in container
 ./sail worker-logs    # automation worker logs
+./sail logs worker-catalog   # ERPNext catalog → RAG worker
 ```
 
 Run any Compose command: `./sail ps`, `./sail restart api`, etc.
 
-**No rebuild for code edits:** `docker-compose.override.yml` mounts `./src` into the API (and worker); uvicorn runs with `--reload`. Rebuild only when `pyproject.toml` or the Dockerfile change: `./sail build api`.
+**No rebuild for code edits:** `docker-compose.override.yml` mounts `./src` into the API and workers; uvicorn runs with `--reload`. It also bind-mounts `./data/docs` and `./data/catalog` so uploaded docs and ERPNext catalog snapshots are visible on the host. Rebuild only when `pyproject.toml` or the Dockerfile change: `./sail build api`.
+
+**First-time export from Docker volume** (if you already have data in `app_data` and want it locally before bind-mounts take effect):
+
+```bash
+mkdir -p ./data
+docker compose cp api:/app/data/docs ./data/docs
+mkdir -p ./data/catalog
+./sail restart api worker-automation worker-mail worker-catalog
+```
 
 **First-time secrets in `.env`**
 
@@ -56,6 +66,8 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 ```
 
 **Automation worker** processes `hook_events` (orders, etc.). Compose starts `worker-automation` automatically; locally: `python -m chatbot.interfaces.worker_automation`.
+
+**Mail worker** polls IMAP inboxes (`worker-mail`). **Catalog worker** syncs ERPNext item snapshots into RAG when enabled per bot (`worker-catalog`). Locally: `python -m chatbot.interfaces.worker_mail` / `python -m chatbot.interfaces.worker_catalog --once`.
 
 **Email testing (dev)** — GreenMail (inbound IMAP) + Mailpit (outbound SMTP UI):
 
@@ -88,7 +100,7 @@ uvicorn chatbot.interfaces.api.main:app --reload
 ```
 
 - Dashboard: http://127.0.0.1:8000/auth/login — `chatbot user-create admin@example.com`
-- Worker (separate terminal): `python -m chatbot.interfaces.worker_automation`
+- Workers (separate terminals): `python -m chatbot.interfaces.worker_automation`, `worker_mail`, `worker_catalog`
 - Migrations (MySQL only): `alembic upgrade head` — tests use SQLite `create_all`, no Alembic
 
 **`.env` hot reload:** most vars reload when `.env` is saved (mtime). **`DATABASE_URL`** still needs an API restart.
@@ -112,7 +124,30 @@ chatbot sync TENANT_SLUG --fresh
 
 Supported: `.md`, `.docx`, `.pdf`, `.csv`, `.xlsx`, `.xls`. Enable RAG per tenant in dashboard or `RAG_ENABLED` default in `.env`.
 
+Uploaded files live under `data/docs/{slug}/`. The dashboard **Sync** button and `chatbot sync` only touch that folder — not the ERPNext catalog (see below).
+
 **Creole rewrite gate:** `RAG_REWRITE_LANG_FILTER=true` limits query rewrite to messages matching Creole markers (`creole_script_heuristic.py`). Set `RAG_VERBOSE=true` for logs.
+
+---
+
+## ERPNext catalog → RAG
+
+When an **ERPNext integration** is active, the dashboard lets you export the live item catalogue (price, optional stock) into the bot knowledge base:
+
+1. **Integrations → ERPNext** — enable **Sync catalog to RAG**, set **Catalog sync interval (minutes)** (default 360), **Catalog price list** (default `Standard Selling`), optionally disable **Include stock totals**.
+2. Save the integration. The `worker-catalog` service polls every `CATALOG_POLL_SECONDS` (default 300) and runs a sync when the interval has elapsed.
+3. Or click **Sync catalog now** (runs in the background; refresh the page for last sync / item count / error).
+
+Each active item becomes one markdown file under `data/catalog/{slug}/{item_code}.md`. The RAG pipeline re-embeds **only files whose content changed** (content hash). Stock and price in RAG are a **snapshot** at sync time; live quotes still use hooks + `ProductResolver`.
+
+**Pricing in catalog files:** paginated fetch from ERPNext **Item Price** (configured price list), fallback to `Item.standard_rate`, otherwise `Price: not available` — never `0.0`.
+
+Optional env: `CATALOG_POLL_SECONDS` — catalog worker poll interval (not the per-bot sync interval, which is in integration config).
+
+```bash
+# One-off sync for all due tenants (inside container):
+python -m chatbot.interfaces.worker_catalog --once
+```
 
 ---
 
@@ -128,7 +163,7 @@ pytest
 
 ## Production (Ubuntu + systemd)
 
-Bind uvicorn to `127.0.0.1:8000`, put **nginx** or **Caddy** in front for TLS. Run the **automation worker** as a second systemd unit (same image/env as API). Use **MySQL** (`DATABASE_URL=mysql+pymysql://…`). See [ARCHITECTURE.md](ARCHITECTURE.md) for hooks and multi-tenant layout.
+Bind uvicorn to `127.0.0.1:8000`, put **nginx** or **Caddy** in front for TLS. Run **worker-automation**, **worker-mail**, and **worker-catalog** (when ERPNext catalog sync is used) as separate systemd units (same image/env as API). Use **MySQL** (`DATABASE_URL=mysql+pymysql://…`). See [ARCHITECTURE.md](ARCHITECTURE.md) for hooks and multi-tenant layout.
 
 Public webhook examples:
 

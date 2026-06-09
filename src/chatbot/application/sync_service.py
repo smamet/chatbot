@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from pathlib import Path
 
 from sqlalchemy import delete, func, select
@@ -90,4 +91,25 @@ class IngestSyncService:
             return logs
         logs.extend(self.prune_missing_under_root(root))
         logs.extend(self._ingest.ingest_path(root))
+        return logs
+
+    def ingest_paths_batched(
+        self,
+        paths: list[Path],
+        *,
+        batch_size: int = 100,
+        pause_seconds: float = 0.0,
+    ) -> list[str]:
+        logs: list[str] = []
+        if not paths:
+            return logs
+        size = max(1, batch_size)
+        for index in range(0, len(paths), size):
+            batch = paths[index : index + size]
+            for path in batch:
+                if path.is_file():
+                    logs.extend(self._ingest.ingest_path(path))
+            self._session.flush()
+            if pause_seconds > 0 and index + size < len(paths):
+                time.sleep(pause_seconds)
         return logs

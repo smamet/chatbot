@@ -325,16 +325,116 @@ class ErpNextClient:
         fields: list[str],
         limit: int,
         order_by: str = "modified desc",
+        limit_start: int = 0,
     ) -> list[dict[str, Any]]:
-        params = {
+        params: dict[str, str] = {
             "filters": self._filters_json(filters),
             "fields": json.dumps(fields),
             "limit_page_length": str(max(1, limit)),
             "order_by": order_by,
         }
+        if limit_start > 0:
+            params["limit_start"] = str(limit_start)
         data = self._get(f"/api/resource/{doctype}", params=params)
         rows = data.get("data")
         return rows if isinstance(rows, list) else []
+
+    def _list_resource_paginated(
+        self,
+        doctype: str,
+        *,
+        filters: list[list[str]],
+        fields: list[str],
+        page_length: int = 500,
+        order_by: str = "modified asc",
+    ) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        start = 0
+        page_size = max(1, page_length)
+        while True:
+            page = self._list_resource(
+                doctype,
+                filters=filters,
+                fields=fields,
+                limit=page_size,
+                order_by=order_by,
+                limit_start=start,
+            )
+            if not page:
+                break
+            rows.extend(page)
+            if len(page) < page_size:
+                break
+            start += page_size
+        return rows
+
+    _CATALOG_ITEM_FIELDS = [
+        "item_code",
+        "item_name",
+        "description",
+        "standard_rate",
+        "stock_uom",
+        "item_group",
+        "modified",
+        "disabled",
+    ]
+
+    def list_catalog_items(self, *, page_length: int = 500) -> list[dict[str, Any]]:
+        rows = self._list_resource_paginated(
+            "Item",
+            filters=[["disabled", "=", 0]],
+            fields=self._CATALOG_ITEM_FIELDS,
+            page_length=page_length,
+        )
+        return [row for row in rows if str(row.get("item_code", "")).strip()]
+
+    def fetch_stock_totals(self, *, page_length: int = 500) -> dict[str, float]:
+        rows = self._list_resource_paginated(
+            "Bin",
+            filters=[],
+            fields=["item_code", "actual_qty"],
+            page_length=page_length,
+        )
+        totals: dict[str, float] = {}
+        for row in rows:
+            code = str(row.get("item_code", "")).strip()
+            if not code:
+                continue
+            try:
+                qty = float(row.get("actual_qty") or 0)
+            except (TypeError, ValueError):
+                qty = 0.0
+            totals[code] = totals.get(code, 0.0) + qty
+        return totals
+
+    def fetch_price_list_rates(
+        self,
+        price_list: str,
+        *,
+        page_length: int = 500,
+    ) -> dict[str, dict[str, Any]]:
+        name = str(price_list or "").strip()
+        if not name:
+            return {}
+        rows = self._list_resource_paginated(
+            "Item Price",
+            filters=[["price_list", "=", name]],
+            fields=_ITEM_PRICE_FIELDS,
+            page_length=page_length,
+        )
+        prices: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            code = str(row.get("item_code", "")).strip()
+            rate = _positive_rate(row.get("price_list_rate"))
+            if not code or rate is None:
+                continue
+            prices[code] = {
+                "rate": rate,
+                "currency": row.get("currency"),
+                "uom": row.get("uom"),
+                "price_list": name,
+            }
+        return prices
 
     def find_customer(self, *, email: str | None = None, phone: str | None = None) -> str | None:
         contact = self._find_contact(email=email, phone=phone)

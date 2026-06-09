@@ -129,6 +129,34 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
             placeholder="Vdtec Quotation",
             default="",
         ),
+        IntegrationField(
+            key="sync_catalog_to_rag",
+            label="Sync catalog to RAG",
+            help="Export ERPNext items (price, stock) into the bot knowledge base on a schedule.",
+            input_type="checkbox",
+            default="false",
+        ),
+        IntegrationField(
+            key="catalog_sync_interval_minutes",
+            label="Catalog sync interval (minutes)",
+            help="How often to refresh the ERPNext catalog snapshot in RAG.",
+            input_type="number",
+            default="360",
+        ),
+        IntegrationField(
+            key="catalog_include_stock",
+            label="Include stock totals",
+            help="Aggregate Bin quantities across warehouses into each catalog item file.",
+            input_type="checkbox",
+            default="true",
+        ),
+        IntegrationField(
+            key="catalog_price_list",
+            label="Catalog price list",
+            help="ERPNext selling price list for catalog RAG (e.g. Standard Selling). Leave blank to use Item standard rate only.",
+            placeholder="Standard Selling",
+            default="Standard Selling",
+        ),
     ],
     IntegrationType.QUICKBOOKS.value: [
         IntegrationField(

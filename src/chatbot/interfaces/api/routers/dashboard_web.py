@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 import asyncio
+import logging
+import threading
 from datetime import UTC
 from pathlib import Path
 from queue import Empty, Queue
@@ -14,6 +16,7 @@ from sqlalchemy.orm import Session
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
 from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
@@ -30,6 +33,10 @@ from chatbot.adapters.erpnext.client import ErpNextClient
 from chatbot.application.channel_outbound import approve_pending_reply
 from chatbot.application.customer_access_gate import resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
+from chatbot.application.erpnext_catalog_sync_service import (
+    sync_erpnext_catalog_for_tenant,
+    update_catalog_sync_metadata,
+)
 from chatbot.application.quote_test_service import create_erpnext_quotation_for_test
 from chatbot.application.hook_prompt_composer import compose_hook_instructions
 from chatbot.application.outbound_orchestrator import queue_after_chat
@@ -92,6 +99,8 @@ from chatbot.interfaces.api.deps import (
 )
 from chatbot.interfaces.web.deps import get_user_service, require_admin, require_editor, require_user
 from chatbot.interfaces.web.templates import templates
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -1467,6 +1476,83 @@ async def create_erpnext_quotation(
         company_name=company_name,
     )
     return JSONResponse(result)
+
+
+def _run_catalog_sync_background(
+    settings: Settings,
+    *,
+    tenant_id: int,
+    tenant_slug: str,
+    integration_id: int,
+    config: dict,
+) -> None:
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+    try:
+        with factory() as session:
+            result = sync_erpnext_catalog_for_tenant(
+                session,
+                settings=settings,
+                tenant_id=tenant_id,
+                tenant_slug=tenant_slug,
+                config=config,
+            )
+            update_catalog_sync_metadata(session, integration_id, result=result)
+            session.commit()
+            logger.info(
+                "Catalog sync finished for %s: ok=%s message=%s",
+                tenant_slug,
+                result.ok,
+                result.message,
+            )
+    except Exception:
+        logger.exception("Catalog sync failed for %s", tenant_slug)
+    finally:
+        engine.dispose()
+
+
+@router.post("/bots/{slug}/integrations/erpnext/sync-catalog")
+async def sync_erpnext_catalog(
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
+        tenant.id,
+        type=IntegrationType.ERPNEXT,
+    )
+    if integration is None:
+        return JSONResponse(
+            {
+                "ok": False,
+                "message": "Save and activate the ERPNext integration first.",
+                "error": "integration_inactive",
+            }
+        )
+    config = dict(integration.config)
+    thread = threading.Thread(
+        target=_run_catalog_sync_background,
+        kwargs={
+            "settings": settings,
+            "tenant_id": tenant.id,
+            "tenant_slug": tenant.slug,
+            "integration_id": integration.id,
+            "config": config,
+        },
+        daemon=True,
+    )
+    thread.start()
+    return JSONResponse(
+        {
+            "ok": True,
+            "message": "Catalog sync started in background. Refresh this page to see status.",
+        }
+    )
 
 
 @router.get("/bots/{slug}/integrations/erpnext/quotation-pdf/{quote_name}")

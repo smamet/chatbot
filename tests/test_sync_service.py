@@ -168,3 +168,23 @@ def test_reconcile_calls_ingest_after_prune(sync_session) -> None:
     ingest_mock = svc._ingest.ingest_path
     assert isinstance(ingest_mock, Mock)
     ingest_mock.assert_called_once()
+
+
+def test_ingest_paths_batched_flushes_in_chunks(sync_session) -> None:
+    test_settings, session, store, embedder, tenant = sync_session
+    root = _workspace_root(test_settings)
+    files = [root / f"doc-{i}.md" for i in range(3)]
+    for path in files:
+        path.write_text(f"# {path.name}\n", encoding="utf-8")
+
+    svc = IngestSyncService(
+        settings=test_settings,
+        embedder=embedder,
+        vector_store=store,
+        session=session,
+        tenant_id=tenant.id,
+    )
+    svc._ingest.ingest_path = Mock(return_value=["ingested"])
+    logs = svc.ingest_paths_batched(files, batch_size=2)
+    assert logs == ["ingested", "ingested", "ingested"]
+    assert svc._ingest.ingest_path.call_count == 3

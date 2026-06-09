@@ -729,6 +729,20 @@
           </div>
         </div>
       </details>
+
+      <details class="integration-test integration-catalog-sync" id="integration-catalog-sync-panel" hidden>
+        <summary>Catalog RAG sync</summary>
+        <div class="integration-test__body">
+          <p class="field-hint">Exports ERPNext items into <code>data/catalog/{{ tenant.slug }}/</code> and updates the RAG index. Scheduled sync runs when <strong>Sync catalog to RAG</strong> is enabled.</p>
+          <dl class="integration-catalog-status">
+            <div><dt>Last sync</dt><dd class="integration-catalog-last-sync">—</dd></div>
+            <div><dt>Items</dt><dd class="integration-catalog-item-count">—</dd></div>
+            <div><dt>Last error</dt><dd class="integration-catalog-last-error">—</dd></div>
+          </dl>
+          <button type="button" class="btn-secondary btn-sm integration-catalog-sync-btn" data-slug="{{ tenant.slug }}">Sync catalog now</button>
+          <pre class="integration-catalog-sync-result integration-test-result" hidden></pre>
+        </div>
+      </details>
     </div>
 
     <script type="application/json" id="integration-schemas-data">{{ integration_schemas_json|safe }}</script>
@@ -882,12 +896,30 @@
           });
           syncCustomerCreatePanel(type);
           syncQuotationCreatePanel(type);
+          syncCatalogSyncPanel(type);
           container.querySelector('input[name="allow_create_customer"]')?.addEventListener('change', () => {
             syncCustomerCreatePanel(type);
           });
           container.querySelector('input[name="allow_create_quotation"]')?.addEventListener('change', () => {
             syncQuotationCreatePanel(type);
           });
+          container.querySelector('input[name="sync_catalog_to_rag"]')?.addEventListener('change', () => {
+            syncCatalogSyncPanel(type);
+          });
+        }
+
+        function syncCatalogSyncPanel(type) {
+          const panel = document.getElementById('integration-catalog-sync-panel');
+          if (!panel) return;
+          panel.hidden = type !== 'erpnext';
+          const rec = recordFor(type);
+          const cfg = rec.config || {};
+          const lastSync = panel.querySelector('.integration-catalog-last-sync');
+          const itemCount = panel.querySelector('.integration-catalog-item-count');
+          const lastError = panel.querySelector('.integration-catalog-last-error');
+          if (lastSync) lastSync.textContent = cfg.catalog_last_sync_at || '—';
+          if (itemCount) itemCount.textContent = cfg.catalog_last_item_count ?? '—';
+          if (lastError) lastError.textContent = cfg.catalog_last_error || '—';
         }
 
         function syncCustomerCreatePanel(type) {
@@ -1106,6 +1138,7 @@
 
 {% elif tab == 'chat' %}
 <div class="card chat-panel" id="chat-panel"
+     data-bot-slug="{{ tenant.slug }}"
      data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send"
      data-validation-url="{{ chat_validation_url }}"
      data-require-identity="{{ 'true' if chat_require_identity else 'false' }}">

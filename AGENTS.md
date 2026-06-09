@@ -4,8 +4,10 @@
 
 - **Hexagonal layout**: `domain/` (models + contracts), `application/` (use cases), `adapters/` (SQLAlchemy, LanceDB, Gemini), `interfaces/` (FastAPI, web dashboard, workers).
 - **Multi-tenant**: every row scoped by `tenant_id`; LanceDB under `data/lancedb/{slug}/`.
+- **RAG sources**: uploaded docs in `data/docs/{slug}/`; ERPNext catalogue snapshots in `data/catalog/{slug}/` (one `.md` per item, isolated from document sync).
 - **Auth**: `POST /c/{slug}/chat` with `Authorization: Bearer <tenant_token>` (token must match slug). Admin API: `ADMIN_TOKEN`. Dashboard: session cookie (`/auth/login`).
 - **Hooks**: LLM appends global marker `===HOOK===` + JSON → `hook_events` → `worker-automation` dispatches **automation modules** (`core.orders` → local DB; `erpnext.quote` → validation queue + ERPNext on approve). Module list per bot in `config_json.automation_modules`. Run `./sail migrate` after pull for `006_mail_drafts_uid_unique`.
+- **ERPNext catalog → RAG**: `worker-catalog` polls tenants with active ERPNext + `sync_catalog_to_rag`; fetches paginated Item + Bin (stock aggregate) + Item Price (`catalog_price_list`, default Standard Selling), writes `data/catalog/{slug}/*.md`, then `IngestSyncService` on that folder only. Price line: Item Price → standard_rate → `not available`. Config in integration schema (`sync_catalog_to_rag`, `catalog_sync_interval_minutes`, `catalog_include_stock`, `catalog_price_list`); runtime metadata in encrypted config (`catalog_last_sync_at`, `catalog_last_item_count`, `catalog_last_error`) — merge-safe, not in schema fields. Manual sync: `POST /dashboard/bots/{slug}/integrations/erpnext/sync-catalog` (background thread).
 - **Connectors**: per-tenant channel creds in `connectors.config_enc` (Fernet via `APP_SECRET_KEY`).
 
 ## Docker (Sail)
@@ -20,9 +22,9 @@
 ./sail shell
 ```
 
-Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `caddy`. Root `.env` is loaded via `env_file`; `DATABASE_URL` is overridden to MySQL inside containers.
+Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `worker-catalog`, `caddy`. Root `.env` is loaded via `env_file`; `DATABASE_URL` is overridden to MySQL inside containers.
 
-**Dev:** `docker-compose.override.yml` bind-mounts `./src` — edit Python without `./sail build`. API runs with `--reload`. Rebuild only after dependency/Dockerfile changes. Restart workers after code changes: `./sail restart worker-automation` / `./sail restart worker-mail`.
+**Dev:** `docker-compose.override.yml` bind-mounts `./src` — edit Python without `./sail build`. It also bind-mounts `./data/docs` and `./data/catalog` over the `app_data` volume for those paths (LanceDB stays in the volume). API runs with `--reload`. Rebuild only after dependency/Dockerfile changes. Restart workers after code changes: `./sail restart worker-automation` / `./sail restart worker-mail` / `./sail restart worker-catalog`.
 
 **Email dev (GreenMail + Mailpit):** `./sail up -d --profile dev` starts GreenMail (IMAP 3143, inject SMTP 3025) and Mailpit (outbound SMTP 1025, UI http://127.0.0.1:8025). IN connector → GreenMail; OUT connector → Mailpit. Test email inject uses GreenMail SMTP (not OUT). See [docs/dev/greenmail.md](docs/dev/greenmail.md). Dashboard **Test email** tab requires `DEV_MODE=true`.
 
@@ -32,8 +34,17 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `cadd
 
 1. Dashboard **Bots** → open bot, or `./sail chatbot tenant-create "Name" --slug my-client`
 2. Save the token shown once.
-3. Upload docs (dashboard or admin API), run **Sync**.
+3. Upload docs (dashboard or admin API), run **Sync** (documents only — `data/docs/{slug}/`).
 4. Configure **Connectors** (WhatsApp/Meta) for webhook URLs `/webhooks/{channel}/{slug}`.
+5. Optional: **Integrations → ERPNext** — enable **Sync catalog to RAG** for live catalogue in RAG (`data/catalog/{slug}/`).
+
+### ERPNext catalog sync
+
+- Service: `src/chatbot/application/erpnext_catalog_sync_service.py`; client pagination in `ErpNextClient.list_catalog_items` / `fetch_stock_totals` / `fetch_price_list_rates`.
+- Worker: `python -m chatbot.interfaces.worker_catalog` (`--once` for a single poll). Poll interval: `CATALOG_POLL_SECONDS`; per-bot interval: `catalog_sync_interval_minutes` in integration config.
+- `catalog_price_list`: absent → `Standard Selling`; empty string → Item Price skipped (standard_rate only). Never emit price `0.0` in markdown.
+- Do not call document `reconcile_root` on `data/catalog/` or vice versa — separate roots, separate `IngestSyncService` runs.
+- Metadata keys (`catalog_last_*`) are outside the integration schema; `_merge_integration_config` preserves them on dashboard save. Worker re-reads config before writing metadata.
 
 ### Run locally (no Docker)
 
@@ -43,6 +54,7 @@ mkdir -p data
 uvicorn chatbot.interfaces.api.main:app --reload
 python -m chatbot.interfaces.worker_automation
 python -m chatbot.interfaces.worker_mail
+python -m chatbot.interfaces.worker_catalog
 ```
 
 Dashboard: http://127.0.0.1:8000/auth/login
@@ -72,13 +84,15 @@ pytest
 # ./sail test
 ```
 
-Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`.
+Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`, `test_erpnext_catalog_sync_service.py`, `test_erpnext_client.py`.
 
 ## Environment (`.env`)
 
 **Required:** `GEMINI_API_KEY`, `ADMIN_TOKEN`, `APP_SECRET_KEY`, `SESSION_SECRET`.
 
 **Storage:** `DATA_ROOT`, `LANCEDB_ROOT`; `DATABASE_URL` (SQLite local, MySQL in Docker).
+
+**Workers:** `HOOK_POLL_SECONDS`, `MAIL_POLL_SECONDS`, `CATALOG_POLL_SECONDS` (catalog worker poll; default 300).
 
 **Not used anymore:** `CHAT_API_SECRET`, `PROMPT_PATH`, `LANCEDB_PATH`, `WEBHOOK_TENANT_SLUG`.
 
@@ -90,3 +104,5 @@ Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.p
 - Share LanceDB directories between tenants.
 - Store tenant tokens in plain text (only `token_hash` in DB).
 - Put order/WhatsApp logic in `ChatService` — use hooks + automation worker.
+- Run full-catalog RAG reconcile on `data/docs/` when syncing ERPNext items (use `data/catalog/{slug}/` only).
+- Assume RAG stock/price is real-time — it reflects the last catalog sync snapshot.

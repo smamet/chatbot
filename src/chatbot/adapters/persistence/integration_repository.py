@@ -62,6 +62,17 @@ class SqlAlchemyIntegrationRepository:
         )
         return _row_to_integration(row) if row else None
 
+    def list_active_by_type(self, type: IntegrationType) -> list[Integration]:
+        rows = self._session.scalars(
+            select(IntegrationRow)
+            .where(
+                IntegrationRow.type == type.value,
+                IntegrationRow.active.is_(True),
+            )
+            .order_by(IntegrationRow.tenant_id)
+        ).all()
+        return [_row_to_integration(r) for r in rows]
+
     def delete(self, integration_id: int) -> bool:
         row = self._session.get(IntegrationRow, integration_id)
         if row is None:
