@@ -17,7 +17,9 @@ from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepos
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.chat_service import ChatService
 from chatbot.application.connector_service import ConnectorService
+from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.application.integration_enrichment import build_enricher
+from chatbot.application.integration_service import IntegrationService
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
@@ -146,6 +148,13 @@ def _build_chat_service(
             rewrite_language_gate=getattr(request.app.state, "rewrite_language_gate", None),
         )
     integration_enricher = build_enricher(db_session, tenant.id) if db_session else None
+    active_integrations = (
+        IntegrationService(SqlAlchemyIntegrationRepository(db_session)).active_types_for_tenant(
+            tenant.id
+        )
+        if db_session
+        else None
+    )
     return ChatService(
         settings=settings,
         tenant=tenant,
@@ -154,6 +163,7 @@ def _build_chat_service(
         rag=rag,
         hook_repo=hook_repo,
         integration_enricher=integration_enricher,
+        active_integrations=active_integrations,
     )
 
 

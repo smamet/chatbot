@@ -27,6 +27,7 @@ class ChatService:
         hook_repo: HookEventRepository | None = None,
         integration_enricher: Callable[[str], str | None] | None = None,
         erp_enricher: Callable[[str], str | None] | None = None,
+        active_integrations: set[str] | None = None,
     ) -> None:
         self._global_settings = settings
         self._tenant = tenant
@@ -36,6 +37,7 @@ class ChatService:
         self._rag = rag
         self._hook_repo = hook_repo
         self._integration_enricher = integration_enricher or erp_enricher
+        self._active_integrations = active_integrations
 
     def _load_system_instruction(self) -> str:
         parts: list[str] = []
@@ -43,7 +45,10 @@ class ChatService:
         if prompt:
             parts.append(prompt)
         if hooks_enabled_for_tenant(self._tenant):
-            hook = compose_hook_instructions(self._tenant).strip()
+            hook = compose_hook_instructions(
+                self._tenant,
+                active_integrations=self._active_integrations,
+            ).strip()
             if hook:
                 parts.append(hook)
         return "\n\n".join(parts) if parts else "You are a helpful assistant."

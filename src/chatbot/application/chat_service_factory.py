@@ -9,7 +9,9 @@ from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEve
 from chatbot.adapters.persistence.tenant_paths import tenant_lancedb_dir
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.chat_service import ChatService
+from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.application.integration_enrichment import build_enricher
+from chatbot.application.integration_service import IntegrationService
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.config.settings import Settings
@@ -38,6 +40,7 @@ def build_chat_service_for_worker(
         )
     repo = SqlAlchemyConversationRepository(session, tenant.id)
     hook_repo = SqlAlchemyHookEventRepository(session, tenant.id)
+    integ_svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
     return ChatService(
         settings=settings,
         tenant=tenant,
@@ -46,4 +49,5 @@ def build_chat_service_for_worker(
         rag=rag,
         hook_repo=hook_repo,
         integration_enricher=build_enricher(session, tenant.id),
+        active_integrations=integ_svc.active_types_for_tenant(tenant.id),
     )

@@ -251,6 +251,101 @@ def test_chat_service_rag_includes_source_paths_when_dev_mode(test_settings, tes
     assert "Do not mention internal file names" not in cap.last_system
 
 
+def test_chat_service_includes_quote_hook_when_erpnext_active(test_settings, test_tenant) -> None:
+    from datetime import UTC, datetime
+
+    tenant, _token = test_tenant
+    tenant = replace(
+        tenant,
+        config=TenantConfig(automation_modules=("erpnext.quote",), rag_enabled=False),
+        updated_at=datetime.now(UTC),
+    )
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+
+    class CaptureLlm:
+        def __init__(self) -> None:
+            self.last_system: str | None = None
+
+        def generate_chat(
+            self,
+            *,
+            system_instruction: str,
+            messages: list[ChatMessage],
+            attachments: list[Attachment] | None = None,
+        ) -> LlmResult:
+            _ = messages, attachments
+            self.last_system = system_instruction
+            return LlmResult(text="ok", usage=LlmUsage())
+
+    cap = CaptureLlm()
+    session = factory()
+    try:
+        repo = SqlAlchemyConversationRepository(session, tenant.id)
+        svc = ChatService(
+            settings=test_settings,
+            tenant=tenant,
+            llm=cap,
+            repo=repo,
+            rag=None,
+            active_integrations={"erpnext"},
+        )
+        svc.handle_user_message("email:client@example.com", "Quote please")
+        session.commit()
+    finally:
+        session.close()
+    assert cap.last_system is not None
+    assert "quote.create" in cap.last_system
+    assert "===HOOK===" in cap.last_system
+
+
+def test_chat_service_omits_quote_hook_without_active_integrations(test_settings, test_tenant) -> None:
+    from datetime import UTC, datetime
+
+    tenant, _token = test_tenant
+    tenant = replace(
+        tenant,
+        config=TenantConfig(automation_modules=("erpnext.quote",), rag_enabled=False),
+        updated_at=datetime.now(UTC),
+    )
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+
+    class CaptureLlm:
+        def __init__(self) -> None:
+            self.last_system: str | None = None
+
+        def generate_chat(
+            self,
+            *,
+            system_instruction: str,
+            messages: list[ChatMessage],
+            attachments: list[Attachment] | None = None,
+        ) -> LlmResult:
+            _ = messages, attachments
+            self.last_system = system_instruction
+            return LlmResult(text="ok", usage=LlmUsage())
+
+    cap = CaptureLlm()
+    session = factory()
+    try:
+        repo = SqlAlchemyConversationRepository(session, tenant.id)
+        svc = ChatService(
+            settings=test_settings,
+            tenant=tenant,
+            llm=cap,
+            repo=repo,
+            rag=None,
+        )
+        svc.handle_user_message("email:client@example.com", "Quote please")
+        session.commit()
+    finally:
+        session.close()
+    assert cap.last_system is not None
+    assert "quote.create" not in cap.last_system
+    assert "===HOOK===" in cap.last_system
+
+
 def test_chat_service_injects_erp_context(test_settings, test_tenant) -> None:
     tenant, _token = test_tenant
     engine = create_db_engine(test_settings, for_tests=True)

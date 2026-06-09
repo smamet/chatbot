@@ -11,6 +11,9 @@ class IntegrationService:
     def list_for_tenant(self, tenant_id: int) -> list[Integration]:
         return self._repo.list_for_tenant(tenant_id)
 
+    def active_types_for_tenant(self, tenant_id: int) -> set[str]:
+        return {i.type.value for i in self.list_for_tenant(tenant_id) if i.active}
+
     def get(self, integration_id: int) -> Integration | None:
         return self._repo.find_by_id(integration_id)
 
