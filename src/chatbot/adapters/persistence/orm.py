@@ -41,6 +41,7 @@ class MessageRow(Base):
     session_id: Mapped[str] = mapped_column(String(256), index=True)
     role: Mapped[str] = mapped_column(String(32))
     content: Mapped[str] = mapped_column(Text())
+    context_debug_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

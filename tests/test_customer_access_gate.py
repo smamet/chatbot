@@ -11,6 +11,7 @@ from chatbot.application.customer_access_gate import (
     resolve_manual_identity,
     session_display_label,
     session_resume_params,
+    session_test_chat_query,
 )
 
 
@@ -54,7 +55,26 @@ def test_parse_session_identity_unknown_channel() -> None:
 def test_session_display_label_strips_channel_prefix() -> None:
     assert session_display_label("email:client@example.com") == "client@example.com"
     assert session_display_label("whatsapp:33612345678") == "33612345678"
-    assert session_display_label("plain-session") == "plain-session"
+    assert session_display_label("dashboard:1") == "1"
+    assert session_display_label("test:abc") == "Anonymous test"
+
+
+def test_session_resume_params_test_session() -> None:
+    assert session_resume_params("test:abc-123") == {
+        "email": "",
+        "phone": "",
+        "test_session": "test:abc-123",
+    }
+    assert session_resume_params("email:a@b.com") == {
+        "email": "a@b.com",
+        "phone": "",
+        "test_session": "",
+    }
+
+
+def test_session_test_chat_query() -> None:
+    assert session_test_chat_query("test:abc") == "tab=chat&test_session=test%3Aabc"
+    assert session_test_chat_query("email:a@b.com") == "tab=chat&test_email=a%40b.com"
 
 
 def test_format_context_includes_orders_and_quotations() -> None:

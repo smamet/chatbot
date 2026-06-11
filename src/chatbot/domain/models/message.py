@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from chatbot.domain.models.context_debug import ContextDebugInfo
+
 
 class MessageRole(str, Enum):
     USER = "user"
@@ -14,3 +16,4 @@ class MessageRole(str, Enum):
 class ChatMessage:
     role: MessageRole
     content: str
+    context_debug: ContextDebugInfo | None = None

@@ -221,17 +221,20 @@ def test_admin_bot_crud(dashboard_env) -> None:
     )
     assert r.status_code == 200
     assert r.json()["reply"] == "echo:hello dash"
-    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    test_sid = r.json().get("test_session")
+    assert test_sid and test_sid.startswith("test:")
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat&test_session={test_sid}")
     assert "echo:hello dash" in r.text
     assert "chat-test.js" in r.text
     assert "markdown.js" in r.text
 
     r = client.post(
         f"/dashboard/bots/{slug}/chat-test/reset",
+        data={"test_session": test_sid},
         follow_redirects=False,
     )
     assert r.status_code == 303
-    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat&test_session={test_sid}")
     assert "echo:hello dash" not in r.text
 
     with factory() as session:
@@ -771,9 +774,10 @@ def test_chat_test_works_without_identity_when_integration_active(dashboard_env)
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
     _save_erpnext_integration(client, slug)
+    test_sid = "test:00000000-0000-4000-8000-000000000001"
     r = client.post(
         f"/dashboard/bots/{slug}/chat-test/send",
-        data={"message": "hello"},
+        data={"message": "hello", "test_session": test_sid},
     )
     assert r.status_code == 200
     with factory() as session:
@@ -782,9 +786,30 @@ def test_chat_test_works_without_identity_when_integration_active(dashboard_env)
         )
 
         msgs = SqlAlchemyConversationRepository(session, tenant_id).list_messages(
-            f"dashboard:{admin.id}", limit=10
+            test_sid, limit=10
         )
         assert len(msgs) == 2
+
+
+def test_test_chat_does_not_load_legacy_dashboard_session(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    with factory() as session:
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+        from chatbot.domain.models.message import ChatMessage, MessageRole
+
+        repo = SqlAlchemyConversationRepository(session, tenant_id)
+        legacy_sid = f"dashboard:{admin.id}"
+        repo.append_message(legacy_sid, ChatMessage(role=MessageRole.USER, content="old"))
+        repo.append_message(legacy_sid, ChatMessage(role=MessageRole.ASSISTANT, content="legacy"))
+        session.commit()
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    assert r.status_code == 200
+    assert "old" not in r.text or '"role": "user", "content": "old"' not in r.text
+    assert "chat-initial" in r.text
+    assert '"[]"' in r.text or "[]" in r.text.split("chat-initial")[1][:200]
 
 
 def test_chat_test_lists_previous_sessions(dashboard_env) -> None:
@@ -796,7 +821,8 @@ def test_chat_test_lists_previous_sessions(dashboard_env) -> None:
     )
     r = client.get(f"/dashboard/bots/{slug}?tab=chat")
     assert r.status_code == 200
-    assert "Previous conversations" in r.text
+    assert "Sessions" in r.text
+    assert "history-layout" in r.text
     assert "client@example.com" in r.text
     with factory() as session:
         from chatbot.adapters.persistence.test_chat_session_repository import (
@@ -987,7 +1013,7 @@ def test_chat_test_auto_creates_quote_when_resolved(dashboard_env) -> None:
 
     original_run = dash_mod._run_dashboard_chat
 
-    def _hook_run(request, settings, tenant, user, message, session, *, test_email="", test_phone=""):
+    def _hook_run(request, settings, tenant, user, message, session, *, test_email="", test_phone="", test_session=""):
         session_id = dash_mod._dashboard_chat_session_id(
             user,
             test_email=test_email,
@@ -1070,7 +1096,7 @@ def test_chat_test_queues_quote_hook_when_unresolved(dashboard_env) -> None:
 
     original_run = dash_mod._run_dashboard_chat
 
-    def _hook_run(request, settings, tenant, user, message, session, *, test_email="", test_phone=""):
+    def _hook_run(request, settings, tenant, user, message, session, *, test_email="", test_phone="", test_session=""):
         session_id = dash_mod._dashboard_chat_session_id(
             user,
             test_email=test_email,

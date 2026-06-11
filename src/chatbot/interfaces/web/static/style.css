@@ -910,13 +910,38 @@ a:hover {
   padding: var(--space-sm);
 }
 
-.chat-thread .msg-user {
+.history-thread {
+  max-height: 65vh;
+  margin-top: var(--space-md);
+}
+
+.chat-thread .msg-turn-user {
   align-self: flex-end;
 }
 
-.chat-thread .msg-assistant,
-.chat-thread .msg-system {
+.chat-thread .msg-turn-assistant,
+.chat-thread .msg-turn-system {
   align-self: flex-start;
+}
+
+.msg-turn {
+  display: flex;
+  flex-direction: column;
+  max-width: 85%;
+}
+
+.msg-turn .msg {
+  max-width: 100%;
+}
+
+.msg-context-debug {
+  margin: 0.2rem 0 0;
+  padding: 0 0.25rem;
+  font-size: 0.6875rem;
+  font-family: var(--font-mono);
+  color: var(--color-text-muted);
+  opacity: 0.85;
+  line-height: 1.35;
 }
 
 .chat-header {

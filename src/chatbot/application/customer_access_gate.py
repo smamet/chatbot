@@ -52,18 +52,39 @@ def parse_session_identity(session_id: str) -> tuple[str | None, str | None]:
 
 def session_display_label(session_id: str) -> str:
     """Human-readable session id for dashboard display (strips channel prefix)."""
+    if session_id.startswith("test:"):
+        return "Anonymous test"
     if ":" not in session_id:
         return session_id
     channel, raw_id = session_id.split(":", 1)
     if channel == "email":
         return raw_id.partition("|")[0]
+    if channel == "dashboard":
+        return raw_id
     return raw_id
 
 
 def session_resume_params(session_id: str) -> dict[str, str]:
     """Query-string fields to reopen a dashboard test chat session."""
+    if session_id.startswith("test:"):
+        return {"email": "", "phone": "", "test_session": session_id}
     email, phone = parse_session_identity(session_id)
-    return {"email": email or "", "phone": phone or ""}
+    return {"email": email or "", "phone": phone or "", "test_session": ""}
+
+
+def session_test_chat_query(session_id: str) -> str:
+    """Query string for the dashboard test chat tab (includes tab=chat)."""
+    from urllib.parse import quote
+
+    params = session_resume_params(session_id)
+    parts = ["tab=chat"]
+    if params["test_session"]:
+        parts.append(f"test_session={quote(params['test_session'], safe='')}")
+    if params["email"]:
+        parts.append(f"test_email={quote(params['email'], safe='')}")
+    if params["phone"]:
+        parts.append(f"test_phone={quote(params['phone'], safe='')}")
+    return "&".join(parts)
 
 
 def build_channel_session_id(*, email: str | None, phone: str | None) -> str | None:

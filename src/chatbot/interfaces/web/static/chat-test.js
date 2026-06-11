@@ -12,14 +12,17 @@
   const stopBtn = document.getElementById("chat-stop");
   const initialEl = document.getElementById("chat-initial");
   const hookStatusEl = document.getElementById("chat-hook-status");
+  const devMode = panel.dataset.devMode === "true";
   const sessionLabelEl = document.getElementById("chat-session-label");
   const testEmailInput = document.getElementById("chat-test-email");
   const testPhoneInput = document.getElementById("chat-test-phone");
   const resetEmailInput = document.getElementById("chat-reset-email");
   const resetPhoneInput = document.getElementById("chat-reset-phone");
+  const resetTestSessionInput = document.getElementById("chat-reset-test-session");
+  const resetForm = document.getElementById("chat-reset-form");
   const botSlug = panel.dataset.botSlug || "";
   const identityStorageKey = botSlug ? `chatbot:test-chat:${botSlug}` : "chatbot:test-chat";
-  const defaultIdentity = { email: "customer@example.com", phone: "+33612345678" };
+  const testSessionStorageKey = botSlug ? `chatbot:test-session:${botSlug}` : "chatbot:test-session";
 
   let abortController = null;
   let loading = false;
@@ -34,20 +37,61 @@
     };
   }
 
+  function saveAnonymousSessionId(id) {
+    if (!id?.startsWith("test:")) return;
+    try {
+      localStorage.setItem(testSessionStorageKey, id);
+    } catch (_) {
+      /* ignore quota / private mode */
+    }
+  }
+
+  function getOrCreateAnonymousSessionId() {
+    const urlSession = (panel.dataset.chatTestSession || "").trim();
+    if (urlSession.startsWith("test:")) {
+      saveAnonymousSessionId(urlSession);
+      return urlSession;
+    }
+    try {
+      const stored = localStorage.getItem(testSessionStorageKey);
+      if (stored?.startsWith("test:")) return stored;
+    } catch (_) {
+      /* ignore corrupt storage */
+    }
+    const id = `test:${crypto.randomUUID()}`;
+    saveAnonymousSessionId(id);
+    return id;
+  }
+
+  function anonymousTestSessionForSend() {
+    const { email, phone } = identityValues();
+    if (email || phone) return "";
+    return getOrCreateAnonymousSessionId();
+  }
+
   function loadStoredIdentity() {
     try {
       const raw = localStorage.getItem(identityStorageKey);
       if (raw) {
         const parsed = JSON.parse(raw);
         return {
-          email: String(parsed.email ?? defaultIdentity.email).trim() || defaultIdentity.email,
-          phone: String(parsed.phone ?? defaultIdentity.phone).trim() || defaultIdentity.phone,
+          email: String(parsed.email ?? "").trim(),
+          phone: String(parsed.phone ?? "").trim(),
         };
       }
     } catch (_) {
       /* ignore corrupt storage */
     }
-    return { ...defaultIdentity };
+    return { email: "", phone: "" };
+  }
+
+  function clearStoredIdentity() {
+    try {
+      localStorage.removeItem(identityStorageKey);
+      localStorage.removeItem(testSessionStorageKey);
+    } catch (_) {
+      /* ignore quota / private mode */
+    }
   }
 
   function saveStoredIdentity(email, phone) {
@@ -74,12 +118,15 @@
 
   function syncIdentityFields() {
     const { email, phone } = identityValues();
+    const testSession = email || phone ? "" : getOrCreateAnonymousSessionId();
     if (resetEmailInput) resetEmailInput.value = email;
     if (resetPhoneInput) resetPhoneInput.value = phone;
+    if (resetTestSessionInput) resetTestSessionInput.value = testSession;
     if (sessionLabelEl) {
       if (email && phone) sessionLabelEl.textContent = `email:${email.toLowerCase()}|${phone}`;
       else if (email) sessionLabelEl.textContent = `email:${email.toLowerCase()}`;
       else if (phone) sessionLabelEl.textContent = `whatsapp:${phone}`;
+      else if (testSession) sessionLabelEl.textContent = testSession;
       else if (requireIdentity) sessionLabelEl.textContent = "(set test email or phone)";
       else sessionLabelEl.textContent = sessionLabelEl.dataset.defaultSession || sessionLabelEl.textContent;
     }
@@ -89,7 +136,26 @@
     if (thread) thread.scrollTop = thread.scrollHeight;
   }
 
-  function appendMessage(role, content, { markdown = false } = {}) {
+  function formatCharCount(n) {
+    const num = Number(n) || 0;
+    if (num >= 1000) return `${(num / 1000).toFixed(1)}k chars`;
+    return `${num} chars`;
+  }
+
+  function formatContextSizeLabel(ctx) {
+    if (!ctx) return "";
+    const parts = [`RAG: ${ctx.rag_chunks} chunks, ${formatCharCount(ctx.rag_chars)}`];
+    if (ctx.customer_chars) {
+      parts.push(`Customer: ${formatCharCount(ctx.customer_chars)}`);
+    }
+    parts.push(`System: ${formatCharCount(ctx.system_chars)}`);
+    return parts.join(" · ");
+  }
+
+  function appendMessage(role, content, { markdown = false, contextSize = null } = {}) {
+    const turn = document.createElement("div");
+    turn.className = `msg-turn msg-turn-${role}`;
+
     const div = document.createElement("div");
     div.className = `msg msg-${role}`;
     const label = document.createElement("strong");
@@ -103,9 +169,18 @@
       body.textContent = content;
     }
     div.appendChild(body);
-    thread.appendChild(div);
+    turn.appendChild(div);
+
+    if (devMode && contextSize && role === "assistant") {
+      const debug = document.createElement("p");
+      debug.className = "msg-context-debug";
+      debug.textContent = formatContextSizeLabel(contextSize);
+      turn.appendChild(debug);
+    }
+
+    thread.appendChild(turn);
     scrollThread();
-    return div;
+    return turn;
   }
 
   function setPageLoading(on) {
@@ -122,12 +197,12 @@
   }
 
   function showTyping() {
-    const div = document.createElement("div");
-    div.className = "msg msg-assistant msg-loading";
-    div.id = "chat-typing";
-    div.innerHTML =
-      '<strong>assistant</strong><div class="msg-body"><span class="typing-dots"><span></span><span></span><span></span></span></div>';
-    thread.appendChild(div);
+    const turn = document.createElement("div");
+    turn.className = "msg-turn msg-turn-assistant";
+    turn.id = "chat-typing";
+    turn.innerHTML =
+      '<div class="msg msg-assistant msg-loading"><strong>assistant</strong><div class="msg-body"><span class="typing-dots"><span></span><span></span><span></span></span></div></div>';
+    thread.appendChild(turn);
     scrollThread();
   }
 
@@ -179,7 +254,10 @@
     try {
       const messages = JSON.parse(initialEl.textContent || "[]");
       messages.forEach((m) => {
-        appendMessage(m.role, m.content, { markdown: m.role === "assistant" });
+        appendMessage(m.role, m.content, {
+          markdown: m.role === "assistant",
+          contextSize: m.context_size || null,
+        });
       });
     } catch (_) {
       /* ignore malformed bootstrap JSON */
@@ -202,6 +280,7 @@
     body.append("message", text.trim());
     body.append("test_email", email);
     body.append("test_phone", phone);
+    body.append("test_session", anonymousTestSessionForSend());
 
     try {
       const res = await fetch(sendUrl, {
@@ -218,7 +297,12 @@
         return;
       }
       const data = await res.json();
-      appendMessage("assistant", data.reply || "", { markdown: true });
+      if (data.test_session) saveAnonymousSessionId(data.test_session);
+      syncIdentityFields();
+      appendMessage("assistant", data.reply || "", {
+        markdown: true,
+        contextSize: data.context_size || null,
+      });
       showHookStatus(data);
     } catch (err) {
       hideTyping();
@@ -250,6 +334,18 @@
     input.focus();
   });
 
+  resetForm?.addEventListener("submit", () => {
+    const { email, phone } = identityValues();
+    syncIdentityFields();
+    if (!email && !phone) {
+      try {
+        localStorage.removeItem(testSessionStorageKey);
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  });
+
   testEmailInput?.addEventListener("input", () => {
     const { email, phone } = identityValues();
     saveStoredIdentity(email, phone);
@@ -259,6 +355,11 @@
     const { email, phone } = identityValues();
     saveStoredIdentity(email, phone);
     syncIdentityFields();
+  });
+
+  document.getElementById("chat-clear-identity")?.addEventListener("click", () => {
+    clearStoredIdentity();
+    window.location.href = "?tab=chat";
   });
 
   if (sessionLabelEl && !sessionLabelEl.dataset.defaultSession) {

@@ -10,6 +10,7 @@ from chatbot.config.settings import Settings
 from chatbot.domain.contracts.conversation_repository import ConversationRepository
 from chatbot.domain.contracts.hook_event_repository import HookEventRepository
 from chatbot.domain.contracts.llm_client import LlmClient, LlmResult
+from chatbot.domain.models.context_debug import ContextDebugInfo
 from chatbot.domain.models.attachment import Attachment
 from chatbot.domain.models.message import ChatMessage, MessageRole
 from chatbot.domain.models.tenant import Tenant
@@ -77,14 +78,20 @@ class ChatService:
         self._repo.append_message(session_id, user_msg)
         history = self._repo.list_messages(session_id, limit=50)
         system = self._load_system_instruction()
+        customer_chars = 0
         if self._integration_enricher:
             data_block = self._integration_enricher(session_id)
             if data_block:
+                customer_chars = len(data_block)
                 system = f"{system}\n\n--- Customer data ---\n{data_block}"
+        rag_chunks = 0
+        rag_chars = 0
         if self._rag and self._settings.rag_enabled:
-            ctx = self._rag.build_retrieval_context(user_message)
-            if ctx:
-                system = f"{system}\n\n--- Retrieved context ---\n{ctx}"
+            retrieval = self._rag.build_retrieval_context(user_message)
+            rag_chunks = retrieval.chunk_count
+            rag_chars = retrieval.char_count
+            if retrieval.text:
+                system = f"{system}\n\n--- Retrieved context ---\n{retrieval.text}"
                 if not self._settings.dev_mode:
                     system = (
                         f"{system}\n\n"
@@ -97,9 +104,19 @@ class ChatService:
             attachments=attachments,
         )
         extracted = extract_hook(result.text)
+        context_debug = ContextDebugInfo(
+            rag_chunks=rag_chunks,
+            rag_chars=rag_chars,
+            customer_chars=customer_chars,
+            system_chars=len(system),
+        )
         self._repo.append_message(
             session_id,
-            ChatMessage(role=MessageRole.ASSISTANT, content=extracted.clean_reply),
+            ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content=extracted.clean_reply,
+                context_debug=context_debug,
+            ),
         )
         hook_event_id: int | None = None
         if (
@@ -120,6 +137,7 @@ class ChatService:
             hook_type=extracted.hook_type,
             hook_payload_json=extracted.payload_json,
             hook_event_id=hook_event_id,
+            context_debug=context_debug,
         )
 
     def draft_reply(self, session_id: str, inbound_text: str) -> LlmResult:

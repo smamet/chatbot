@@ -251,6 +251,67 @@ def test_chat_service_rag_includes_source_paths_when_dev_mode(test_settings, tes
     assert "Do not mention internal file names" not in cap.last_system
 
 
+def test_chat_service_always_returns_context_debug(test_settings, test_tenant) -> None:
+    from chatbot.domain.contracts.vector_store import RetrievedChunk, VectorRecord
+
+    tenant, _token = test_tenant
+    tenant = replace(
+        tenant,
+        config=TenantConfig(rag_enabled=True, rag_rewrite_enabled=False, dev_mode=False),
+    )
+
+    class FakeEmbedder:
+        def embed_texts(self, texts: list[str]) -> list[list[float]]:
+            return [[0.0, 0.0, 1.0] for _ in texts]
+
+    class FakeStore:
+        def delete_by_source_path(self, source_path: str) -> None:
+            _ = source_path
+
+        def upsert(self, records: list[VectorRecord]) -> None:
+            _ = records
+
+        def search(self, query_vector: list[float], *, top_k: int) -> list[RetrievedChunk]:
+            _ = query_vector
+            _ = top_k
+            return [
+                RetrievedChunk(
+                    chunk_id="c1",
+                    text="Widget price is 42 EUR",
+                    source_path="/tmp/price.csv",
+                    score=0.1,
+                ),
+                RetrievedChunk(
+                    chunk_id="c2",
+                    text="Another chunk",
+                    source_path="/tmp/other.csv",
+                    score=0.2,
+                ),
+            ]
+
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    rewriter = FakeLlm("unused")
+    rag = RagPipeline(
+        settings=test_settings.model_copy(update={"rag_enabled": True, "dev_mode": True}),
+        rewriter_llm=rewriter,
+        embedder=FakeEmbedder(),
+        vector_store=FakeStore(),
+    )
+    session = factory()
+    try:
+        repo = SqlAlchemyConversationRepository(session, tenant.id)
+        svc = ChatService(settings=test_settings, tenant=tenant, llm=FakeLlm("ok"), repo=repo, rag=rag)
+        result = svc.handle_user_message("s-debug", "How much?")
+        session.commit()
+    finally:
+        session.close()
+    assert result.context_debug is not None
+    assert result.context_debug.rag_chunks == 2
+    assert result.context_debug.rag_chars > 0
+    assert result.context_debug.system_chars > result.context_debug.rag_chars
+
+
 def test_chat_service_includes_quote_hook_when_erpnext_active(test_settings, test_tenant) -> None:
     from datetime import UTC, datetime
 

@@ -74,11 +74,17 @@ class TestChatSessionRepository:
         self._session.flush()
 
     def list_recent(self, *, limit: int = 20) -> list[TestChatSessionRow]:
-        return list(
+        rows = list(
             self._session.scalars(
                 select(TestChatSessionRow)
                 .where(TestChatSessionRow.tenant_id == self._tenant_id)
                 .order_by(desc(TestChatSessionRow.updated_at))
-                .limit(limit)
+                .limit(limit * 2)
             ).all()
         )
+        identified = [
+            row
+            for row in rows
+            if row.session_id.startswith(("email:", "whatsapp:"))
+        ]
+        return identified[:limit]

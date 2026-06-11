@@ -6,6 +6,7 @@ from sqlalchemy import delete, desc, func, select
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.orm import MessageRow
+from chatbot.application.context_debug import context_debug_from_json, context_debug_to_json
 from chatbot.domain.models.message import ChatMessage, MessageRole
 
 
@@ -20,6 +21,7 @@ class SqlAlchemyConversationRepository:
             session_id=session_id,
             role=message.role.value,
             content=message.content,
+            context_debug_json=context_debug_to_json(message.context_debug),
         )
         self._session.add(row)
         self._session.flush()
@@ -42,7 +44,13 @@ class SqlAlchemyConversationRepository:
                 role = MessageRole(r.role)
             except ValueError:
                 role = MessageRole.USER
-            out.append(ChatMessage(role=role, content=r.content))
+            out.append(
+                ChatMessage(
+                    role=role,
+                    content=r.content,
+                    context_debug=context_debug_from_json(r.context_debug_json),
+                )
+            )
         return out
 
     def last_user_message_before(self, session_id: str, before: datetime) -> str | None:

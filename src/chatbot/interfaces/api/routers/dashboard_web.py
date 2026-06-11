@@ -1,8 +1,9 @@
 from __future__ import annotations
 
-import json
 import asyncio
+import json
 import logging
+import uuid
 import threading
 from datetime import UTC
 from pathlib import Path
@@ -61,6 +62,7 @@ from chatbot.application.quote_pdf_storage import (
 )
 from chatbot.automation.modules.registry import all_modules
 from chatbot.domain.models.fulfillment import FulfillmentKind
+from chatbot.domain.models.message import ChatMessage
 from chatbot.application.connector_service import ConnectorService
 from chatbot.adapters.quickbooks.oauth import (
     build_authorize_url,
@@ -379,23 +381,53 @@ def _list_documents(settings: Settings, slug: str) -> list[str]:
     return sorted(str(p.relative_to(docs)) for p in docs.rglob("*") if p.is_file())
 
 
+def _parse_test_session_id(raw: str) -> str | None:
+    session_id = raw.strip()
+    if not session_id.startswith("test:") or len(session_id) <= 5:
+        return None
+    return session_id
+
+
+def _is_trackable_test_session(session_id: str) -> bool:
+    return session_id.startswith(("email:", "whatsapp:", "test:"))
+
+
+def _list_test_chat_sidebar_sessions(session: Session, tenant_id: int, *, limit: int = 50) -> list[str]:
+    """Dashboard test chats resumable from the chat tab (excludes legacy dashboard:*)."""
+    repo = SqlAlchemyConversationRepository(session, tenant_id)
+    ids = repo.list_session_ids(limit=limit * 3)
+    resumable = [
+        sid
+        for sid in ids
+        if sid.startswith(("test:", "email:", "whatsapp:"))
+    ]
+    return resumable[:limit]
+
+
 def _dashboard_chat_session_id(
     user: User,
     *,
     test_email: str = "",
     test_phone: str = "",
+    test_session: str = "",
     require_identity: bool = False,
+    create_anonymous: bool = False,
 ) -> str:
     email, phone = resolve_manual_identity(test_email=test_email, test_phone=test_phone)
     channel_session = build_channel_session_id(email=email, phone=phone)
     if channel_session:
         return channel_session
+    parsed = _parse_test_session_id(test_session)
+    if parsed:
+        return parsed
     if require_identity:
         raise HTTPException(
             status_code=400,
             detail="Test email or phone is required when a customer integration is active",
         )
-    return f"dashboard:{user.id}"
+    if create_anonymous:
+        return f"test:{uuid.uuid4()}"
+    return ""
 
 
 def _has_customer_integration(session: Session, tenant_id: int) -> bool:
@@ -424,17 +456,33 @@ def _run_dashboard_chat(
     *,
     test_email: str = "",
     test_phone: str = "",
+    test_session: str = "",
 ):
     session_id = _dashboard_chat_session_id(
         user,
         test_email=test_email,
         test_phone=test_phone,
+        test_session=test_session,
         require_identity=False,
+        create_anonymous=True,
     )
     repo = SqlAlchemyConversationRepository(session, tenant.id)
     hook_repo = SqlAlchemyHookEventRepository(session, tenant.id)
     chat = _build_chat_service(request, settings, tenant, repo, hook_repo, db_session=session)
     return session_id, chat.handle_user_message(session_id, message.strip())
+
+
+def _chat_message_ui_dict(message: ChatMessage, *, dev_mode: bool) -> dict:
+    out = {"role": message.role.value, "content": message.content}
+    if dev_mode and message.context_debug:
+        dbg = message.context_debug
+        out["context_size"] = {
+            "rag_chunks": dbg.rag_chunks,
+            "rag_chars": dbg.rag_chars,
+            "customer_chars": dbg.customer_chars,
+            "system_chars": dbg.system_chars,
+        }
+    return out
 
 
 class ChatTestSendOut(BaseModel):
@@ -448,6 +496,8 @@ class ChatTestSendOut(BaseModel):
     pdf_url: str | None = None
     pdf_filename: str | None = None
     pdf_warning: str | None = None
+    test_session: str | None = None
+    context_size: dict[str, int] | None = None
 
 
 class EmailTestSendOut(BaseModel):
@@ -848,6 +898,7 @@ def bot_detail(
         "dev_mode": settings.dev_mode,
         "mail_poll_seconds": settings.mail_poll_seconds,
         "mailpit_web_url": settings.dev_mailpit_web_url if settings.dev_mode else None,
+        "bot_dev_mode": tenant.config.dev_mode,
     }
     if tab == "documents":
         ctx["documents"] = _list_documents(settings, slug)
@@ -864,23 +915,31 @@ def bot_detail(
         require_identity = ctx["has_customer_integration"]
         test_email = request.query_params.get("test_email", "").strip()
         test_phone = request.query_params.get("test_phone", "").strip()
+        test_session = request.query_params.get("test_session", "").strip()
         test_sid = _dashboard_chat_session_id(
             user,
             test_email=test_email,
             test_phone=test_phone,
+            test_session=test_session,
             require_identity=False,
         )
-        ctx["chat_session_id"] = test_sid
+        ctx["chat_active_sid"] = test_sid
+        ctx["chat_session_id"] = test_sid or "(new anonymous session)"
         ctx["chat_test_email"] = test_email
         ctx["chat_test_phone"] = test_phone
+        ctx["chat_test_session"] = test_session
         ctx["chat_require_identity"] = require_identity
         ctx["chat_validation_url"] = f"/dashboard/bots/{slug}?tab=validation"
-        messages = repo.list_messages(test_sid, limit=200)
+        ctx["chat_dev_mode"] = tenant.config.dev_mode
+        if test_sid and not test_sid.startswith("dashboard:"):
+            messages = repo.list_messages(test_sid, limit=200)
+        else:
+            messages = []
         ctx["chat_messages_json"] = json.dumps(
-            [{"role": m.role.value, "content": m.content} for m in messages]
+            [_chat_message_ui_dict(m, dev_mode=tenant.config.dev_mode) for m in messages]
         )
         session_repo = TestChatSessionRepository(session, tenant.id)
-        ctx["test_chat_sessions"] = session_repo.list_recent()
+        ctx["test_chat_sidebar_sessions"] = _list_test_chat_sidebar_sessions(session, tenant.id)
         chat_quote_pdf: dict[str, str] | None = None
         session_row = session_repo.find(test_sid)
         if session_row and session_row.last_quote_name:
@@ -2008,6 +2067,7 @@ def bot_chat_test_reset(
     slug: str,
     test_email: str = Form(""),
     test_phone: str = Form(""),
+    test_session: str = Form(""),
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -2021,8 +2081,11 @@ def bot_chat_test_reset(
         user,
         test_email=test_email,
         test_phone=test_phone,
+        test_session=test_session,
         require_identity=False,
     )
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Missing test session")
     repo.clear_session(session_id)
     session_repo = TestChatSessionRepository(session, tenant.id)
     row = session_repo.find(session_id)
@@ -2051,6 +2114,7 @@ def bot_chat_test_send(
     message: str = Form(...),
     test_email: str = Form(""),
     test_phone: str = Form(""),
+    test_session: str = Form(""),
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -2071,6 +2135,7 @@ def bot_chat_test_send(
             session,
             test_email=test_email,
             test_phone=test_phone,
+            test_session=test_session,
         )
         hook_type = getattr(result, "hook_type", None)
         queued = False
@@ -2081,7 +2146,8 @@ def bot_chat_test_send(
         pdf_url: str | None = None
         pdf_filename: str | None = None
         pdf_warning: str | None = None
-        TestChatSessionRepository(session, tenant.id).upsert(session_id)
+        if _is_trackable_test_session(session_id):
+            TestChatSessionRepository(session, tenant.id).upsert(session_id)
         if hook_type:
             connector = _first_active_outbound_connector(session, tenant.id)
             if connector is None:
@@ -2119,10 +2185,11 @@ def bot_chat_test_send(
                             pdf_warning = created.pdf_warning
                             status_message = f"Quotation created: {quote_name}"
                             quote_created = True
-                            TestChatSessionRepository(session, tenant.id).upsert(
-                                session_id,
-                                last_quote_name=quote_name,
-                            )
+                            if _is_trackable_test_session(session_id):
+                                TestChatSessionRepository(session, tenant.id).upsert(
+                                    session_id,
+                                    last_quote_name=quote_name,
+                                )
                         except QuoteFulfillmentError as exc:
                             status_message = str(exc)
                 if not quote_created:
@@ -2150,6 +2217,16 @@ def bot_chat_test_send(
                     elif not status_message:
                         status_message = "Hook detected but reply was not queued."
         session.commit()
+        out_test_session = session_id if session_id.startswith("test:") else None
+        context_size = None
+        if tenant.config.dev_mode and result.context_debug is not None:
+            dbg = result.context_debug
+            context_size = {
+                "rag_chunks": dbg.rag_chunks,
+                "rag_chars": dbg.rag_chars,
+                "customer_chars": dbg.customer_chars,
+                "system_chars": dbg.system_chars,
+            }
         return ChatTestSendOut(
             reply=result.text,
             hook_type=hook_type,
@@ -2161,6 +2238,8 @@ def bot_chat_test_send(
             pdf_url=pdf_url,
             pdf_filename=pdf_filename,
             pdf_warning=pdf_warning,
+            test_session=out_test_session,
+            context_size=context_size,
         )
     except HTTPException:
         session.rollback()

@@ -1128,11 +1128,18 @@
   <div>
     {% if selected_sid %}
     <h2 class="card-title">Messages — {{ selected_sid | session_label }}</h2>
+    <div class="chat-thread history-thread">
     {% for m in history_messages %}
-    <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
+    <div class="msg-turn msg-turn-{{ m.role.value }}">
+      <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
+      {% if bot_dev_mode and m.context_debug %}
+      <p class="msg-context-debug">{{ m.context_debug | context_debug_label }}</p>
+      {% endif %}
+    </div>
     {% else %}
     <p class="text-muted">No messages</p>
     {% endfor %}
+    </div>
     {% else %}
     <p class="text-muted">Select a session from the list</p>
     {% endif %}
@@ -1141,17 +1148,31 @@
 {{ markdown_scripts() }}
 
 {% elif tab == 'chat' %}
-<div class="card chat-panel" id="chat-panel"
+<section class="history-layout chat-test-layout">
+  <aside>
+    <h2>Sessions</h2>
+    <ul>
+    {% for sid in test_chat_sidebar_sessions %}
+      <li><a href="?{{ sid | session_test_chat_query }}"{% if sid == chat_active_sid %} class="active"{% endif %}>{{ sid | session_label }}</a></li>
+    {% else %}
+      <li class="text-muted">No sessions</li>
+    {% endfor %}
+    </ul>
+  </aside>
+  <div class="chat-panel" id="chat-panel"
      data-bot-slug="{{ tenant.slug }}"
      data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send"
      data-validation-url="{{ chat_validation_url }}"
      data-require-identity="{{ 'true' if chat_require_identity else 'false' }}"
-     data-quote-pdf='{{ chat_quote_pdf_json|safe }}'>
+     data-dev-mode="{{ 'true' if chat_dev_mode else 'false' }}"
+     data-quote-pdf='{{ chat_quote_pdf_json|safe }}'
+     data-chat-test-session="{{ chat_test_session }}">
   <div class="chat-header">
     <h2 class="card-title">Test chat</h2>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/chat-test/reset" class="no-loader" id="chat-reset-form" onsubmit="return confirm('Clear this test conversation?');">
       <input type="hidden" name="test_email" id="chat-reset-email" value="{{ chat_test_email }}">
       <input type="hidden" name="test_phone" id="chat-reset-phone" value="{{ chat_test_phone }}">
+      <input type="hidden" name="test_session" id="chat-reset-test-session" value="{{ chat_test_session }}">
       <button type="submit" class="btn-secondary btn-sm">Clear history</button>
     </form>
   </div>
@@ -1160,23 +1181,10 @@
     <label>Test email<input type="email" id="chat-test-email" value="{{ chat_test_email }}" placeholder="customer@example.com"></label>
     <label>Test phone<input type="text" id="chat-test-phone" value="{{ chat_test_phone }}" placeholder="+33612345678"></label>
   </div>
-  <p class="text-muted field-hint">Optional — email and phone are both sent to ERPNext / QuickBooks when filled (better customer match).</p>
-  {% endif %}
-  {% if test_chat_sessions %}
-  <details class="chat-session-resume"{% if test_chat_sessions|length <= 4 %} open{% endif %}>
-    <summary class="chat-session-resume__summary">Previous conversations <span class="chat-session-resume__count">{{ test_chat_sessions|length }}</span></summary>
-    <ul class="session-link-list">
-      {% for s in test_chat_sessions %}
-      {% set resume = s.session_id | session_resume_params %}
-      <li>
-        <a href="?tab=chat{% if resume.email %}&amp;test_email={{ resume.email|urlencode }}{% endif %}{% if resume.phone %}&amp;test_phone={{ resume.phone|urlencode }}{% endif %}"{% if s.session_id == chat_session_id %} class="active"{% endif %}>
-          {{ s.label }}
-          <span class="session-link-list__meta">{{ s.updated_at.strftime('%d %b %Y, %H:%M') }}{% if s.last_quote_name %} · {{ s.last_quote_name }}{% endif %}</span>
-        </a>
-      </li>
-      {% endfor %}
-    </ul>
-  </details>
+  <p class="text-muted field-hint">
+    Optional — email and phone are both sent to ERPNext / QuickBooks when filled (better customer match).
+    <button type="button" class="btn-ghost btn-sm" id="chat-clear-identity">Clear identity (anonymous test)</button>
+  </p>
   {% endif %}
   <div class="chat-thread" id="chat-thread"></div>
   <script id="chat-initial" type="application/json">{{ chat_messages_json|safe }}</script>
@@ -1192,7 +1200,8 @@
   <p class="text-muted" style="margin-top:1rem">Session: <code id="chat-session-label">{{ chat_session_id }}</code></p>
   {{ markdown_scripts() }}
   <script src="/static/chat-test.js"></script>
-</div>
+  </div>
+</section>
 
 {% elif tab == 'email-test' %}
 <div class="card" id="email-test-panel"
