@@ -13,6 +13,7 @@ def send_email_reply(
     to_addr: str,
     body: str,
     subject: str | None = None,
+    body_html: str | None = None,
     attachments: list[OutboundAttachment] | None = None,
 ) -> None:
     to = to_addr.strip()
@@ -26,14 +27,14 @@ def send_email_reply(
         EmailAttachment(filename=a.filename, data=a.data, mime_type=a.mime_type)
         for a in (attachments or [])
     )
-    body_text, body_html = format_email_bodies(body)
+    body_text, rendered_html = format_email_bodies(body, html_fragment=body_html)
     sender = build_email_sender(config)
     sender.send(
         EmailMessage(
             to_addr=to,
             subject=resolved_subject,
             body_text=body_text,
-            body_html=body_html,
+            body_html=rendered_html,
             from_addr=from_addr,
             attachments=email_attachments,
         )

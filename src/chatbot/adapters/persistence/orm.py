@@ -197,6 +197,7 @@ class PendingReplyRow(Base):
     channel: Mapped[str] = mapped_column(String(32))
     recipient_id: Mapped[str] = mapped_column(String(256))
     draft_text: Mapped[str] = mapped_column(Text())
+    draft_html: Mapped[str | None] = mapped_column(Text(), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     hook_event_id: Mapped[int | None] = mapped_column(ForeignKey("hook_events.id"), nullable=True)
     fulfillment_kind: Mapped[str] = mapped_column(String(32), default="reply_only")
@@ -212,6 +213,24 @@ class PendingReplyRow(Base):
         DateTime(timezone=True),
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
+    )
+
+
+class PendingReplyEditRow(Base):
+    __tablename__ = "pending_reply_edits"
+    __table_args__ = (
+        Index("ix_pending_reply_edits_tenant_reply", "tenant_id", "pending_reply_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    pending_reply_id: Mapped[int] = mapped_column(ForeignKey("pending_replies.id"))
+    edited_by: Mapped[str] = mapped_column(String(256), default="")
+    body_before: Mapped[str] = mapped_column(Text())
+    body_after: Mapped[str] = mapped_column(Text())
+    diff: Mapped[str] = mapped_column(Text())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
 
 

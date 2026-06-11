@@ -1,6 +1,11 @@
 from __future__ import annotations
 
+import re
+from html.parser import HTMLParser
+
+import bleach
 import markdown
+from bleach.css_sanitizer import CSSSanitizer
 
 from chatbot.adapters.channels.text_format import format_for_messenger
 
@@ -13,22 +18,133 @@ _EMAIL_WRAPPER = """\
 </body>
 </html>"""
 
+_MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists"]
+_BULLET_LINE_RE = re.compile(r"^(\s*[-*+]\s+|\s*\d+\.\s+)")
+
+_EMAIL_HTML_TAGS = [
+    "p",
+    "br",
+    "strong",
+    "b",
+    "em",
+    "i",
+    "u",
+    "a",
+    "ul",
+    "ol",
+    "li",
+    "h1",
+    "h2",
+    "h3",
+    "h4",
+    "blockquote",
+    "div",
+    "span",
+]
+_EMAIL_HTML_ATTRS = {
+    "a": ["href", "title", "target", "rel"],
+    "span": ["style"],
+    "p": ["style"],
+}
+_CSS_SANITIZER = CSSSanitizer(allowed_css_properties=["color", "background-color"])
+
+
+def normalize_markdown_lists(text: str) -> str:
+    """Insert a blank line before list blocks when Python-Markdown would miss them."""
+    lines = text.split("\n")
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        if (
+            i > 0
+            and _BULLET_LINE_RE.match(line)
+            and lines[i - 1].strip()
+            and not _BULLET_LINE_RE.match(lines[i - 1])
+        ):
+            if out and out[-1].strip():
+                out.append("")
+        out.append(line)
+    return "\n".join(out)
+
+
+def sanitize_email_html(html: str) -> str:
+    cleaned = bleach.clean(
+        html,
+        tags=_EMAIL_HTML_TAGS,
+        attributes=_EMAIL_HTML_ATTRS,
+        css_sanitizer=_CSS_SANITIZER,
+        strip=True,
+    )
+    return cleaned.strip()
+
 
 def markdown_to_plain(text: str) -> str:
     """Strip markdown syntax for the text/plain email part."""
     return format_for_messenger(text)
 
 
-def markdown_to_html(text: str) -> str:
-    """Render markdown to a simple HTML document suitable for email clients."""
-    rendered = markdown.markdown(
-        text,
-        extensions=["extra", "nl2br", "sane_lists"],
+def markdown_to_html_fragment(text: str) -> str:
+    """Render markdown to an HTML fragment (no email wrapper)."""
+    normalized = normalize_markdown_lists(text)
+    return markdown.markdown(
+        normalized,
+        extensions=_MARKDOWN_EXTENSIONS,
         output_format="html5",
     )
-    return _EMAIL_WRAPPER.format(body=rendered)
 
 
-def format_email_bodies(text: str) -> tuple[str, str]:
+def markdown_to_html(text: str) -> str:
+    """Render markdown to a simple HTML document suitable for email clients."""
+    return _EMAIL_WRAPPER.format(body=markdown_to_html_fragment(text))
+
+
+class _HtmlPlainTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self._parts: list[str] = []
+        self._list_depth = 0
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in {"p", "div", "h1", "h2", "h3", "h4", "blockquote"}:
+            if self._parts and not self._parts[-1].endswith("\n\n"):
+                self._parts.append("\n\n")
+        elif tag == "br":
+            self._parts.append("\n")
+        elif tag == "li":
+            self._parts.append("• ")
+            self._list_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "li":
+            self._list_depth = max(0, self._list_depth - 1)
+            self._parts.append("\n")
+        elif tag in {"ul", "ol"} and self._parts and not self._parts[-1].endswith("\n"):
+            self._parts.append("\n")
+
+    def handle_data(self, data: str) -> None:
+        self._parts.append(data)
+
+    def get_text(self) -> str:
+        return "".join(self._parts).strip()
+
+
+def html_to_plain(html: str) -> str:
+    parser = _HtmlPlainTextParser()
+    parser.feed(html)
+    return parser.get_text()
+
+
+def format_email_bodies(
+    text: str,
+    *,
+    html_fragment: str | None = None,
+) -> tuple[str, str]:
     """Return (plain_text, html) parts for a multipart email."""
+    if html_fragment:
+        plain = html_to_plain(html_fragment)
+        return plain, _EMAIL_WRAPPER.format(body=html_fragment)
     return markdown_to_plain(text), markdown_to_html(text)
+
+
+def email_draft_html_from_markdown(text: str) -> str:
+    """Build sanitized HTML for validation WYSIWYG from LLM markdown."""
+    return sanitize_email_html(markdown_to_html_fragment(text))

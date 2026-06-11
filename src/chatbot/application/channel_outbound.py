@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from chatbot.adapters.channels import instagram_meta, messenger_meta, whatsapp_meta
+from chatbot.adapters.mail.body_format import email_draft_html_from_markdown
 from chatbot.application.email_outbound import send_email_reply
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.application.connector_service import ConnectorService
@@ -45,7 +46,10 @@ def queue_pending_reply(
     quote_resolved_json: str | None = None,
     quote_external_id: str | None = None,
     attachments_json: str | None = None,
+    draft_html: str | None = None,
 ) -> PendingReply:
+    if draft_html is None and channel == ConnectorType.EMAIL.value:
+        draft_html = email_draft_html_from_markdown(draft_text)
     return SqlAlchemyPendingReplyRepository(session).create(
         tenant_id=tenant_id,
         connector_id=connector_id,
@@ -53,6 +57,7 @@ def queue_pending_reply(
         channel=channel,
         recipient_id=recipient_id,
         draft_text=draft_text,
+        draft_html=draft_html,
         hook_event_id=hook_event_id,
         fulfillment_kind=fulfillment_kind,
         quote_proposal_json=quote_proposal_json,
@@ -70,6 +75,7 @@ def dispatch_channel_reply(
     config: dict,
     settings: Settings,
     attachments: list[OutboundAttachment] | None = None,
+    body_html: str | None = None,
 ) -> None:
     if channel == ConnectorType.WHATSAPP.value:
         phone_id = str(config.get("phone_number_id", "")).strip()
@@ -132,6 +138,7 @@ def dispatch_channel_reply(
             config=config,
             to_addr=recipient_id,
             body=text,
+            body_html=body_html,
             attachments=attachments,
         )
 
@@ -151,6 +158,7 @@ def approve_pending_reply(
         config=config,
         settings=settings,
         attachments=attachments,
+        body_html=reply.draft_html,
     )
     return SqlAlchemyPendingReplyRepository(session).update_status(
         reply.id, PendingReplyStatus.APPROVED

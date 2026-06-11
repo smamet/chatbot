@@ -630,7 +630,7 @@ def test_email_test_poll_ok(mock_poll, dashboard_env, monkeypatch) -> None:
     assert body["processed_mails"] == 2
 
 
-def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> None:
+def test_validation_tab_renders_quill_editor_for_email(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     with factory() as session:
         connector = SqlAlchemyConnectorRepository(session).create(
@@ -656,16 +656,103 @@ def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> Non
             channel="email",
             recipient_id="client@example.com",
             draft_text="**Hello** client",
+            draft_html="<p><strong>Hello</strong> client</p>",
         )
         session.commit()
     _login(client, admin.email, "admin-pass")
     r = client.get(f"/dashboard/bots/{slug}?tab=validation")
     assert r.status_code == 200
-    assert "client@example.com" in r.text
-    assert "email:client@example.com" not in r.text
+    assert "validation-quill" in r.text
+    assert "quill@2.0.3" in r.text
+    assert "/validation/" in r.text and "/save" in r.text
+    assert "Re-resolve products" not in r.text
+
+
+def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.WHATSAPP,
+            mode=ConnectorMode.VALIDATION,
+            config={"phone_number_id": "123", "access_token": "tok"},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="whatsapp:+33600000000",
+            channel="whatsapp",
+            recipient_id="+33600000000",
+            draft_text="**Hello** client",
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=validation")
+    assert r.status_code == 200
+    assert "+33600000000" in r.text
     assert 'class="validation-message-body msg-body js-md"' in r.text
     assert "**Hello** client" in r.text
     assert "markdown.js" in r.text
+
+
+def test_validation_save_draft_updates_html_and_message(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+        from chatbot.domain.models.message import ChatMessage, MessageRole
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Original body",
+            draft_html="<p>Original body</p>",
+        )
+        SqlAlchemyConversationRepository(session, tenant_id).append_message(
+            "email:client@example.com",
+            ChatMessage(role=MessageRole.ASSISTANT, content="Original body"),
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/save",
+        data={"draft_html": "<p>Edited <strong>body</strong></p>"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    with factory() as session:
+        from chatbot.adapters.persistence.orm import PendingReplyEditRow
+        from sqlalchemy import select
+
+        reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
+        assert reply is not None
+        assert reply.draft_html is not None
+        assert "<strong>body</strong>" in reply.draft_html
+        assert "Edited" in reply.draft_text
+        edits = session.scalars(select(PendingReplyEditRow)).all()
+        assert len(edits) == 1
 
 
 def test_delete_connector_removes_pending_replies(dashboard_env) -> None:

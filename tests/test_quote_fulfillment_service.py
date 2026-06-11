@@ -61,7 +61,7 @@ def test_fulfill_blocks_when_quotation_creation_disabled() -> None:
             svc.fulfill_and_approve(reply, config={})
 
 
-def test_fulfill_creates_customer_when_allowed() -> None:
+def test_fulfill_creates_customer_submits_and_redownloads_pdf() -> None:
     session = MagicMock()
     settings = get_settings()
     svc = QuoteFulfillmentService(session, settings=settings, tenant_slug="bot")
@@ -70,6 +70,7 @@ def test_fulfill_creates_customer_when_allowed() -> None:
     client = MagicMock()
     client.find_customer.return_value = None
     client.create_quotation.return_value = {"name": "QTN-0001"}
+    client.submit_quotation.return_value = None
     client.download_quotation_pdf.return_value = b"%PDF"
 
     with patch(
@@ -97,6 +98,9 @@ def test_fulfill_creates_customer_when_allowed() -> None:
             [{"item_code": "SKU-1", "qty": 1, "rate": 10.0}],
             notes=None,
         )
+        client.submit_quotation.assert_called_once_with("QTN-0001")
+        assert client.download_quotation_pdf.call_count == 2
+        client.download_quotation_pdf.assert_called_with("QTN-0001")
         delete_files.assert_called_once()
         repo.update_quote_fields.assert_any_call(reply.id, clear_attachments_json=True)
 
@@ -121,7 +125,7 @@ def test_fulfill_fails_when_customer_missing_and_creation_disabled() -> None:
             svc.fulfill_and_approve(reply, config={})
 
 
-def test_fulfill_sends_precreated_quote_without_recreating() -> None:
+def test_fulfill_precreated_quote_submits_and_redownloads_without_recreating() -> None:
     session = MagicMock()
     settings = get_settings()
     svc = QuoteFulfillmentService(session, settings=settings, tenant_slug="bot")
@@ -135,24 +139,52 @@ def test_fulfill_sends_precreated_quote_without_recreating() -> None:
     )
     integration_config = {"allow_create_quotation": True, "allow_create_customer": True}
     client = MagicMock()
+    client.submit_quotation.return_value = None
+    client.download_quotation_pdf.return_value = b"%PDF-new"
 
     with patch(
         "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, integration_config),
     ), patch(
-        "chatbot.application.quote_fulfillment_service.load_attachments_from_json",
-        return_value=[MagicMock()],
-    ) as load_mock, patch(
         "chatbot.application.quote_fulfillment_service.approve_pending_reply",
         return_value=reply,
     ) as approve_mock, patch(
         "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
     ) as repo_cls, patch(
         "chatbot.application.quote_fulfillment_service.delete_attachment_files",
+    ) as delete_files, patch(
+        "chatbot.application.quote_fulfillment_service.store_quote_pdf",
+        return_value=settings.data_root / "quotes" / "bot" / "QTN-0001.pdf",
     ):
         repo = repo_cls.return_value
         svc.fulfill_and_approve(reply, config={})
         client.create_quotation.assert_not_called()
-        load_mock.assert_called_once_with(reply.attachments_json)
+        client.submit_quotation.assert_called_once_with("QTN-0001")
+        client.download_quotation_pdf.assert_called_once_with("QTN-0001")
+        delete_files.assert_called()
         approve_mock.assert_called_once()
         repo.update_quote_fields.assert_any_call(reply.id, clear_attachments_json=True)
+
+
+def test_fulfill_aborts_when_submit_fails() -> None:
+    session = MagicMock()
+    settings = get_settings()
+    svc = QuoteFulfillmentService(session, settings=settings, tenant_slug="bot")
+    reply = replace(_quote_reply(), quote_external_id="QTN-0001")
+    integration_config = {"allow_create_quotation": True, "allow_create_customer": True}
+    client = MagicMock()
+    client.submit_quotation.return_value = "Submit failed"
+
+    with patch(
+        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        return_value=(client, integration_config),
+    ), patch(
+        "chatbot.application.quote_fulfillment_service.approve_pending_reply",
+    ) as approve_mock, patch(
+        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+    ) as repo_cls:
+        repo = repo_cls.return_value
+        with pytest.raises(QuoteFulfillmentError, match="Submit failed"):
+            svc.fulfill_and_approve(reply, config={})
+        approve_mock.assert_not_called()
+        repo.update_quote_fields.assert_called_with(reply.id, fulfillment_error="Submit failed")

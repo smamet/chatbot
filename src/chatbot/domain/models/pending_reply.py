@@ -32,3 +32,4 @@ class PendingReply:
     quote_external_id: str | None = None
     attachments_json: str | None = None
     fulfillment_error: str | None = None
+    draft_html: str | None = None

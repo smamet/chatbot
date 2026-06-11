@@ -888,6 +888,32 @@ class ErpNextClient:
         data = result.get("data")
         return data if isinstance(data, dict) else {}
 
+    def get_quotation(self, name: str) -> dict[str, Any]:
+        safe = name.strip()
+        if not safe:
+            return {}
+        encoded = quote(safe, safe="")
+        result = self._get(f"/api/resource/Quotation/{encoded}")
+        data = result.get("data")
+        return data if isinstance(data, dict) else {}
+
+    def submit_quotation(self, name: str) -> str | None:
+        """Submit a draft quotation. Returns an error message on failure."""
+        safe = name.strip()
+        if not safe:
+            return "Missing quotation name"
+        result = self._post_write(
+            "/api/method/frappe.client.submit",
+            json_body={"doc": {"doctype": "Quotation", "name": safe}},
+        )
+        if result.get("_erpnext_error"):
+            return str(result["_erpnext_error"])
+        doc = self.get_quotation(safe)
+        if doc.get("docstatus") != 1:
+            status = doc.get("docstatus")
+            return f"Quotation {safe} was not submitted (docstatus={status})"
+        return None
+
     def _discover_quotation_print_formats(self) -> list[str]:
         rows = self._list_resource(
             "Print Format",

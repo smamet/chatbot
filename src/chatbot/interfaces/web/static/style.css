@@ -571,6 +571,8 @@ textarea {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--space-md);
+  align-items: stretch;
+  min-height: 22rem;
 }
 
 @media (max-width: 900px) {
@@ -585,6 +587,9 @@ textarea {
   border-radius: var(--radius-md);
   padding: var(--space-md);
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
 }
 
 .validation-message h4 {
@@ -644,6 +649,61 @@ textarea {
   border: 1px solid #fecaca;
   padding: var(--space-sm);
   border-radius: var(--radius-sm);
+}
+
+.validation-editor {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-sm);
+  flex: 1;
+  min-height: 0;
+}
+
+.validation-quill {
+  flex: 1;
+  min-height: 16rem;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.validation-quill .ql-container {
+  flex: 1;
+  overflow-y: auto;
+  font-size: 0.9rem;
+  line-height: 1.5;
+}
+
+.validation-quill .ql-editor {
+  min-height: 14rem;
+}
+
+.validation-save-form {
+  margin: 0;
+}
+
+.validation-thread {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--space-xs);
+  background: #f8fafc;
+  border-radius: var(--radius-sm);
+}
+
+.validation-thread .msg {
+  max-width: 100%;
+}
+
+.validation-quote-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.validation-quote-actions form {
+  margin: 0;
 }
 
 .match-badge {

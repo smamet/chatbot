@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import uuid
+from urllib.parse import quote as url_quote
 import threading
 from datetime import UTC
 from pathlib import Path
@@ -32,6 +33,7 @@ from chatbot.application.bot_bundle_service import (
     import_bundle,
 )
 from chatbot.adapters.erpnext.client import ErpNextClient
+from chatbot.adapters.mail.body_format import email_draft_html_from_markdown
 from chatbot.application.channel_outbound import approve_pending_reply
 from chatbot.application.customer_access_gate import build_channel_session_id, resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
@@ -44,7 +46,8 @@ from chatbot.application.erpnext_catalog_sync_service import (
 )
 from chatbot.application.quote_test_service import create_erpnext_quotation_for_test
 from chatbot.application.hook_prompt_composer import compose_hook_instructions
-from chatbot.application.outbound_orchestrator import queue_after_chat
+from chatbot.application.draft_edit_service import DraftEditError, save_pending_reply_draft
+from chatbot.application.outbound_orchestrator import erpnext_integration_for_tenant, queue_after_chat
 from chatbot.application.progress_log import ProgressLog
 from chatbot.application.product_resolver import resolved_lines_from_json, resolved_lines_to_json
 from chatbot.application.quote_fulfillment_service import (
@@ -52,6 +55,7 @@ from chatbot.application.quote_fulfillment_service import (
     QuoteFulfillmentService,
     all_lines_resolved,
     create_quote_for_session,
+    refresh_quote_pdf,
     resolve_quote_hook,
 )
 from chatbot.application.quote_pdf_storage import (
@@ -218,6 +222,25 @@ def _automation_modules_for_ui(integrations: list[Integration]) -> list[dict]:
     return rows
 
 
+def _conversation_history_for_pending_reply(session: Session, tenant_id: int, reply) -> list:
+    from chatbot.domain.models.message import ChatMessage, MessageRole
+
+    conv = SqlAlchemyConversationRepository(session, tenant_id)
+    before = reply.created_at
+    if before.tzinfo is None:
+        before = before.replace(tzinfo=UTC)
+    messages = conv.list_messages_before(reply.session_id, before)
+    if messages:
+        # Last message is the draft under validation (shown in the WYSIWYG panel).
+        messages = messages[:-1]
+    if messages:
+        return messages
+    inbound = _inbound_for_pending_reply(session, tenant_id, reply)
+    if inbound.get("text"):
+        return [ChatMessage(role=MessageRole.USER, content=inbound["text"])]
+    return []
+
+
 def _inbound_for_pending_reply(session: Session, tenant_id: int, reply) -> dict[str, str]:
     subject = ""
     text = ""
@@ -239,6 +262,19 @@ def _inbound_for_pending_reply(session: Session, tenant_id: int, reply) -> dict[
     return {"subject": subject, "text": text}
 
 
+def _erpnext_quotation_edit_url(session: Session, tenant_id: int, quote_name: str | None) -> str | None:
+    if not quote_name:
+        return None
+    integration = erpnext_integration_for_tenant(session, tenant_id)
+    if integration is None:
+        return None
+    base = str(integration[1].get("url", "")).strip().rstrip("/")
+    if not base:
+        return None
+    safe_name = url_quote(quote_name.strip(), safe="")
+    return f"{base}/app/quotation/{safe_name}"
+
+
 def _pending_replies_for_ui(
     session: Session, tenant_id: int, pending: list, *, tenant_slug: str
 ) -> list[dict]:
@@ -246,11 +282,15 @@ def _pending_replies_for_ui(
     for reply in pending:
         resolved = resolved_lines_from_json(reply.quote_resolved_json)
         inbound = _inbound_for_pending_reply(session, tenant_id, reply)
+        conversation_history = _conversation_history_for_pending_reply(session, tenant_id, reply)
         quote_pdf_url = (
             quote_pdf_dashboard_url(tenant_slug, reply.quote_external_id)
             if reply.quote_external_id
             else None
         )
+        editor_html = reply.draft_html
+        if not editor_html and reply.channel == ConnectorType.EMAIL.value:
+            editor_html = email_draft_html_from_markdown(reply.draft_text)
         out.append(
             {
                 "reply": reply,
@@ -258,7 +298,12 @@ def _pending_replies_for_ui(
                 "is_quote": reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE,
                 "inbound_subject": inbound["subject"],
                 "inbound_text": inbound["text"],
+                "conversation_history": conversation_history,
                 "quote_pdf_url": quote_pdf_url,
+                "erpnext_quote_url": _erpnext_quotation_edit_url(
+                    session, tenant_id, reply.quote_external_id
+                ),
+                "editor_html": editor_html,
             }
         )
     return out
@@ -1989,6 +2034,80 @@ async def approve_validation_reply(
         session.commit()
         request.session["validation_error"] = str(exc)
         return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/save")
+async def save_validation_draft(
+    request: Request,
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.channel != ConnectorType.EMAIL.value:
+        raise HTTPException(status_code=400, detail="Only email drafts can be edited")
+    form = await request.form()
+    draft_html = str(form.get("draft_html", ""))
+    try:
+        save_pending_reply_draft(
+            session,
+            tenant_id=tenant.id,
+            reply=reply,
+            draft_html=draft_html,
+            edited_by=user.email,
+        )
+    except DraftEditError as exc:
+        request.session["validation_error"] = str(exc)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/refresh-pdf")
+def refresh_validation_quote_pdf(
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.fulfillment_kind != FulfillmentKind.ERPNEXT_QUOTE:
+        raise HTTPException(status_code=400, detail="Not a quote reply")
+    if not reply.quote_external_id:
+        raise HTTPException(status_code=400, detail="No quotation linked yet")
+    try:
+        attachments_json = refresh_quote_pdf(
+            session,
+            tenant_id=tenant.id,
+            settings=settings,
+            tenant_slug=slug,
+            quote_name=reply.quote_external_id,
+            existing_attachments_json=reply.attachments_json,
+        )
+        pending_repo.update_quote_fields(
+            reply.id,
+            attachments_json=attachments_json,
+            fulfillment_error=None,
+        )
+    except QuoteFulfillmentError as exc:
+        pending_repo.update_quote_fields(reply.id, fulfillment_error=str(exc))
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
 

@@ -53,6 +53,35 @@ class SqlAlchemyConversationRepository:
             )
         return out
 
+    def list_messages_before(
+        self, session_id: str, before: datetime, *, limit: int = 200
+    ) -> list[ChatMessage]:
+        stmt = (
+            select(MessageRow)
+            .where(
+                MessageRow.tenant_id == self._tenant_id,
+                MessageRow.session_id == session_id,
+                MessageRow.created_at <= before,
+            )
+            .order_by(MessageRow.id)
+            .limit(limit)
+        )
+        rows = list(self._session.scalars(stmt))
+        out: list[ChatMessage] = []
+        for r in rows:
+            try:
+                role = MessageRole(r.role)
+            except ValueError:
+                role = MessageRole.USER
+            out.append(
+                ChatMessage(
+                    role=role,
+                    content=r.content,
+                    context_debug=context_debug_from_json(r.context_debug_json),
+                )
+            )
+        return out
+
     def last_user_message_before(self, session_id: str, before: datetime) -> str | None:
         stmt = (
             select(MessageRow.content)
@@ -76,6 +105,31 @@ class SqlAlchemyConversationRepository:
             .limit(limit)
         )
         return list(self._session.scalars(stmt))
+
+    def update_assistant_message_content(
+        self,
+        session_id: str,
+        *,
+        old_content: str,
+        new_content: str,
+    ) -> bool:
+        stmt = (
+            select(MessageRow)
+            .where(
+                MessageRow.tenant_id == self._tenant_id,
+                MessageRow.session_id == session_id,
+                MessageRow.role == MessageRole.ASSISTANT.value,
+                MessageRow.content == old_content,
+            )
+            .order_by(desc(MessageRow.id))
+            .limit(1)
+        )
+        row = self._session.scalar(stmt)
+        if row is None:
+            return False
+        row.content = new_content
+        self._session.flush()
+        return True
 
     def clear_session(self, session_id: str) -> int:
         result = self._session.execute(

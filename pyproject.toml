@@ -32,6 +32,9 @@ dependencies = [
     "numpy>=1.26.0",
     "rapidfuzz>=3.0.0",
     "markdown>=3.7.0",
+    "markdownify>=0.14.0",
+    "bleach>=6.2.0",
+    "tinycss2>=1.2.0",
 ]
 
 [project.optional-dependencies]

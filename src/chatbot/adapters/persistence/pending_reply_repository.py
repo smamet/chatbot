@@ -35,6 +35,7 @@ def _row_to_pending(row: PendingReplyRow) -> PendingReply:
         quote_external_id=row.quote_external_id,
         attachments_json=row.attachments_json,
         fulfillment_error=row.fulfillment_error,
+        draft_html=row.draft_html,
     )
 
 
@@ -51,6 +52,7 @@ class SqlAlchemyPendingReplyRepository:
         channel: str,
         recipient_id: str,
         draft_text: str,
+        draft_html: str | None = None,
         hook_event_id: int | None = None,
         fulfillment_kind: FulfillmentKind = FulfillmentKind.REPLY_ONLY,
         quote_proposal_json: str | None = None,
@@ -66,6 +68,7 @@ class SqlAlchemyPendingReplyRepository:
             channel=channel,
             recipient_id=recipient_id,
             draft_text=draft_text,
+            draft_html=draft_html,
             status=PendingReplyStatus.PENDING.value,
             hook_event_id=hook_event_id,
             fulfillment_kind=fulfillment_kind.value,
@@ -133,6 +136,25 @@ class SqlAlchemyPendingReplyRepository:
             row.attachments_json = attachments_json
         if fulfillment_error is not None:
             row.fulfillment_error = fulfillment_error
+        row.updated_at = datetime.now(UTC)
+        self._session.flush()
+        self._session.refresh(row)
+        return _row_to_pending(row)
+
+    def update_draft(
+        self,
+        reply_id: int,
+        *,
+        draft_text: str | None = None,
+        draft_html: str | None = None,
+    ) -> PendingReply | None:
+        row = self._session.get(PendingReplyRow, reply_id)
+        if row is None:
+            return None
+        if draft_text is not None:
+            row.draft_text = draft_text
+        if draft_html is not None:
+            row.draft_html = draft_html
         row.updated_at = datetime.now(UTC)
         self._session.flush()
         self._session.refresh(row)
