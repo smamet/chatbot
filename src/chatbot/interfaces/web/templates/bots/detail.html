@@ -997,7 +997,17 @@
         tabindex="0"
         role="link">
       <td>{{ r.id }}</td>
-      <td><code>{% if item.is_quote %}quote{% else %}reply{% endif %}</code></td>
+      <td>
+        <code>{% if item.is_quote %}quote{% else %}reply{% endif %}</code>
+        <span class="validation-inbox-flags">
+          {% if item.has_erpnext_quote %}
+          <span class="validation-inbox-flag validation-inbox-flag--quote" title="ERPNext quotation {{ r.quote_external_id }}">Quote</span>
+          {% endif %}
+          {% if item.manual_attachment_count %}
+          <span class="validation-inbox-flag validation-inbox-flag--attach" title="{{ item.manual_attachment_count }} file{% if item.manual_attachment_count != 1 %}s{% endif %} attached">{{ item.manual_attachment_count }} file{% if item.manual_attachment_count != 1 %}s{% endif %}</span>
+          {% endif %}
+        </span>
+      </td>
       <td><code>{{ r.channel }}</code></td>
       <td><code>{{ r.session_id | session_label }}</code></td>
       <td><code>{{ r.recipient_id }}</code></td>

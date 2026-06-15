@@ -16,6 +16,7 @@ from chatbot.application.erpnext_catalog_sync_service import (
     sync_erpnext_catalog_for_tenant,
 )
 from chatbot.application.sync_service import IngestSyncService
+from chatbot.application.tenant_flush_service import TenantFlushError, TenantFlushService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.config.settings import get_settings
@@ -288,6 +289,45 @@ def tenant_create_cmd(
         session.commit()
         typer.echo(f"slug={result.tenant.slug}")
         typer.echo(f"token={result.token}")
+
+
+@app.command("bot-flush")
+def bot_flush_cmd(
+    slug: Annotated[str, typer.Argument(help="Tenant slug")],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation (required without a TTY)"),
+    ] = False,
+) -> None:
+    """Clear all chats and operational logs for a bot; keep RAG, connectors, and config."""
+    import sys
+
+    if not yes:
+        if not sys.stdin.isatty():
+            typer.echo(
+                "No TTY: pass --yes / -y to confirm, e.g.\n  chatbot bot-flush my-bot --yes",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typed = typer.prompt(f"Type the slug to confirm flush of '{slug}'")
+        if typed.strip() != slug:
+            typer.echo("Slug did not match; aborted.", err=True)
+            raise typer.Exit(1)
+
+    settings = get_settings()
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+    with factory() as session:
+        svc = TenantFlushService(session, settings=settings)
+        try:
+            logs = svc.flush(slug)
+        except TenantFlushError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
+        session.commit()
+        for line in logs:
+            typer.echo(line)
+    typer.echo("Done.")
 
 
 @app.command("serve")

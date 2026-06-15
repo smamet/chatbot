@@ -65,6 +65,7 @@ from chatbot.application.quote_pdf_storage import (
     is_quote_pdf_path,
     is_user_attachment_path,
     merge_attachment_entries,
+    partition_attachment_entries,
     quote_pdf_dashboard_url,
     quote_pdf_path,
     remove_attachment_entry,
@@ -333,7 +334,12 @@ def _quote_pdf_stale_info(
 
 
 def _pending_reply_ui_item(
-    session: Session, tenant_id: int, reply: PendingReply, *, tenant_slug: str
+    session: Session,
+    tenant_id: int,
+    reply: PendingReply,
+    *,
+    tenant_slug: str,
+    settings: Settings,
 ) -> dict:
     resolved = resolved_lines_from_json(reply.quote_resolved_json)
     inbound = _inbound_for_pending_reply(session, tenant_id, reply)
@@ -346,10 +352,18 @@ def _pending_reply_ui_item(
     editor_html = reply.draft_html
     if not editor_html and reply.channel == ConnectorType.EMAIL.value:
         editor_html = email_draft_html_from_markdown(reply.draft_text)
+    manual_attachments, _quote_attachments = partition_attachment_entries(
+        reply.attachments_json,
+        settings=settings,
+        tenant_slug=tenant_slug,
+        reply_id=reply.id,
+    )
     return {
         "reply": reply,
         "resolved_lines": resolved,
         "is_quote": reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE,
+        "has_erpnext_quote": bool(reply.quote_external_id),
+        "manual_attachment_count": len(manual_attachments),
         "inbound_subject": inbound["subject"],
         "inbound_text": inbound["text"],
         "conversation_history": conversation_history,
@@ -362,10 +376,17 @@ def _pending_reply_ui_item(
 
 
 def _pending_replies_for_ui(
-    session: Session, tenant_id: int, pending: list, *, tenant_slug: str
+    session: Session,
+    tenant_id: int,
+    pending: list,
+    *,
+    tenant_slug: str,
+    settings: Settings,
 ) -> list[dict]:
     return [
-        _pending_reply_ui_item(session, tenant_id, reply, tenant_slug=tenant_slug)
+        _pending_reply_ui_item(
+            session, tenant_id, reply, tenant_slug=tenant_slug, settings=settings
+        )
         for reply in pending
     ]
 
@@ -1172,7 +1193,7 @@ def bot_detail(
             replies = pending_repo.list_by_status(tenant.id, PendingReplyStatus.REJECTED)
         ctx["validation_replies"] = replies
         ctx["pending_replies_ui"] = _pending_replies_for_ui(
-            session, tenant.id, replies, tenant_slug=slug
+            session, tenant.id, replies, tenant_slug=slug, settings=settings
         )
         ctx["pending_replies"] = replies
     elif tab == "integrations":
@@ -2217,7 +2238,9 @@ def validation_reply_detail(
     pending_repo = SqlAlchemyPendingReplyRepository(session)
     reply = _pending_reply_for_tenant(pending_repo, reply_id, tenant.id)
     is_pending = reply.status == PendingReplyStatus.PENDING
-    item = _pending_reply_ui_item(session, tenant.id, reply, tenant_slug=slug)
+    item = _pending_reply_ui_item(
+        session, tenant.id, reply, tenant_slug=slug, settings=settings
+    )
     attachment_rows = attachment_rows_for_ui(
         reply.attachments_json,
         settings=settings,
@@ -2591,6 +2614,50 @@ async def resolve_validation_quote(
         action=ValidationAuditAction.RESOLVE_PRODUCTS,
         actor_email=user.email,
     )
+    session.commit()
+    return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/retry-quote")
+def retry_validation_quote(
+    request: Request,
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_validator),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.status != PendingReplyStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Reply is not pending")
+    if reply.fulfillment_kind != FulfillmentKind.ERPNEXT_QUOTE:
+        raise HTTPException(status_code=400, detail="Not a quote reply")
+    if not reply.fulfillment_error:
+        raise HTTPException(status_code=400, detail="No ERPNext error to retry")
+
+    fulfillment = QuoteFulfillmentService(session, settings=settings, tenant_slug=slug)
+    try:
+        fulfillment.retry_quote_fulfillment(reply)
+        fresh = pending_repo.find_by_id(reply_id)
+        ValidationAuditService(session).log_event(
+            tenant_id=tenant.id,
+            pending_reply_id=reply.id,
+            action=ValidationAuditAction.RETRY_QUOTE,
+            actor_email=user.email,
+            detail={"quote_name": fresh.quote_external_id if fresh else None},
+        )
+        request.session.pop("validation_error", None)
+        request.session.pop("validation_warning", None)
+    except QuoteFulfillmentError as exc:
+        pending_repo.update_quote_fields(reply.id, fulfillment_error=str(exc))
+        request.session["validation_error"] = str(exc)
     session.commit()
     return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
 

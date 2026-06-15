@@ -50,6 +50,16 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `work
 4. Configure **Connectors** (WhatsApp/Meta) for webhook URLs `/webhooks/{channel}/{slug}`.
 5. Optional: **Integrations → ERPNext** — enable **Sync catalog to RAG** for live catalogue in RAG (`data/catalog/{slug}/`).
 
+### Flush bot operational data (keep RAG)
+
+Service: `src/chatbot/application/tenant_flush_service.py` (`TenantFlushService.flush`).
+
+```bash
+./sail chatbot bot-flush {slug} --yes
+```
+
+Clears messages, `hook_events`, validation queue (`pending_replies` + edits + audit), orders, `mail_drafts`, `test_chat_sessions`, and runtime dirs `data/attachments/{slug}/`, `data/quotes/{slug}/`. **Does not** delete the tenant, connectors, integrations, `ingested_files`, LanceDB, `data/docs/` or `data/catalog/`, or `mail_imap_uids`. Token unchanged. Destructive — requires `--yes` without a TTY or slug confirmation on a TTY.
+
 ### ERPNext catalog sync
 
 - Service: `src/chatbot/application/erpnext_catalog_sync_service.py`; client pagination in `ErpNextClient.list_catalog_items` / `fetch_stock_totals` / `fetch_price_list_rates`.
@@ -117,7 +127,7 @@ pytest
 # ./sail test
 ```
 
-Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`, `test_erpnext_catalog_sync_service.py`, `test_erpnext_client.py`, `test_gemini_embedder.py`, `test_cli_catalog_rag.py`.
+Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`, `test_erpnext_catalog_sync_service.py`, `test_erpnext_client.py`, `test_gemini_embedder.py`, `test_cli_catalog_rag.py`, `test_tenant_flush_service.py`.
 
 ## Environment (`.env`)
 
@@ -143,3 +153,4 @@ Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.p
 - Put order/WhatsApp logic in `ChatService` — use hooks + automation worker.
 - Run full-catalog RAG reconcile on `data/docs/` when syncing ERPNext items (use `data/catalog/{slug}/` only).
 - Assume RAG stock/price is real-time — it reflects the last catalog sync snapshot.
+- Use `bot-flush` when you need a clean operational slate — it does not rebuild or clear RAG (`ingested_files`, LanceDB, `data/docs/`, `data/catalog/`).

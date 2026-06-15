@@ -40,7 +40,7 @@ Create an operator: `./sail chatbot user-create op@example.com -p '…' --role c
 ./sail logs           # follow logs
 ./sail shell          # bash in API container
 ./sail mysql          # MySQL CLI
-./sail chatbot …      # CLI (tenant-create, sync, catalog-rag, user-create, …)
+./sail chatbot …      # CLI (tenant-create, sync, catalog-rag, bot-flush, user-create, …)
 ./sail migrate        # alembic upgrade head
 ./sail test           # pytest in container
 ./sail worker-logs    # automation worker logs
@@ -122,6 +122,24 @@ uvicorn chatbot.interfaces.api.main:app --reload
 ## Test chat
 
 Use the dashboard **Test chat** tab on a bot detail page (server-side `ChatService`). For API integration tests, call `POST /c/{slug}/chat` with the tenant Bearer token.
+
+---
+
+## Reset bot data (keep RAG)
+
+Wipe all chats and operational logs for a bot **without** recreating it — same slug, token, prompt, connectors, integrations, and full RAG index (`data/docs/`, `data/catalog/`, `data/lancedb/{slug}/`).
+
+```bash
+./sail chatbot bot-flush my-bot --yes
+# Local (no Docker):
+chatbot bot-flush my-bot --yes
+```
+
+Without `--yes`, an interactive terminal prompts you to type the slug to confirm. In non-TTY environments (e.g. `./sail`), `--yes` is required.
+
+**Removed:** messages, hook events, validation queue (replies + edits + audit), orders, mail drafts, test chat sessions, `data/attachments/{slug}/`, `data/quotes/{slug}/`.
+
+**Kept:** tenant row, connectors, integrations, `ingested_files`, LanceDB vectors, document/catalog files, `mail_imap_uids` (old inbox messages are not re-fetched).
 
 ---
 

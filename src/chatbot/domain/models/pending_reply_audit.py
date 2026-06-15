@@ -12,6 +12,7 @@ class ValidationAuditAction(StrEnum):
     ATTACHMENT_REMOVED = "attachment_removed"
     RESOLVE_PRODUCTS = "resolve_products"
     REFRESH_PDF = "refresh_pdf"
+    RETRY_QUOTE = "retry_quote"
 
 
 @dataclass(frozen=True)

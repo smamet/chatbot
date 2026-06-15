@@ -685,6 +685,202 @@ def test_validation_tab_renders_quill_editor_for_email(dashboard_env) -> None:
     assert "Re-resolve products" not in detail.text
 
 
+def test_validation_retry_quote_clears_error(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+        from chatbot.domain.models.integration import IntegrationType
+
+        SqlAlchemyIntegrationRepository(session).create(
+            tenant_id=tenant_id,
+            type=IntegrationType.ERPNEXT,
+            config={
+                "url": "https://erp.example.com",
+                "api_key": "k",
+                "api_secret": "s",
+                "allow_create_quotation": True,
+                "allow_create_customer": True,
+            },
+            active=True,
+        )
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Quote draft",
+            fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
+            quote_proposal_json=json.dumps(
+                {"type": "quote.create", "lines": [{"product": "Widget", "qty": 1}]}
+            ),
+            quote_resolved_json=json.dumps(
+                [
+                    {
+                        "requested_label": "Widget",
+                        "qty": 1,
+                        "item_code": "SKU-1",
+                        "status": "resolved",
+                        "rate": 10.0,
+                    }
+                ]
+            ),
+        )
+        SqlAlchemyPendingReplyRepository(session).update_quote_fields(
+            pending.id,
+            fulfillment_error="ERPNext customer creation failed (customer_create_failed): bad name",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+    assert detail.status_code == 200
+    assert "validation-quote-retry-form" in detail.text
+    assert "customer_create_failed" in detail.text
+
+    with patch(
+        "chatbot.interfaces.api.routers.dashboard_web.QuoteFulfillmentService"
+    ) as svc_cls:
+        svc_cls.return_value.retry_quote_fulfillment.side_effect = None
+        r = client.post(
+            f"/dashboard/bots/{slug}/validation/{reply_id}/retry-quote",
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    svc_cls.return_value.retry_quote_fulfillment.assert_called_once()
+
+    with factory() as session:
+        from chatbot.application.validation_audit_service import ValidationAuditService
+        from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+
+        saved = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
+        activity = ValidationAuditService(session).list_activity(tenant_id, limit=10)
+        assert any(e.action == ValidationAuditAction.RETRY_QUOTE for e in activity)
+        assert saved is not None
+
+
+def test_validation_retry_quote_requires_error(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Quote draft",
+            fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
+            quote_external_id="QTN-OK",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(f"/dashboard/bots/{slug}/validation/{reply_id}/retry-quote")
+    assert r.status_code == 400
+
+
+def test_validation_inbox_shows_quote_and_attachment_flags(dashboard_env) -> None:
+    from chatbot.application.quote_pdf_storage import attachment_entry, encode_attachments_json
+    from chatbot.adapters.persistence.pending_reply_repository import (
+        SqlAlchemyPendingReplyRepository,
+    )
+
+    client, admin, _, slug, tenant_id, data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        repo = SqlAlchemyPendingReplyRepository(session)
+        plain = repo.create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:plain@example.com",
+            channel="email",
+            recipient_id="plain@example.com",
+            draft_text="Plain reply",
+        )
+        quote = repo.create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:quote@example.com",
+            channel="email",
+            recipient_id="quote@example.com",
+            draft_text="Quote draft",
+            fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
+            quote_external_id="QTN-0042",
+        )
+        attached = repo.create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:files@example.com",
+            channel="email",
+            recipient_id="files@example.com",
+            draft_text="With files",
+        )
+        session.flush()
+        att_dir = data / "attachments" / slug / str(attached.id)
+        att_dir.mkdir(parents=True, exist_ok=True)
+        att_path = att_dir / "spec.pdf"
+        att_path.write_bytes(b"%PDF")
+        repo.update_quote_fields(
+            attached.id,
+            attachments_json=encode_attachments_json(
+                [attachment_entry(path=att_path, filename="spec.pdf")]
+            ),
+        )
+        session.commit()
+        plain_id, quote_id, attached_id = plain.id, quote.id, attached.id
+
+    _login(client, admin.email, "admin-pass")
+    inbox = client.get(f"/dashboard/bots/{slug}?tab=validation")
+    assert inbox.status_code == 200
+    assert "validation-inbox-flag--quote" not in _inbox_row_html(inbox.text, plain_id)
+    assert "validation-inbox-flag--attach" not in _inbox_row_html(inbox.text, plain_id)
+    assert "validation-inbox-flag--quote" in _inbox_row_html(inbox.text, quote_id)
+    assert "QTN-0042" in _inbox_row_html(inbox.text, quote_id)
+    assert "validation-inbox-flag--attach" in _inbox_row_html(inbox.text, attached_id)
+    assert "1 file" in _inbox_row_html(inbox.text, attached_id)
+
+
+def _inbox_row_html(page_html: str, reply_id: int) -> str:
+    marker = f'data-href="/dashboard/bots/'
+    start = page_html.find(f'{marker}')
+    while start != -1:
+        end = page_html.find("</tr>", start)
+        row = page_html[start:end]
+        if f"/validation/{reply_id}\"" in row:
+            return row
+        start = page_html.find(marker, end)
+    raise AssertionError(f"inbox row for reply {reply_id} not found")
+
+
 def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     with factory() as session:

@@ -32,7 +32,7 @@ from chatbot.automation.modules.erpnext.quote import QuoteProposal, parse_quote_
 from chatbot.config.settings import Settings
 from chatbot.domain.contracts.llm_client import LlmResult
 from chatbot.domain.models.fulfillment import FulfillmentKind
-from chatbot.domain.models.pending_reply import PendingReply
+from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
 
 
 class QuoteFulfillmentError(RuntimeError):
@@ -253,11 +253,117 @@ def create_quote_for_session(
     )
 
 
+def create_quote_for_pending_reply(
+    session: Session,
+    *,
+    tenant_id: int,
+    settings: Settings,
+    tenant_slug: str,
+    reply: PendingReply,
+) -> QuoteCreateResult:
+    if not reply.quote_proposal_json:
+        raise QuoteFulfillmentError("Missing quote proposal")
+    try:
+        payload = json.loads(reply.quote_proposal_json)
+    except json.JSONDecodeError as exc:
+        raise QuoteFulfillmentError("Invalid quote proposal") from exc
+    proposal = parse_quote_proposal(payload) if isinstance(payload, dict) else None
+    if proposal is None:
+        raise QuoteFulfillmentError("Invalid quote proposal")
+    resolved_json = reply.quote_resolved_json
+    if not all_lines_resolved(resolved_json):
+        raise QuoteFulfillmentError("Not all quote lines are resolved")
+    return create_quote_for_session(
+        session,
+        tenant_id=tenant_id,
+        settings=settings,
+        tenant_slug=tenant_slug,
+        session_id=reply.session_id,
+        proposal=proposal,
+        resolved_json=resolved_json or "[]",
+    )
+
+
+def _merge_manual_and_quote_attachments(
+    reply: PendingReply,
+    *,
+    settings: Settings,
+    tenant_slug: str,
+    quote_attachments_json: str | None,
+) -> str | None:
+    manual_entries, old_quote_entries = partition_attachment_entries(
+        reply.attachments_json,
+        settings=settings,
+        tenant_slug=tenant_slug,
+        reply_id=reply.id,
+    )
+    if old_quote_entries:
+        delete_attachment_files(encode_attachments_json(old_quote_entries))
+    new_quote_entries: list[dict[str, str]] = []
+    if quote_attachments_json:
+        _, new_quote_entries = partition_attachment_entries(
+            quote_attachments_json,
+            settings=settings,
+            tenant_slug=tenant_slug,
+            reply_id=reply.id,
+        )
+    merged = manual_entries + new_quote_entries
+    return encode_attachments_json(merged) if merged else None
+
+
 class QuoteFulfillmentService:
     def __init__(self, session: Session, *, settings: Settings, tenant_slug: str) -> None:
         self._session = session
         self._settings = settings
         self._tenant_slug = tenant_slug
+
+    def retry_quote_fulfillment(self, reply: PendingReply) -> None:
+        if reply.fulfillment_kind != FulfillmentKind.ERPNEXT_QUOTE:
+            raise QuoteFulfillmentError("Not a quote reply")
+        if reply.status != PendingReplyStatus.PENDING:
+            raise QuoteFulfillmentError("Reply is not pending")
+
+        repo = SqlAlchemyPendingReplyRepository(self._session)
+        quote_name = (reply.quote_external_id or "").strip()
+        if not quote_name:
+            created = create_quote_for_pending_reply(
+                self._session,
+                tenant_id=reply.tenant_id,
+                settings=self._settings,
+                tenant_slug=self._tenant_slug,
+                reply=reply,
+            )
+            attachments_json = _merge_manual_and_quote_attachments(
+                reply,
+                settings=self._settings,
+                tenant_slug=self._tenant_slug,
+                quote_attachments_json=created.attachments_json,
+            )
+            repo.update_quote_fields(
+                reply.id,
+                quote_external_id=created.quote_name,
+                quote_resolved_json=created.resolved_json,
+                attachments_json=attachments_json,
+                fulfillment_error=None,
+                quote_erp_modified=created.quote_erp_modified,
+            )
+            return
+
+        attachments_json, erp_modified = refresh_quote_pdf(
+            self._session,
+            tenant_id=reply.tenant_id,
+            settings=self._settings,
+            tenant_slug=self._tenant_slug,
+            quote_name=quote_name,
+            existing_attachments_json=reply.attachments_json,
+            reply_id=reply.id,
+        )
+        repo.update_quote_fields(
+            reply.id,
+            attachments_json=attachments_json,
+            fulfillment_error=None,
+            quote_erp_modified=erp_modified,
+        )
 
     def fulfill_and_approve(
         self,

@@ -227,3 +227,61 @@ def test_refresh_quote_pdf_returns_attachments_and_modified(test_settings) -> No
 
     assert "QTN-0001.pdf" in attachments_json
     assert erp_modified == "2026-06-15 14:18:15"
+
+
+def test_retry_quote_fulfillment_creates_when_missing() -> None:
+    session = MagicMock()
+    settings = get_settings()
+    svc = QuoteFulfillmentService(session, settings=settings, tenant_slug="bot")
+    reply = _quote_reply()
+    created = MagicMock(
+        quote_name="QTN-0042",
+        attachments_json='[{"filename":"QTN-0042.pdf","path":"/tmp/q.pdf"}]',
+        resolved_json=reply.quote_resolved_json,
+        quote_erp_modified="2026-06-15 14:17:39",
+    )
+
+    with patch(
+        "chatbot.application.quote_fulfillment_service.create_quote_for_pending_reply",
+        return_value=created,
+    ), patch(
+        "chatbot.application.quote_fulfillment_service._merge_manual_and_quote_attachments",
+        return_value=created.attachments_json,
+    ) as merge_mock, patch(
+        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+    ) as repo_cls:
+        repo = repo_cls.return_value
+        svc.retry_quote_fulfillment(reply)
+
+    merge_mock.assert_called_once()
+    repo.update_quote_fields.assert_called_once_with(
+        reply.id,
+        quote_external_id="QTN-0042",
+        quote_resolved_json=reply.quote_resolved_json,
+        attachments_json=created.attachments_json,
+        fulfillment_error=None,
+        quote_erp_modified="2026-06-15 14:17:39",
+    )
+
+
+def test_retry_quote_fulfillment_refreshes_pdf_when_quote_exists() -> None:
+    session = MagicMock()
+    settings = get_settings()
+    svc = QuoteFulfillmentService(session, settings=settings, tenant_slug="bot")
+    reply = replace(_quote_reply(), quote_external_id="QTN-0001")
+
+    with patch(
+        "chatbot.application.quote_fulfillment_service.refresh_quote_pdf",
+        return_value=('[{"filename":"QTN-0001.pdf","path":"/tmp/q.pdf"}]', "2026-06-15 14:18:15"),
+    ), patch(
+        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+    ) as repo_cls:
+        repo = repo_cls.return_value
+        svc.retry_quote_fulfillment(reply)
+
+    repo.update_quote_fields.assert_called_once_with(
+        reply.id,
+        attachments_json='[{"filename":"QTN-0001.pdf","path":"/tmp/q.pdf"}]',
+        fulfillment_error=None,
+        quote_erp_modified="2026-06-15 14:18:15",
+    )

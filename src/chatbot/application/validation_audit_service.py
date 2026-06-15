@@ -41,6 +41,8 @@ def _audit_summary(action: ValidationAuditAction, detail_json: str | None) -> st
     if action == ValidationAuditAction.REFRESH_PDF:
         quote = detail.get("quote_name")
         return f"Synced PDF{f' ({quote})' if quote else ''}"
+    if action == ValidationAuditAction.RETRY_QUOTE:
+        return "Retried ERPNext quotation"
     return action.value
 
 
