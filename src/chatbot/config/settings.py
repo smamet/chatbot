@@ -43,6 +43,10 @@ class Settings(BaseSettings):
     embed_retry_base_503_seconds: float = Field(
         default=5.0, validation_alias="EMBED_RETRY_BASE_503_SECONDS"
     )
+    attachment_max_bytes: int = Field(default=10_485_760, validation_alias="ATTACHMENT_MAX_BYTES")
+    attachment_max_total_bytes: int = Field(
+        default=26_214_400, validation_alias="ATTACHMENT_MAX_TOTAL_BYTES"
+    )
     rewrite_model: str = Field(default="gemini-2.0-flash", validation_alias="REWRITE_MODEL")
 
     database_url: str = Field(

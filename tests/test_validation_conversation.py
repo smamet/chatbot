@@ -48,3 +48,4 @@ def test_conversation_history_excludes_current_draft(test_settings, test_tenant)
     assert history[1].content == "First answer"
     assert history[2].content == "Second question"
     assert all(m.content != "Current draft" for m in history)
+    assert all(m.created_at is not None for m in history)

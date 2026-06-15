@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.orm import PendingReplyEditRow
@@ -49,3 +50,26 @@ class SqlAlchemyPendingReplyEditRepository:
         self._session.flush()
         self._session.refresh(row)
         return _row_to_edit(row)
+
+    def list_for_reply(
+        self, tenant_id: int, pending_reply_id: int, *, limit: int = 100
+    ) -> list[PendingReplyEdit]:
+        rows = self._session.scalars(
+            select(PendingReplyEditRow)
+            .where(
+                PendingReplyEditRow.tenant_id == tenant_id,
+                PendingReplyEditRow.pending_reply_id == pending_reply_id,
+            )
+            .order_by(PendingReplyEditRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [_row_to_edit(row) for row in rows]
+
+    def list_for_tenant(self, tenant_id: int, *, limit: int = 50) -> list[PendingReplyEdit]:
+        rows = self._session.scalars(
+            select(PendingReplyEditRow)
+            .where(PendingReplyEditRow.tenant_id == tenant_id)
+            .order_by(PendingReplyEditRow.created_at.desc())
+            .limit(limit)
+        ).all()
+        return [_row_to_edit(row) for row in rows]

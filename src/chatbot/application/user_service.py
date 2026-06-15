@@ -35,6 +35,20 @@ class UserService:
     def can_edit(self, user: User) -> bool:
         return user.role in (UserRole.ADMIN, UserRole.CLIENT_ADMIN)
 
+    def is_validation_only(self, user: User) -> bool:
+        return user.role == UserRole.CLIENT_OPERATOR
+
+    def can_validate(self, user: User) -> bool:
+        return user.role in (UserRole.ADMIN, UserRole.CLIENT_ADMIN, UserRole.CLIENT_OPERATOR)
+
+    def dashboard_home_url(self, user: User, tenants: list[Tenant]) -> str:
+        if user.role != UserRole.CLIENT_OPERATOR:
+            return "/dashboard/bots"
+        allowed = self.filter_tenants(user, tenants)
+        if len(allowed) == 1:
+            return f"/dashboard/bots/{allowed[0].slug}?tab=validation"
+        return "/dashboard/bots"
+
     def get_by_id(self, user_id: int) -> User | None:
         return self._repo.find_by_id(user_id)
 

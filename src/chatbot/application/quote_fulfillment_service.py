@@ -22,15 +22,16 @@ from chatbot.application.quote_pdf_storage import (
     delete_attachment_files,
     encode_attachments_json,
     load_attachments_from_json,
+    partition_attachment_entries,
     quote_pdf_dashboard_url,
     safe_quote_filename,
     store_quote_pdf,
 )
+from chatbot.application.quote_sync_state import quotation_erp_modified
 from chatbot.automation.modules.erpnext.quote import QuoteProposal, parse_quote_proposal
 from chatbot.config.settings import Settings
 from chatbot.domain.contracts.llm_client import LlmResult
 from chatbot.domain.models.fulfillment import FulfillmentKind
-from chatbot.domain.models.outbound_attachment import OutboundAttachment
 from chatbot.domain.models.pending_reply import PendingReply
 
 
@@ -48,6 +49,7 @@ class QuoteCreateResult:
     pdf_warning: str | None
     attachments_json: str | None
     resolved_json: str
+    quote_erp_modified: str | None = None
 
 
 def all_lines_resolved(resolved_json: str | None) -> bool:
@@ -107,12 +109,13 @@ def create_quote_and_pdf(
     lines: list[dict[str, Any]],
     notes: str | None = None,
     ttl_seconds: int | None = None,
-) -> tuple[str, bytes | None, Path | None, str | None]:
+) -> tuple[str, bytes | None, Path | None, str | None, str | None]:
     created = client.create_quotation(customer, lines, notes=notes)
     quote_name = str(created.get("name", "")).strip()
     if not quote_name:
         raise QuoteFulfillmentError("ERPNext did not return a quotation name")
 
+    erp_modified = quotation_erp_modified(client, quote_name)
     pdf_bytes = client.download_quotation_pdf(quote_name)
     pdf_path: Path | None = None
     pdf_warning: str | None = None
@@ -127,7 +130,7 @@ def create_quote_and_pdf(
     else:
         detail = client.last_pdf_error or "PDF could not be downloaded from ERPNext."
         pdf_warning = f"PDF could not be downloaded from ERPNext ({detail})."
-    return quote_name, pdf_bytes, pdf_path, pdf_warning
+    return quote_name, pdf_bytes, pdf_path, pdf_warning, erp_modified
 
 
 def refresh_quote_pdf(
@@ -138,7 +141,8 @@ def refresh_quote_pdf(
     tenant_slug: str,
     quote_name: str,
     existing_attachments_json: str | None = None,
-) -> str:
+    reply_id: int | None = None,
+) -> tuple[str, str | None]:
     integration = erpnext_integration_for_tenant(session, tenant_id)
     if integration is None:
         raise QuoteFulfillmentError("ERPNext integration is not configured or inactive")
@@ -152,12 +156,27 @@ def refresh_quote_pdf(
         detail = client.last_pdf_error or "PDF could not be downloaded from ERPNext."
         raise QuoteFulfillmentError(f"PDF could not be downloaded from ERPNext ({detail}).")
 
+    manual_entries: list[dict[str, str]] = []
     if existing_attachments_json:
-        delete_attachment_files(existing_attachments_json)
+        if reply_id is not None:
+            manual_entries, quote_entries = partition_attachment_entries(
+                existing_attachments_json,
+                settings=settings,
+                tenant_slug=tenant_slug,
+                reply_id=reply_id,
+            )
+            if quote_entries:
+                delete_attachment_files(encode_attachments_json(quote_entries))
+        else:
+            delete_attachment_files(existing_attachments_json)
 
     pdf_filename = f"{safe_quote_filename(safe_name)}.pdf"
     pdf_path = store_quote_pdf(settings, tenant_slug, safe_name, pdf_bytes)
-    return encode_attachments_json([attachment_entry(path=pdf_path, filename=pdf_filename)])
+    erp_modified = quotation_erp_modified(client, safe_name)
+    attachments_json = encode_attachments_json(
+        manual_entries + [attachment_entry(path=pdf_path, filename=pdf_filename)]
+    )
+    return attachments_json, erp_modified
 
 
 def create_quote_for_session(
@@ -204,7 +223,7 @@ def create_quote_for_session(
         except CustomerProvisioningError as exc:
             raise QuoteFulfillmentError(str(exc)) from exc
 
-    quote_name, pdf_bytes, pdf_path, pdf_warning = create_quote_and_pdf(
+    quote_name, pdf_bytes, pdf_path, pdf_warning, erp_modified = create_quote_and_pdf(
         client,
         integration_config,
         settings,
@@ -230,6 +249,7 @@ def create_quote_for_session(
         pdf_warning=pdf_warning,
         attachments_json=attachments_json,
         resolved_json=resolved_json,
+        quote_erp_modified=erp_modified,
     )
 
 
@@ -247,14 +267,20 @@ class QuoteFulfillmentService:
         quote_resolved_json: str | None = None,
     ) -> PendingReply:
         if reply.fulfillment_kind != FulfillmentKind.ERPNEXT_QUOTE:
+            attachments = load_attachments_from_json(reply.attachments_json)
             approved = approve_pending_reply(
                 self._session,
                 reply,
                 config=config,
                 settings=self._settings,
+                attachments=attachments or None,
             )
             if approved is None:
                 raise QuoteFulfillmentError("Failed to approve reply")
+            delete_attachment_files(reply.attachments_json)
+            SqlAlchemyPendingReplyRepository(self._session).update_quote_fields(
+                reply.id, clear_attachments_json=True
+            )
             return approved
 
         repo = SqlAlchemyPendingReplyRepository(self._session)
@@ -304,7 +330,7 @@ class QuoteFulfillmentService:
                 for line in lines
             ]
             notes = _quote_notes_from_reply(reply)
-            quote_name, _pdf_bytes, _pdf_path, _pdf_warning = create_quote_and_pdf(
+            quote_name, _pdf_bytes, _pdf_path, _pdf_warning, erp_modified = create_quote_and_pdf(
                 client,
                 integration_config,
                 self._settings,
@@ -318,6 +344,7 @@ class QuoteFulfillmentService:
                 quote_resolved_json=resolved_raw,
                 quote_external_id=quote_name,
                 fulfillment_error=None,
+                quote_erp_modified=erp_modified,
             )
 
         submit_error = client.submit_quotation(quote_name)
@@ -325,8 +352,14 @@ class QuoteFulfillmentService:
             repo.update_quote_fields(reply.id, fulfillment_error=submit_error)
             raise QuoteFulfillmentError(submit_error)
 
-        if reply.attachments_json:
-            delete_attachment_files(reply.attachments_json)
+        manual_entries, quote_entries = partition_attachment_entries(
+            reply.attachments_json,
+            settings=self._settings,
+            tenant_slug=self._tenant_slug,
+            reply_id=reply.id,
+        )
+        if quote_entries:
+            delete_attachment_files(encode_attachments_json(quote_entries))
 
         pdf_bytes = client.download_quotation_pdf(quote_name)
         if not pdf_bytes:
@@ -342,22 +375,19 @@ class QuoteFulfillmentService:
             quote_name,
             pdf_bytes,
         )
-        attachments = [
-            OutboundAttachment(
-                filename=pdf_filename,
-                data=pdf_bytes,
-                mime_type="application/pdf",
-            )
+        all_entries = manual_entries + [
+            attachment_entry(path=pdf_path, filename=pdf_filename),
         ]
-        attachments_json = encode_attachments_json(
-            [attachment_entry(path=pdf_path, filename=pdf_filename)]
-        )
+        attachments_json = encode_attachments_json(all_entries)
+        attachments = load_attachments_from_json(attachments_json)
+        erp_modified = quotation_erp_modified(client, quote_name)
         repo.update_quote_fields(
             reply.id,
             quote_resolved_json=resolved_raw,
             quote_external_id=quote_name,
             attachments_json=attachments_json,
             fulfillment_error=None,
+            quote_erp_modified=erp_modified,
         )
 
         try:

@@ -98,7 +98,7 @@ Env `WHATSAPP_*` / `MESSENGER_*` / `INSTAGRAM_*` are optional fallbacks only.
 
 ## Dashboard & auth
 
-- `users` + `user_bot_access` — roles: `admin`, `client_admin`, `client_user`.
+- `users` + `user_bot_access` — roles: `admin`, `client_admin`, `client_operator`.
 - Session middleware (`SESSION_SECRET`).
 - Routes: `interfaces/api/routers/auth_web.py`, `dashboard_web.py`; templates under `interfaces/web/templates/`.
 

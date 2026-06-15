@@ -5,8 +5,8 @@
 - **Hexagonal layout**: `domain/` (models + contracts), `application/` (use cases), `adapters/` (SQLAlchemy, LanceDB, Gemini), `interfaces/` (FastAPI, web dashboard, workers).
 - **Multi-tenant**: every row scoped by `tenant_id`; LanceDB under `data/lancedb/{slug}/`.
 - **RAG sources**: uploaded docs in `data/docs/{slug}/`; ERPNext catalogue snapshots in `data/catalog/{slug}/` (one `.md` per item, isolated from document sync).
-- **Auth**: `POST /c/{slug}/chat` with `Authorization: Bearer <tenant_token>` (token must match slug). Admin API: `ADMIN_TOKEN`. Dashboard: session cookie (`/auth/login`).
-- **Hooks**: LLM appends global marker `===HOOK===` + JSON → `hook_events` → `worker-automation` dispatches **automation modules** (`core.orders` → local DB; `erpnext.quote` → validation queue + ERPNext on approve). Module list per bot in `config_json.automation_modules`. Run `./sail migrate` after pull for `006_mail_drafts_uid_unique`.
+- **Auth**: `POST /c/{slug}/chat` with `Authorization: Bearer <tenant_token>` (token must match slug). Admin API: `ADMIN_TOKEN`. Dashboard: session cookie (`/auth/login`). Dashboard roles — see **Dashboard roles** below.
+- **Hooks**: LLM appends global marker `===HOOK===` + JSON → `hook_events` → `worker-automation` dispatches **automation modules** (`core.orders` → local DB; `erpnext.quote` → validation queue + ERPNext on approve). Module list per bot in `config_json.automation_modules`. Run `./sail migrate` after pull for `013_validation_audit` (validation audit + `client_operator` role rename).
 - **ERPNext catalog → RAG**: `worker-catalog` polls tenants with active ERPNext + `sync_catalog_to_rag`; fetches paginated Item + Bin (stock aggregate) + Item Price (`catalog_price_list`, default Standard Selling), writes `data/catalog/{slug}/*.md`, then `reconcile_catalog_rag()` → `IngestSyncService.ingest_paths_batched()` on that folder only (never `data/docs/`). Price line: Item Price → standard_rate → `not available`. Config in integration schema (`sync_catalog_to_rag`, `catalog_sync_interval_minutes`, `catalog_include_stock`, `catalog_price_list`); runtime metadata in encrypted config (`catalog_last_sync_at`, `catalog_last_item_count`, `catalog_last_error`) — merge-safe, not in schema fields. Manual sync: dashboard **Sync catalog now** or `./sail chatbot catalog-rag sync {slug}`. Resume partial RAG index: `./sail chatbot catalog-rag rebuild {slug}` (uses `catalog_rag_index_plan()` for missing/changed files). Embedding retries (429/503) live in `GeminiEmbedder` only — shared by UI, workers, CLI, document sync.
 - **Connectors**: per-tenant channel creds in `connectors.config_enc` (Fernet via `APP_SECRET_KEY`).
 
@@ -29,6 +29,18 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `work
 **Email dev (GreenMail + Mailpit):** `./sail up -d --profile dev` starts GreenMail (IMAP 3143, inject SMTP 3025) and Mailpit (outbound SMTP 1025, UI http://127.0.0.1:8025). IN connector → GreenMail; OUT connector → Mailpit. Test email inject uses GreenMail SMTP (not OUT). See [docs/dev/greenmail.md](docs/dev/greenmail.md). Dashboard **Test email** tab requires `DEV_MODE=true`.
 
 ## Common tasks
+
+### Dashboard roles
+
+| Role | Scope | Dashboard |
+|------|-------|-----------|
+| `admin` | All bots | Users, hooks, create/delete bots, all tabs |
+| `client_admin` | Assigned bots (`user_bot_access`) | Config, connectors, integrations, documents, validation |
+| `client_operator` | Assigned bots | **Validation only** — inbox, detail, history; full operator actions (edit, approve/reject, attachments) |
+
+- **Login home** (`client_operator`): one assigned bot → validation inbox; two or more → bot picker (**Open** → validation); none → empty list.
+- **Permissions**: `UserService.can_edit` (bot config) vs `can_validate` (validation mutations). Operators have `can_validate` but not `can_edit`.
+- **CLI**: `./sail chatbot user-create … --role client_operator` (also `admin`, `client_admin`). Assign bots on dashboard **Users** → user detail (admin only).
 
 ### Add a tenant
 
@@ -54,6 +66,18 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `work
   ```
 - `catalog_rag_index_plan()` → `needs_embed` / `already_indexed` (content hash vs `ingested_files`). `reconcile_catalog_rag(..., on_file_done, commit_each_batch)` — auto `commit_each_batch` when >50 files.
 - **Embedding:** `GeminiEmbedder.embed_texts()` — no fixed RPM throttle; retry 429 (`Retry-After` or 30×2ⁿ s, max 120) and 503 (5×2ⁿ s, max 30). Env: `EMBED_RETRY_MAX`, `EMBED_RETRY_BASE_429_SECONDS`, `EMBED_RETRY_BASE_503_SECONDS`. SDK HTTP retry disabled (`attempts=1`); app loop owns backoff.
+
+### Validation queue (email attachments)
+
+- Inbox: dashboard **Validation** tab (`?tab=validation`) — sub-tabs **Pending** / **Approved** / **Rejected**; **Activity** feed at bottom. **Open** → `/dashboard/bots/{slug}/validation/{reply_id}`.
+- **Audit**: draft edits → `pending_reply_edits` (diff, `edited_by`); approve/reject/attachments → `pending_reply_audit_events`; terminal replies store `resolved_by` / `resolved_at` on `pending_replies`. Service: `validation_audit_service.py`.
+- Intended operator role: `client_operator`.
+- Email replies: WYSIWYG draft + drag-and-drop attachments on the detail page (`pending_replies.attachments_json`).
+- User uploads: `data/attachments/{slug}/{reply_id}/` via `store_outbound_attachment()` in `quote_pdf_storage.py`.
+- Quote PDFs: `data/quotes/{slug}/` (ERPNext); merged with manual attachments on approve.
+- Cleanup: `delete_attachment_files()` on approve/reject (no TTL timer).
+- Limits: `ATTACHMENT_MAX_BYTES` (default 10 MiB), `ATTACHMENT_MAX_TOTAL_BYTES` (default 25 MiB).
+- API: `POST/DELETE /dashboard/bots/{slug}/validation/{reply_id}/attachments` (email + pending only).
 
 ### Run locally (no Docker)
 
@@ -104,6 +128,8 @@ Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.p
 **Workers:** `HOOK_POLL_SECONDS`, `MAIL_POLL_SECONDS`, `CATALOG_POLL_SECONDS` (catalog worker poll; default 300).
 
 **Embedding retries:** `EMBED_RETRY_MAX` (default 5), `EMBED_RETRY_BASE_429_SECONDS` (30), `EMBED_RETRY_BASE_503_SECONDS` (5).
+
+**Validation email attachments:** `ATTACHMENT_MAX_BYTES` (default 10 MiB), `ATTACHMENT_MAX_TOTAL_BYTES` (default 25 MiB).
 
 **Not used anymore:** `CHAT_API_SECRET`, `PROMPT_PATH`, `LANCEDB_PATH`, `WEBHOOK_TENANT_SLUG`.
 

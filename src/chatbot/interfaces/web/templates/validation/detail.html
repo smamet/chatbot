@@ -1,0 +1,283 @@
+{% extends "base.html" %}
+{% from "macros/markdown_scripts.html" import markdown_scripts %}
+{% block body %}
+<div class="page-header validation-detail-page">
+  <div>
+    <p class="breadcrumb"><a href="{{ validation_inbox_url }}">← Back to inbox</a></p>
+    <h1>Validation #{{ reply.id }}</h1>
+    <p class="text-muted validation-detail-meta">
+      <code>{{ reply.channel }}</code> · <code>{{ reply.session_id | session_label }}</code> ·
+      <code>{{ reply.recipient_id }}</code> ·
+      Generated {{ reply.created_at.strftime('%Y-%m-%d %H:%M') if reply.created_at else '—' }}
+    </p>
+  </div>
+</div>
+
+{% if validation_error %}
+<p class="validation-error">{{ validation_error | erpnext_error }}</p>
+{% endif %}
+{% if validation_warning %}
+<p class="validation-warning">{{ validation_warning }}</p>
+{% endif %}
+
+<div class="validation-detail-grid">
+  <section class="validation-message validation-message--inbound card">
+    <h2 class="card-title">Conversation</h2>
+    {% if item.inbound_subject %}
+    <p class="validation-subject"><strong>Subject:</strong> {{ item.inbound_subject }}</p>
+    {% endif %}
+    {% if item.conversation_history %}
+    <div class="chat-thread validation-thread">
+      {% for m in item.conversation_history %}
+      <div class="msg-turn msg-turn-{{ m.role.value }}">
+        <div class="msg msg-{{ m.role.value }}">
+          <div class="msg-meta">
+            <strong>
+              {%- if m.role.value == 'user' -%}Received
+              {%- elif m.role.value == 'assistant' -%}Sent
+              {%- else -%}{{ m.role.value }}
+              {%- endif -%}
+            </strong>
+            {% if m.created_at %}
+            <time class="msg-time" datetime="{{ m.created_at.isoformat() }}">{{ m.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
+            {% endif %}
+          </div>
+          <div class="msg-body{% if m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% elif item.inbound_text %}
+    <pre class="validation-message-body">{{ item.inbound_text }}</pre>
+    {% else %}
+    <p class="text-muted">No messages found for this reply.</p>
+    {% endif %}
+  </section>
+
+  <section class="validation-message validation-message--reply card">
+    <h2 class="card-title">Proposed reply</h2>
+    {% if reply.channel == 'email' %}
+    <div class="validation-reply-attachments-hint{% if not attachment_rows %} is-empty{% endif %}"
+         id="validation-reply-attachments-hint"
+         aria-live="polite">
+      <span class="validation-reply-attachments-badge" aria-hidden="true">
+        <svg class="validation-reply-attachments-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+        </svg>
+        <span class="validation-reply-attachments-count">{{ attachment_rows|length }}</span>
+      </span>
+      <span class="validation-reply-attachments-text">
+        <strong class="validation-reply-attachments-label">
+          {%- if attachment_rows|length == 1 -%}1 attachment will be sent
+          {%- elif attachment_rows|length > 1 -%}{{ attachment_rows|length }} attachments will be sent
+          {%- else -%}No attachments
+          {%- endif -%}
+        </strong>
+        <span class="validation-reply-attachments-names text-muted">
+          {%- for att in attachment_rows -%}
+          {%- if att.view_url -%}
+          <a href="{{ att.view_url }}" target="_blank" rel="noopener">{{ att.filename }}</a>
+          {%- else -%}
+          {{- att.filename -}}
+          {%- endif -%}
+          {%- if not loop.last %} · {% endif -%}
+          {%- endfor -%}
+        </span>
+      </span>
+      {% if can_validate %}
+      <a class="validation-reply-attachments-jump" href="#validation-attachments">Manage</a>
+      {% endif %}
+    </div>
+    {% endif %}
+    {% if reply.channel == 'email' and can_validate %}
+    <div class="validation-editor">
+      <div class="validation-quill" id="validation-quill-{{ reply.id }}"></div>
+      <script type="application/json" class="validation-draft-html-source">{{ item.editor_html | tojson }}</script>
+      <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/save" class="validation-save-form">
+        <input type="hidden" name="draft_html" class="validation-draft-html-input">
+        <button type="submit" class="btn-secondary btn-sm">Save draft</button>
+      </form>
+    </div>
+    {% else %}
+    <div class="validation-message-body msg-body js-md">{{ reply.draft_text }}</div>
+    {% endif %}
+  </section>
+</div>
+
+{% if reply.channel == 'email' and can_validate %}
+<section class="card validation-attachments" id="validation-attachments"
+         data-reply-id="{{ reply.id }}"
+         data-upload-url="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/attachments"
+         data-max-bytes="{{ attachment_max_bytes }}"
+         data-max-total-bytes="{{ attachment_max_total_bytes }}">
+  <h2 class="card-title">Attachments</h2>
+  <p class="field-hint">Drag and drop files here or click to browse. Removed automatically after approve or reject.</p>
+  <div class="validation-attachments-dropzone" tabindex="0" role="button" aria-label="Upload attachments">
+    <input type="file" class="validation-attachments-input" multiple hidden>
+    <p>Drop files here or <span class="validation-attachments-browse">browse</span></p>
+  </div>
+  <ul class="validation-attachments-list">
+    {% for att in attachment_rows %}
+    <li class="validation-attachments-item{% if att.is_quote_pdf %} validation-attachments-item--quote{% endif %}"
+        data-path="{{ att.path }}">
+      <span class="validation-attachments-name">
+        {% if att.view_url %}
+        <a href="{{ att.view_url }}" target="_blank" rel="noopener">{{ att.filename }}</a>
+        {% else %}
+        {{ att.filename }}
+        {% endif %}
+      </span>
+      <span class="validation-attachments-size text-muted">{{ (att.size_bytes / 1024)|round(1) }} KB</span>
+      {% if att.is_quote_pdf %}
+      <span class="badge">Quote PDF</span>
+      {% endif %}
+      {% if att.deletable %}
+      <button type="button" class="btn-ghost btn-sm validation-attachments-remove">Remove</button>
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ul>
+  <p class="validation-attachments-error validation-error" hidden></p>
+</section>
+{% endif %}
+
+{% if item.is_quote %}
+<div class="validation-quote-card card">
+  <h2 class="card-title">ERPNext quotation</h2>
+  <p class="text-muted field-hint validation-quote-intro">
+    {% if is_pending %}
+    A draft quotation was created in ERPNext from this conversation. Use <strong>Open in ERPNext</strong> for the current live document — it may differ if someone edited it in ERPNext before you approve.
+    {% elif reply.status.value == 'approved' %}
+    A quotation was created in ERPNext from this conversation and was sent to the customer. Use <strong>Open in ERPNext</strong> for the current live document — it may differ if someone edited it in ERPNext after approval.
+    {% else %}
+    A quotation was created in ERPNext from this conversation. Use <strong>Open in ERPNext</strong> for the current live document — it may differ if someone edited it in ERPNext after generation.
+    {% endif %}
+  </p>
+  {% if reply.fulfillment_error %}<p class="validation-error">{{ reply.fulfillment_error | erpnext_error }}</p>{% endif %}
+  {% if reply.quote_external_id %}
+  <p class="validation-quote-actions">
+    {% if item.erpnext_quote_url %}
+    <a class="btn-secondary btn-sm" href="{{ item.erpnext_quote_url }}" target="_blank" rel="noopener">Open in ERPNext</a>
+    {% endif %}
+    {% if can_validate and is_pending and not quote_pdf_stale.stale %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/refresh-pdf" class="inline-form">
+      <button type="submit" class="btn-secondary btn-sm">Sync PDF</button>
+    </form>
+    {% endif %}
+    <code>{{ reply.quote_external_id }}</code>
+  </p>
+  {% endif %}
+  {% if item.resolved_lines %}
+  <h3 class="validation-quote-lines-title">AI product matching (at generation)</h3>
+  <p class="text-muted field-hint validation-quote-lines-hint">
+    Rows below show how the bot matched requested products when the quote was first created. They are not a live ERPNext sync.
+  </p>
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/approve">
+    {% if quote_pdf_stale.stale and can_validate %}
+    <div class="validation-quote-stale-banner" role="status">
+      <p class="validation-quote-stale-banner__text">
+        <strong>Quotation updated in ERPNext</strong> since the PDF was last synced
+        {% if quote_pdf_stale.stored_modified and quote_pdf_stale.current_modified %}
+        ({{ quote_pdf_stale.stored_modified }} → {{ quote_pdf_stale.current_modified }})
+        {% endif %}.
+        Review the latest version before sending.
+      </p>
+      <div class="validation-quote-stale-banner__actions">
+        <button type="submit"
+                class="btn-secondary btn-sm"
+                formaction="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/refresh-pdf"
+                formmethod="post">Sync PDF</button>
+        {% if quote_pdf_stale.download_url %}
+        <a class="btn-secondary btn-sm" href="{{ quote_pdf_stale.download_url }}" target="_blank" rel="noopener">Download PDF</a>
+        {% endif %}
+        {% if quote_pdf_stale.erpnext_url %}
+        <a class="btn-secondary btn-sm" href="{{ quote_pdf_stale.erpnext_url }}" target="_blank" rel="noopener">Open in ERPNext</a>
+        {% endif %}
+        <button type="submit" class="btn-primary btn-sm" name="confirm_stale_pdf" value="1" data-loading="Sending…">Proceed &amp; send</button>
+      </div>
+    </div>
+    {% endif %}
+    <table class="data-table data-table--compact">
+      <thead><tr><th>Requested</th><th>SKU</th><th>Name</th><th>Rate</th><th>Qty</th><th>Score</th><th>Status</th></tr></thead>
+      <tbody>
+      {% for line in item.resolved_lines %}
+      <tr>
+        <td>{{ line.requested_label }}</td>
+        <td>
+          {% if line.status == 'ambiguous' and line.candidates %}
+          <select name="line_{{ loop.index0 }}_item_code">
+            {% for c in line.candidates %}
+            <option value="{{ c.item_code }}" {% if c.item_code == line.item_code %}selected{% endif %}>{{ c.item_code }}</option>
+            {% endfor %}
+          </select>
+          {% else %}
+          <code>{{ line.item_code or '—' }}</code>
+          {% endif %}
+        </td>
+        <td>{{ line.item_name or '—' }}</td>
+        <td>{{ line.rate if line.rate is not none else '—' }}</td>
+        <td>{{ line.qty }}</td>
+        <td>{{ '%.0f'|format(line.match_score) if line.match_score else '—' }}%</td>
+        <td><span class="match-badge match-badge--{{ line.status }}">{{ line.status }}</span></td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% if can_validate %}
+    <div class="form-actions form-actions--compact validation-detail-actions validation-detail-actions--embedded">
+      {% if not quote_pdf_stale.stale %}
+      <button type="submit" class="btn-primary" data-loading="Sending…">Approve &amp; send</button>
+      {% endif %}
+      <button type="submit"
+              class="btn-secondary btn-sm"
+              formaction="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/reject"
+              formmethod="post">Reject</button>
+    </div>
+  </form>
+  {% endif %}
+  {% else %}
+  <p class="text-muted">No product resolution yet.</p>
+  {% if can_validate %}
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/resolve">
+    <button type="submit" class="btn-secondary btn-sm">Resolve products</button>
+  </form>
+  {% endif %}
+  {% endif %}
+</div>
+{% elif can_validate %}
+<div class="validation-detail-actions card">
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/approve" class="inline-form">
+    <button type="submit" class="btn-primary" data-loading="Sending…">Approve &amp; send</button>
+  </form>
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/reject" class="inline-form">
+    <button type="submit" class="btn-secondary btn-sm">Reject</button>
+  </form>
+</div>
+{% endif %}
+
+<section class="card validation-reply-history">
+  <h2 class="card-title">History</h2>
+  <ul class="validation-activity-list">
+  {% for entry in reply_timeline %}
+    <li class="validation-activity-item">
+      <time class="text-muted">{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
+      <strong>{{ entry.actor_email }}</strong>
+      <span>{{ entry.summary }}</span>
+      {% if entry.diff %}
+      <details class="validation-activity-diff">
+        <summary>View diff</summary>
+        <pre>{{ entry.diff }}</pre>
+      </details>
+      {% endif %}
+    </li>
+  {% else %}
+    <li class="text-muted empty-state">No actions recorded yet for this reply</li>
+  {% endfor %}
+  </ul>
+</section>
+
+{{ markdown_scripts() }}
+<link href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
+<script src="/static/validation.js"></script>
+{% endblock %}

@@ -4,8 +4,9 @@ from fastapi import APIRouter, Depends, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from chatbot.application.tenant_service import TenantService
 from chatbot.application.user_service import UserService
-from chatbot.interfaces.api.deps import get_session
+from chatbot.interfaces.api.deps import get_session, get_tenant_service
 from chatbot.interfaces.web.deps import get_user_service
 from chatbot.interfaces.web.templates import templates
 
@@ -25,6 +26,7 @@ def login_submit(
     email: str = Form(...),
     password: str = Form(...),
     user_service: UserService = Depends(get_user_service),
+    tenant_service: TenantService = Depends(get_tenant_service),
     session: Session = Depends(get_session),
 ):
     user = user_service.authenticate(email, password)
@@ -37,7 +39,8 @@ def login_submit(
         )
     request.session["user_id"] = user.id
     session.commit()
-    return RedirectResponse(url="/dashboard/bots", status_code=303)
+    home = user_service.dashboard_home_url(user, tenant_service.list_tenants())
+    return RedirectResponse(url=home, status_code=303)
 
 
 @router.post("/auth/logout")

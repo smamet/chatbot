@@ -2,15 +2,22 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from pathlib import Path
+
+import pytest
 
 from chatbot.application.quote_pdf_storage import (
+    AttachmentValidationError,
     cleanup_pending_reply_attachments,
     delete_attachment_files,
     encode_attachments_json,
+    is_user_attachment_path,
     parse_attachment_paths,
     quote_pdf_path,
     safe_quote_filename,
+    store_outbound_attachment,
     store_quote_pdf,
+    validate_outbound_attachment_upload,
 )
 from chatbot.config.settings import get_settings
 from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
@@ -83,3 +90,34 @@ def test_store_schedules_ttl_deletion(tmp_path, monkeypatch) -> None:
     path = store_quote_pdf(settings, "bot", "QTN-0001", b"%PDF", ttl_seconds=120)
     assert scheduled == [120]
     assert not path.is_file()
+
+
+def test_store_outbound_attachment_and_path_guard(tmp_path) -> None:
+    settings = get_settings()
+    settings.data_root = tmp_path
+    entry = store_outbound_attachment(
+        settings,
+        "bot",
+        42,
+        "note.pdf",
+        b"%PDF-1.4",
+        mime_type="application/pdf",
+    )
+    path = Path(entry["path"])
+    assert path.is_file()
+    assert is_user_attachment_path(settings, "bot", 42, path)
+    assert not is_user_attachment_path(settings, "bot", 99, path)
+
+
+def test_validate_outbound_attachment_upload_rejects_large_file(tmp_path) -> None:
+    settings = get_settings()
+    settings.data_root = tmp_path
+    settings.attachment_max_bytes = 10
+    with pytest.raises(AttachmentValidationError, match="maximum size"):
+        validate_outbound_attachment_upload(
+            settings,
+            filename="big.pdf",
+            data=b"x" * 20,
+            content_type="application/pdf",
+            existing_json=None,
+        )

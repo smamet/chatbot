@@ -3,8 +3,9 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -20,6 +21,7 @@ from chatbot.application.tenant_service import TenantService
 from chatbot.application.user_service import UserService
 from chatbot.config.settings import reset_settings_cache_for_tests
 from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.domain.models.integration import IntegrationType
 from chatbot.domain.models.message import ChatMessage, MessageRole
 from chatbot.domain.models.user import UserRole
@@ -286,7 +288,7 @@ def test_user_management(dashboard_env) -> None:
 
     r = client.post(
         f"/dashboard/users/{editor.id}/role",
-        data={"role": UserRole.CLIENT_USER.value},
+        data={"role": UserRole.CLIENT_OPERATOR.value},
         follow_redirects=False,
     )
     assert r.status_code == 303
@@ -390,13 +392,13 @@ def test_bot_export_import(dashboard_env) -> None:
         assert saved.prompt == "Export prompt"
 
 
-def test_client_user_cannot_export_import(dashboard_env) -> None:
+def test_client_operator_cannot_export_import(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, data, factory = dashboard_env
     with factory() as session:
         reader = UserService(SqlAlchemyUserRepository(session)).create_user(
             email="reader@test.com",
             password="read-pass",
-            role=UserRole.CLIENT_USER,
+            role=UserRole.CLIENT_OPERATOR,
         )
         UserService(SqlAlchemyUserRepository(session)).grant_access(reader.id, tenant_id)
         session.commit()
@@ -648,7 +650,15 @@ def test_validation_tab_renders_quill_editor_for_email(dashboard_env) -> None:
         from chatbot.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+        from chatbot.domain.models.message import ChatMessage, MessageRole
 
+        SqlAlchemyConversationRepository(session, tenant_id).append_message(
+            "email:client@example.com",
+            ChatMessage(role=MessageRole.USER, content="Please send a quote"),
+        )
         SqlAlchemyPendingReplyRepository(session).create(
             tenant_id=tenant_id,
             connector_id=connector.id,
@@ -662,10 +672,17 @@ def test_validation_tab_renders_quill_editor_for_email(dashboard_env) -> None:
     _login(client, admin.email, "admin-pass")
     r = client.get(f"/dashboard/bots/{slug}?tab=validation")
     assert r.status_code == 200
-    assert "validation-quill" in r.text
-    assert "quill@2.0.3" in r.text
-    assert "/validation/" in r.text and "/save" in r.text
-    assert "Re-resolve products" not in r.text
+    assert "validation-inbox-row" in r.text
+    assert "validation-row-chevron" in r.text
+    assert f"/dashboard/bots/{slug}/validation/" in r.text
+    detail = client.get(f"/dashboard/bots/{slug}/validation/1")
+    assert detail.status_code == 200
+    assert "validation-quill" in detail.text
+    assert "quill@2.0.3" in detail.text
+    assert "/validation/1/save" in detail.text
+    assert "Generated" in detail.text
+    assert "Received" in detail.text
+    assert "Re-resolve products" not in detail.text
 
 
 def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> None:
@@ -695,9 +712,11 @@ def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> Non
     r = client.get(f"/dashboard/bots/{slug}?tab=validation")
     assert r.status_code == 200
     assert "+33600000000" in r.text
-    assert 'class="validation-message-body msg-body js-md"' in r.text
-    assert "**Hello** client" in r.text
-    assert "markdown.js" in r.text
+    detail = client.get(f"/dashboard/bots/{slug}/validation/1")
+    assert detail.status_code == 200
+    assert 'class="validation-message-body msg-body js-md"' in detail.text
+    assert "**Hello** client" in detail.text
+    assert "markdown.js" in detail.text
 
 
 def test_validation_save_draft_updates_html_and_message(dashboard_env) -> None:
@@ -741,6 +760,7 @@ def test_validation_save_draft_updates_html_and_message(dashboard_env) -> None:
         follow_redirects=False,
     )
     assert r.status_code == 303
+    assert r.headers["location"].endswith(f"/validation/{reply_id}")
 
     with factory() as session:
         from chatbot.adapters.persistence.orm import PendingReplyEditRow
@@ -1509,3 +1529,412 @@ def test_delete_document_auto_syncs(dashboard_env) -> None:
     assert not (docs_dir / "gone.md").is_file()
     r = client.get(f"/dashboard/bots/{slug}?tab=documents")
     assert "pruned missing: gone.md" in r.text
+
+
+def test_validation_detail_upload_and_delete_attachment(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Hello",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+    assert detail.status_code == 200
+    assert "validation-attachments-dropzone" in detail.text
+
+    upload = client.post(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/attachments",
+        files=[("files", ("extra.pdf", b"%PDF-test", "application/pdf"))],
+    )
+    assert upload.status_code == 200
+    body = upload.json()
+    assert body["ok"] is True
+    assert len(body["attachments"]) == 1
+    stored_path = body["attachments"][0]["path"]
+    assert Path(stored_path).is_file()
+
+    delete = client.delete(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/attachments",
+        params={"path": stored_path},
+    )
+    assert delete.status_code == 200
+    assert delete.json()["attachments"] == []
+    assert not Path(stored_path).is_file()
+
+
+def test_approve_non_quote_email_with_attachment(dashboard_env) -> None:
+    from chatbot.application.quote_pdf_storage import (
+        attachment_entry,
+        encode_attachments_json,
+    )
+
+    client, admin, _, slug, tenant_id, data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={
+                "outbound_provider": "smtp",
+                "smtp_host": "mailpit",
+                "smtp_port": "1025",
+                "from_addr": "bot@test.local",
+            },
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="See attachment",
+        )
+        session.flush()
+        reply_id = pending.id
+        att_dir = data / "attachments" / slug / str(reply_id)
+        att_dir.mkdir(parents=True, exist_ok=True)
+        att_path = att_dir / "file.pdf"
+        att_path.write_bytes(b"%PDF")
+        SqlAlchemyPendingReplyRepository(session).update_quote_fields(
+            reply_id,
+            attachments_json=encode_attachments_json(
+                [attachment_entry(path=att_path, filename="file.pdf")]
+            ),
+        )
+        session.commit()
+
+    _login(client, admin.email, "admin-pass")
+    with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
+        r = client.post(
+            f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    send_mock.assert_called_once()
+    assert send_mock.call_args.kwargs["attachments"][0].filename == "file.pdf"
+    assert not att_path.is_file()
+
+
+def test_validation_detail_shows_stale_banner_when_quote_changed(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, data, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+        from chatbot.domain.models.integration import IntegrationType
+
+        SqlAlchemyIntegrationRepository(session).create(
+            tenant_id=tenant_id,
+            type=IntegrationType.ERPNEXT,
+            config={
+                "url": "https://erp.example.com",
+                "api_key": "k",
+                "api_secret": "s",
+                "allow_create_quotation": True,
+            },
+            active=True,
+        )
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Quote draft",
+            fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
+            quote_external_id="QTN-STALE",
+            quote_resolved_json=json.dumps(
+                [
+                    {
+                        "requested_label": "Widget",
+                        "qty": 1,
+                        "item_code": "SKU-1",
+                        "status": "resolved",
+                        "rate": 10.0,
+                    }
+                ]
+            ),
+        )
+        SqlAlchemyPendingReplyRepository(session).update_quote_fields(
+            pending.id,
+            quote_erp_modified="2026-06-15 14:17:39",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    with patch(
+        "chatbot.interfaces.api.routers.dashboard_web.erpnext_integration_for_tenant"
+    ) as integration_mock:
+        erp_client = MagicMock()
+        erp_client.get_quotation.return_value = {"modified": "2026-06-15 14:18:15"}
+        integration_mock.return_value = (erp_client, {"url": "https://erp.example.com"})
+        detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+
+    assert detail.status_code == 200
+    assert "validation-quote-stale-banner" in detail.text
+    assert "Proceed &amp; send" in detail.text
+    assert "Approve &amp; send" not in detail.text
+
+
+def test_approve_quote_redirects_with_warning_when_stale_unconfirmed(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+        from chatbot.domain.models.integration import IntegrationType
+
+        SqlAlchemyIntegrationRepository(session).create(
+            tenant_id=tenant_id,
+            type=IntegrationType.ERPNEXT,
+            config={"url": "https://erp.example.com", "api_key": "k", "api_secret": "s"},
+            active=True,
+        )
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Quote draft",
+            fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
+            quote_external_id="QTN-STALE",
+            quote_resolved_json=json.dumps(
+                [
+                    {
+                        "requested_label": "Widget",
+                        "qty": 1,
+                        "item_code": "SKU-1",
+                        "status": "resolved",
+                    }
+                ]
+            ),
+        )
+        SqlAlchemyPendingReplyRepository(session).update_quote_fields(
+            pending.id,
+            quote_erp_modified="2026-06-15 14:17:39",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    with patch(
+        "chatbot.interfaces.api.routers.dashboard_web.erpnext_integration_for_tenant"
+    ) as integration_mock, patch(
+        "chatbot.interfaces.api.routers.dashboard_web.QuoteFulfillmentService"
+    ) as fulfill_cls:
+        erp_client = MagicMock()
+        erp_client.get_quotation.return_value = {"modified": "2026-06-15 14:18:15"}
+        integration_mock.return_value = (erp_client, {"url": "https://erp.example.com"})
+        r = client.post(
+            f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    fulfill_cls.assert_not_called()
+    follow = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+    assert "validation-warning" in follow.text
+
+
+def test_validation_attachment_file_view(dashboard_env) -> None:
+    from chatbot.application.quote_pdf_storage import attachment_entry, encode_attachments_json
+
+    client, admin, _, slug, tenant_id, data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Draft",
+        )
+        session.flush()
+        reply_id = pending.id
+        att_dir = data / "attachments" / slug / str(reply_id)
+        att_dir.mkdir(parents=True, exist_ok=True)
+        att_path = att_dir / "notes.txt"
+        att_path.write_text("hello", encoding="utf-8")
+        SqlAlchemyPendingReplyRepository(session).update_quote_fields(
+            reply_id,
+            attachments_json=encode_attachments_json(
+                [attachment_entry(path=att_path, filename="notes.txt", mime_type="text/plain")]
+            ),
+        )
+        session.commit()
+
+    _login(client, admin.email, "admin-pass")
+    ok = client.get(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/attachments/file",
+        params={"path": str(att_path)},
+    )
+    assert ok.status_code == 200
+    assert ok.content == b"hello"
+
+    bad = client.get(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/attachments/file",
+        params={"path": "/etc/passwd"},
+    )
+    assert bad.status_code == 404
+
+    detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+    assert 'href="/dashboard/bots/' in detail.text
+    assert "notes.txt" in detail.text
+
+
+def _create_operator(factory, tenant_id: int):
+    with factory() as session:
+        op = UserService(SqlAlchemyUserRepository(session)).create_user(
+            email="operator@test.com",
+            password="op-pass",
+            role=UserRole.CLIENT_OPERATOR,
+        )
+        UserService(SqlAlchemyUserRepository(session)).grant_access(op.id, tenant_id)
+        session.commit()
+        return op
+
+
+def test_client_operator_login_single_bot_goes_to_validation(dashboard_env) -> None:
+    client, _admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _create_operator(factory, tenant_id)
+    r = client.post(
+        "/auth/login",
+        data={"email": "operator@test.com", "password": "op-pass"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"] == f"/dashboard/bots/{slug}?tab=validation"
+
+
+def test_client_operator_redirects_config_tab_to_validation(dashboard_env) -> None:
+    client, _admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _create_operator(factory, tenant_id)
+    _login(client, "operator@test.com", "op-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=config", follow_redirects=False)
+    assert r.status_code == 303
+    assert "tab=validation" in r.headers["location"]
+
+
+def test_client_operator_can_validate_email_reply(dashboard_env) -> None:
+    client, _admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="**Hello**",
+            draft_html="<p><strong>Hello</strong></p>",
+        )
+        session.commit()
+    _create_operator(factory, tenant_id)
+    _login(client, "operator@test.com", "op-pass")
+    detail = client.get(f"/dashboard/bots/{slug}/validation/1")
+    assert detail.status_code == 200
+    assert "validation-quill" in detail.text
+    assert "Approve &amp; send" in detail.text or "Approve & send" in detail.text
+
+
+def test_client_operator_reject_creates_audit(dashboard_env) -> None:
+    client, _admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.WHATSAPP,
+            mode=ConnectorMode.VALIDATION,
+            config={},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="whatsapp:+1",
+            channel="whatsapp",
+            recipient_id="+1",
+            draft_text="Hi",
+        )
+        session.commit()
+    _create_operator(factory, tenant_id)
+    _login(client, "operator@test.com", "op-pass")
+    r = client.post(f"/dashboard/bots/{slug}/validation/1/reject", follow_redirects=False)
+    assert r.status_code == 303
+    with factory() as session:
+        from chatbot.application.validation_audit_service import ValidationAuditService
+
+        saved = SqlAlchemyPendingReplyRepository(session).find_by_id(1)
+        assert saved is not None
+        assert saved.status.value == "rejected"
+        assert saved.resolved_by == "operator@test.com"
+        activity = ValidationAuditService(session).list_activity(tenant_id, limit=10)
+        assert any(e.action == "rejected" for e in activity)
+    inbox = client.get(f"/dashboard/bots/{slug}?tab=validation&vsub=rejected")
+    assert inbox.status_code == 200
+    assert "validation-inbox-row" in inbox.text

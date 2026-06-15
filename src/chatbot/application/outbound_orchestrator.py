@@ -121,6 +121,7 @@ def queue_after_chat(
             integration_config = integration[1] if integration else {}
             quote_external_id: str | None = None
             attachments_json: str | None = None
+            quote_erp_modified: str | None = None
             if (
                 integration
                 and can_create_quotation(integration_config)
@@ -139,6 +140,7 @@ def queue_after_chat(
                     quote_external_id = created.quote_name
                     attachments_json = created.attachments_json
                     resolved_json = created.resolved_json
+                    quote_erp_modified = created.quote_erp_modified
                 except Exception as exc:
                     repo = SqlAlchemyPendingReplyRepository(session)
                     pending = _queue_quote_pending(
@@ -164,6 +166,11 @@ def queue_after_chat(
                 quote_external_id=quote_external_id,
                 attachments_json=attachments_json,
             )
+            if quote_external_id and quote_erp_modified:
+                SqlAlchemyPendingReplyRepository(session).update_quote_fields(
+                    pending.id,
+                    quote_erp_modified=quote_erp_modified,
+                )
             return "queued", pending
 
     if should_queue_for_validation(connector):

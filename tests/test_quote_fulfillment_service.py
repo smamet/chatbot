@@ -80,6 +80,9 @@ def test_fulfill_creates_customer_submits_and_redownloads_pdf() -> None:
         "chatbot.application.quote_fulfillment_service.ensure_erpnext_customer",
         return_value="New Customer",
     ) as ensure_mock, patch(
+        "chatbot.application.quote_fulfillment_service.quotation_erp_modified",
+        return_value="2026-06-15 14:17:39",
+    ), patch(
         "chatbot.application.quote_fulfillment_service.approve_pending_reply",
         return_value=reply,
     ), patch(
@@ -146,6 +149,9 @@ def test_fulfill_precreated_quote_submits_and_redownloads_without_recreating() -
         "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, integration_config),
     ), patch(
+        "chatbot.application.quote_fulfillment_service.quotation_erp_modified",
+        return_value="2026-06-15 14:17:39",
+    ), patch(
         "chatbot.application.quote_fulfillment_service.approve_pending_reply",
         return_value=reply,
     ) as approve_mock, patch(
@@ -179,6 +185,9 @@ def test_fulfill_aborts_when_submit_fails() -> None:
         "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, integration_config),
     ), patch(
+        "chatbot.application.quote_fulfillment_service.quotation_erp_modified",
+        return_value="2026-06-15 14:17:39",
+    ), patch(
         "chatbot.application.quote_fulfillment_service.approve_pending_reply",
     ) as approve_mock, patch(
         "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
@@ -188,3 +197,33 @@ def test_fulfill_aborts_when_submit_fails() -> None:
             svc.fulfill_and_approve(reply, config={})
         approve_mock.assert_not_called()
         repo.update_quote_fields.assert_called_with(reply.id, fulfillment_error="Submit failed")
+
+
+def test_refresh_quote_pdf_returns_attachments_and_modified(test_settings) -> None:
+    from chatbot.application.quote_fulfillment_service import refresh_quote_pdf
+
+    session = MagicMock()
+    client = MagicMock()
+    client.download_quotation_pdf.return_value = b"%PDF"
+    client.get_quotation.return_value = {"modified": "2026-06-15 14:18:15"}
+
+    with patch(
+        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        return_value=(client, {}),
+    ), patch(
+        "chatbot.application.quote_fulfillment_service.store_quote_pdf",
+        return_value=test_settings.data_root / "quotes" / "bot" / "QTN-0001.pdf",
+    ), patch(
+        "chatbot.application.quote_fulfillment_service.quotation_erp_modified",
+        return_value="2026-06-15 14:18:15",
+    ):
+        attachments_json, erp_modified = refresh_quote_pdf(
+            session,
+            tenant_id=1,
+            settings=test_settings,
+            tenant_slug="bot",
+            quote_name="QTN-0001",
+        )
+
+    assert "QTN-0001.pdf" in attachments_json
+    assert erp_modified == "2026-06-15 14:18:15"

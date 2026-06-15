@@ -9,6 +9,8 @@ from chatbot.adapters.persistence.orm import PendingReplyRow
 from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
 
+_UNSET = object()
+
 
 def _row_to_pending(row: PendingReplyRow) -> PendingReply:
     created = row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at
@@ -35,7 +37,14 @@ def _row_to_pending(row: PendingReplyRow) -> PendingReply:
         quote_external_id=row.quote_external_id,
         attachments_json=row.attachments_json,
         fulfillment_error=row.fulfillment_error,
+        quote_erp_modified=row.quote_erp_modified,
         draft_html=row.draft_html,
+        resolved_by=row.resolved_by,
+        resolved_at=(
+            row.resolved_at.replace(tzinfo=UTC)
+            if row.resolved_at is not None and row.resolved_at.tzinfo is None
+            else row.resolved_at
+        ),
     )
 
 
@@ -59,6 +68,7 @@ class SqlAlchemyPendingReplyRepository:
         quote_resolved_json: str | None = None,
         quote_external_id: str | None = None,
         attachments_json: str | None = None,
+        quote_erp_modified: str | None = None,
     ) -> PendingReply:
         now = datetime.now(UTC)
         row = PendingReplyRow(
@@ -76,6 +86,7 @@ class SqlAlchemyPendingReplyRepository:
             quote_resolved_json=quote_resolved_json,
             quote_external_id=quote_external_id,
             attachments_json=attachments_json,
+            quote_erp_modified=quote_erp_modified,
             created_at=now,
             updated_at=now,
         )
@@ -100,6 +111,20 @@ class SqlAlchemyPendingReplyRepository:
         ).all()
         return [_row_to_pending(row) for row in rows]
 
+    def list_by_status(
+        self, tenant_id: int, status: PendingReplyStatus, *, limit: int = 100
+    ) -> list[PendingReply]:
+        rows = self._session.scalars(
+            select(PendingReplyRow)
+            .where(
+                PendingReplyRow.tenant_id == tenant_id,
+                PendingReplyRow.status == status.value,
+            )
+            .order_by(PendingReplyRow.updated_at.desc())
+            .limit(limit)
+        ).all()
+        return [_row_to_pending(row) for row in rows]
+
     def count_pending(self, tenant_id: int) -> int:
         return len(self.list_pending(tenant_id, limit=10_000))
 
@@ -113,6 +138,24 @@ class SqlAlchemyPendingReplyRepository:
         self._session.refresh(row)
         return _row_to_pending(row)
 
+    def resolve(
+        self,
+        reply_id: int,
+        *,
+        status: PendingReplyStatus,
+        resolved_by: str,
+    ) -> PendingReply | None:
+        row = self._session.get(PendingReplyRow, reply_id)
+        if row is None:
+            return None
+        row.status = status.value
+        row.resolved_by = resolved_by
+        row.resolved_at = datetime.now(UTC)
+        row.updated_at = datetime.now(UTC)
+        self._session.flush()
+        self._session.refresh(row)
+        return _row_to_pending(row)
+
     def update_quote_fields(
         self,
         reply_id: int,
@@ -121,7 +164,8 @@ class SqlAlchemyPendingReplyRepository:
         quote_external_id: str | None = None,
         attachments_json: str | None = None,
         clear_attachments_json: bool = False,
-        fulfillment_error: str | None = None,
+        fulfillment_error: str | None | object = _UNSET,
+        quote_erp_modified: str | None | object = _UNSET,
     ) -> PendingReply | None:
         row = self._session.get(PendingReplyRow, reply_id)
         if row is None:
@@ -134,8 +178,10 @@ class SqlAlchemyPendingReplyRepository:
             row.attachments_json = None
         elif attachments_json is not None:
             row.attachments_json = attachments_json
-        if fulfillment_error is not None:
+        if fulfillment_error is not _UNSET:
             row.fulfillment_error = fulfillment_error
+        if quote_erp_modified is not _UNSET:
+            row.quote_erp_modified = quote_erp_modified
         row.updated_at = datetime.now(UTC)
         self._session.flush()
         self._session.refresh(row)

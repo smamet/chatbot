@@ -59,11 +59,20 @@ from chatbot.application.quote_fulfillment_service import (
     resolve_quote_hook,
 )
 from chatbot.application.quote_pdf_storage import (
+    AttachmentValidationError,
+    attachment_rows_for_ui,
     cleanup_pending_reply_attachments,
+    is_quote_pdf_path,
+    is_user_attachment_path,
+    merge_attachment_entries,
     quote_pdf_dashboard_url,
     quote_pdf_path,
+    remove_attachment_entry,
     safe_quote_filename,
+    store_outbound_attachment,
+    validate_outbound_attachment_upload,
 )
+from chatbot.application.quote_sync_state import quote_pdf_stale_context
 from chatbot.automation.modules.registry import all_modules
 from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.domain.models.message import ChatMessage
@@ -86,6 +95,7 @@ from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.application.user_service import UserService
+from chatbot.application.validation_audit_service import ValidationAuditService
 from chatbot.config.settings import Settings
 from chatbot.domain.constants import DEFAULT_HOOK_INSTRUCTIONS
 from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
@@ -104,7 +114,8 @@ from chatbot.domain.models.integration_schema import (
     is_quickbooks_connected,
     secret_integration_keys,
 )
-from chatbot.domain.models.pending_reply import PendingReplyStatus
+from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
+from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
 from chatbot.domain.models.tenant import Tenant, TenantConfig
 from chatbot.domain.models.user import User, UserRole
 from chatbot.mail.process_since import (
@@ -118,7 +129,14 @@ from chatbot.interfaces.api.deps import (
     get_settings_dep,
     get_tenant_service,
 )
-from chatbot.interfaces.web.deps import get_user_service, require_admin, require_editor, require_user
+from chatbot.interfaces.web.deps import (
+    get_user_service,
+    reject_validation_only,
+    require_admin,
+    require_editor,
+    require_user,
+    require_validator,
+)
 from chatbot.interfaces.web.templates import templates
 
 logger = logging.getLogger(__name__)
@@ -237,13 +255,20 @@ def _conversation_history_for_pending_reply(session: Session, tenant_id: int, re
         return messages
     inbound = _inbound_for_pending_reply(session, tenant_id, reply)
     if inbound.get("text"):
-        return [ChatMessage(role=MessageRole.USER, content=inbound["text"])]
+        return [
+            ChatMessage(
+                role=MessageRole.USER,
+                content=inbound["text"],
+                created_at=inbound.get("received_at"),
+            )
+        ]
     return []
 
 
-def _inbound_for_pending_reply(session: Session, tenant_id: int, reply) -> dict[str, str]:
+def _inbound_for_pending_reply(session: Session, tenant_id: int, reply) -> dict:
     subject = ""
     text = ""
+    received_at = None
     channel = (reply.channel or "").lower()
     if channel == "email":
         from_addr = (reply.recipient_id or reply.session_id.removeprefix("email:")).strip().lower()
@@ -251,15 +276,19 @@ def _inbound_for_pending_reply(session: Session, tenant_id: int, reply) -> dict[
             from_addr, reply.draft_text
         )
         if draft:
-            return {"subject": draft.subject, "text": draft.body_in}
+            return {
+                "subject": draft.subject,
+                "text": draft.body_in,
+                "received_at": draft.created_at,
+            }
     conv = SqlAlchemyConversationRepository(session, tenant_id)
     before = reply.created_at
     if before.tzinfo is None:
         before = before.replace(tzinfo=UTC)
-    user_msg = conv.last_user_message_before(reply.session_id, before)
-    if user_msg:
-        text = user_msg
-    return {"subject": subject, "text": text}
+    user_meta = conv.last_user_message_with_time_before(reply.session_id, before)
+    if user_meta:
+        text, received_at = user_meta
+    return {"subject": subject, "text": text, "received_at": received_at}
 
 
 def _erpnext_quotation_edit_url(session: Session, tenant_id: int, quote_name: str | None) -> str | None:
@@ -275,38 +304,88 @@ def _erpnext_quotation_edit_url(session: Session, tenant_id: int, quote_name: st
     return f"{base}/app/quotation/{safe_name}"
 
 
+def _validation_detail_url(slug: str, reply_id: int) -> str:
+    return f"/dashboard/bots/{slug}/validation/{reply_id}"
+
+
+def _validation_inbox_url(slug: str, *, vsub: str = "pending") -> str:
+    return f"/dashboard/bots/{slug}?tab=validation&vsub={vsub}"
+
+
+def _quote_pdf_stale_info(
+    session: Session,
+    tenant_id: int,
+    reply: PendingReply,
+    *,
+    tenant_slug: str,
+) -> dict:
+    quote_name = (reply.quote_external_id or "").strip()
+    erpnext_url = _erpnext_quotation_edit_url(session, tenant_id, quote_name) if quote_name else None
+    integration = erpnext_integration_for_tenant(session, tenant_id)
+    client = integration[0] if integration else None
+    return quote_pdf_stale_context(
+        client=client,
+        tenant_slug=tenant_slug,
+        quote_name=quote_name or None,
+        stored_modified=reply.quote_erp_modified,
+        erpnext_url=erpnext_url,
+    )
+
+
+def _pending_reply_ui_item(
+    session: Session, tenant_id: int, reply: PendingReply, *, tenant_slug: str
+) -> dict:
+    resolved = resolved_lines_from_json(reply.quote_resolved_json)
+    inbound = _inbound_for_pending_reply(session, tenant_id, reply)
+    conversation_history = _conversation_history_for_pending_reply(session, tenant_id, reply)
+    quote_pdf_url = (
+        quote_pdf_dashboard_url(tenant_slug, reply.quote_external_id, inline=True)
+        if reply.quote_external_id
+        else None
+    )
+    editor_html = reply.draft_html
+    if not editor_html and reply.channel == ConnectorType.EMAIL.value:
+        editor_html = email_draft_html_from_markdown(reply.draft_text)
+    return {
+        "reply": reply,
+        "resolved_lines": resolved,
+        "is_quote": reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE,
+        "inbound_subject": inbound["subject"],
+        "inbound_text": inbound["text"],
+        "conversation_history": conversation_history,
+        "quote_pdf_url": quote_pdf_url,
+        "erpnext_quote_url": _erpnext_quotation_edit_url(
+            session, tenant_id, reply.quote_external_id
+        ),
+        "editor_html": editor_html,
+    }
+
+
 def _pending_replies_for_ui(
     session: Session, tenant_id: int, pending: list, *, tenant_slug: str
 ) -> list[dict]:
-    out: list[dict] = []
-    for reply in pending:
-        resolved = resolved_lines_from_json(reply.quote_resolved_json)
-        inbound = _inbound_for_pending_reply(session, tenant_id, reply)
-        conversation_history = _conversation_history_for_pending_reply(session, tenant_id, reply)
-        quote_pdf_url = (
-            quote_pdf_dashboard_url(tenant_slug, reply.quote_external_id)
-            if reply.quote_external_id
-            else None
-        )
-        editor_html = reply.draft_html
-        if not editor_html and reply.channel == ConnectorType.EMAIL.value:
-            editor_html = email_draft_html_from_markdown(reply.draft_text)
-        out.append(
-            {
-                "reply": reply,
-                "resolved_lines": resolved,
-                "is_quote": reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE,
-                "inbound_subject": inbound["subject"],
-                "inbound_text": inbound["text"],
-                "conversation_history": conversation_history,
-                "quote_pdf_url": quote_pdf_url,
-                "erpnext_quote_url": _erpnext_quotation_edit_url(
-                    session, tenant_id, reply.quote_external_id
-                ),
-                "editor_html": editor_html,
-            }
-        )
-    return out
+    return [
+        _pending_reply_ui_item(session, tenant_id, reply, tenant_slug=tenant_slug)
+        for reply in pending
+    ]
+
+
+def _pending_reply_for_tenant(
+    pending_repo: SqlAlchemyPendingReplyRepository,
+    reply_id: int,
+    tenant_id: int,
+) -> PendingReply:
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant_id:
+        raise HTTPException(status_code=404, detail="Reply not found")
+    return reply
+
+
+def _require_pending_email_reply(reply: PendingReply) -> None:
+    if reply.status != PendingReplyStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Reply is not pending")
+    if reply.channel != ConnectorType.EMAIL.value:
+        raise HTTPException(status_code=400, detail="Attachments are only supported for email")
 
 
 def _merge_resolved_selection(form, reply) -> str | None:
@@ -632,6 +711,8 @@ def bots_list(
     user_service: UserService = Depends(get_user_service),
 ):
     tenants = user_service.filter_tenants(user, tenant_service.list_tenants())
+    if user_service.is_validation_only(user) and len(tenants) == 1:
+        return RedirectResponse(url=_validation_inbox_url(tenants[0].slug), status_code=303)
     return templates.TemplateResponse(
         request,
         "bots/list.html",
@@ -950,6 +1031,8 @@ def bot_detail(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    if user_service.is_validation_only(user) and tab != "validation":
+        return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
     connectors = ConnectorService(SqlAlchemyConnectorRepository(session)).list_for_tenant(tenant.id)
     integrations = IntegrationService(SqlAlchemyIntegrationRepository(session)).list_for_tenant(
         tenant.id
@@ -966,6 +1049,8 @@ def bot_detail(
         "status_class": _status_class,
         "default_hook_instructions": DEFAULT_HOOK_INSTRUCTIONS,
         "can_edit": user_service.can_edit(user),
+        "can_validate": user_service.can_validate(user),
+        "validation_only": user_service.is_validation_only(user),
         "is_admin": user.role == UserRole.ADMIN,
         "title": tenant.name,
         "connector_types": ConnectorType,
@@ -1072,11 +1157,24 @@ def bot_detail(
         ]
         ctx["show_chat_channel_selector"] = bool(ctx["chat_outbound_connectors"])
     elif tab == "validation":
-        ctx["pending_replies"] = pending_repo.list_pending(tenant.id)
-        ctx["pending_replies_ui"] = _pending_replies_for_ui(
-            session, tenant.id, ctx["pending_replies"], tenant_slug=slug
-        )
+        vsub = request.query_params.get("vsub", "pending").strip() or "pending"
+        if vsub not in ("pending", "approved", "rejected"):
+            vsub = "pending"
+        ctx["validation_subtab"] = vsub
+        audit_svc = ValidationAuditService(session)
+        ctx["validation_activity"] = audit_svc.list_activity(tenant.id, limit=50)
         ctx["fulfillment_kind_quote"] = FulfillmentKind.ERPNEXT_QUOTE.value
+        if vsub == "pending":
+            replies = pending_repo.list_pending(tenant.id)
+        elif vsub == "approved":
+            replies = pending_repo.list_by_status(tenant.id, PendingReplyStatus.APPROVED)
+        else:
+            replies = pending_repo.list_by_status(tenant.id, PendingReplyStatus.REJECTED)
+        ctx["validation_replies"] = replies
+        ctx["pending_replies_ui"] = _pending_replies_for_ui(
+            session, tenant.id, replies, tenant_slug=slug
+        )
+        ctx["pending_replies"] = replies
     elif tab == "integrations":
         by_type = {i.type.value: i for i in integrations}
         ctx["integrations_by_type"] = by_type
@@ -1882,6 +1980,7 @@ def purge_erpnext_catalog(
 def download_test_quotation_pdf(
     slug: str,
     quote_name: str,
+    inline: bool = False,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -1898,7 +1997,11 @@ def download_test_quotation_pdf(
     return Response(
         content=path.read_bytes(),
         media_type="application/pdf",
-        headers={"Content-Disposition": f'attachment; filename="{safe}.pdf"'},
+        headers={
+            "Content-Disposition": (
+                f'inline; filename="{safe}.pdf"' if inline else f'attachment; filename="{safe}.pdf"'
+            )
+        },
     )
 
 
@@ -1994,6 +2097,7 @@ def quickbooks_callback(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    reject_validation_only(user, user_service)
     oauth_secret = settings.session_secret.strip() or settings.app_secret_key.strip()
     try:
         state_slug = verify_oauth_state(state, secret=oauth_secret)
@@ -2097,12 +2201,211 @@ def delete_connector(
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
 
 
+@router.get("/bots/{slug}/validation/{reply_id}", response_class=HTMLResponse)
+def validation_reply_detail(
+    request: Request,
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = _pending_reply_for_tenant(pending_repo, reply_id, tenant.id)
+    is_pending = reply.status == PendingReplyStatus.PENDING
+    item = _pending_reply_ui_item(session, tenant.id, reply, tenant_slug=slug)
+    attachment_rows = attachment_rows_for_ui(
+        reply.attachments_json,
+        settings=settings,
+        tenant_slug=slug,
+        reply_id=reply.id,
+        quote_name=reply.quote_external_id,
+    )
+    quote_pdf_stale = _quote_pdf_stale_info(session, tenant.id, reply, tenant_slug=slug)
+    reply_timeline = ValidationAuditService(session).list_timeline_for_reply(
+        tenant.id, reply.id
+    )
+    return templates.TemplateResponse(
+        request,
+        "validation/detail.html",
+        {
+            "user": user,
+            "tenant": tenant,
+            "title": f"Validation #{reply.id} — {tenant.name}",
+            "can_validate": user_service.can_validate(user) and is_pending,
+            "is_pending": is_pending,
+            "item": item,
+            "reply": reply,
+            "validation_inbox_url": _validation_inbox_url(slug),
+            "attachment_rows": attachment_rows,
+            "attachment_max_bytes": settings.attachment_max_bytes,
+            "attachment_max_total_bytes": settings.attachment_max_total_bytes,
+            "mailpit_web_url": settings.dev_mailpit_web_url if settings.dev_mode else None,
+            "validation_error": request.session.pop("validation_error", None),
+            "validation_warning": request.session.pop("validation_warning", None),
+            "quote_pdf_stale": quote_pdf_stale,
+            "reply_timeline": reply_timeline,
+        },
+    )
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/attachments")
+async def upload_validation_attachments(
+    slug: str,
+    reply_id: int,
+    files: list[UploadFile] = File(...),
+    user: User = Depends(require_validator),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = _pending_reply_for_tenant(pending_repo, reply_id, tenant.id)
+    _require_pending_email_reply(reply)
+    if not files:
+        raise HTTPException(status_code=400, detail="No files uploaded")
+    attachments_json = reply.attachments_json
+    new_entries: list[dict[str, str]] = []
+    try:
+        for upload in files:
+            data = await upload.read()
+            mime_type = validate_outbound_attachment_upload(
+                settings,
+                filename=upload.filename or "attachment",
+                data=data,
+                content_type=upload.content_type,
+                existing_json=attachments_json,
+            )
+            entry = store_outbound_attachment(
+                settings,
+                slug,
+                reply.id,
+                upload.filename or "attachment",
+                data,
+                mime_type=mime_type,
+            )
+            new_entries.append(entry)
+            attachments_json = merge_attachment_entries(attachments_json, [entry])
+        pending_repo.update_quote_fields(reply.id, attachments_json=attachments_json)
+        audit = ValidationAuditService(session)
+        for entry in new_entries:
+            audit.log_event(
+                tenant_id=tenant.id,
+                pending_reply_id=reply.id,
+                action=ValidationAuditAction.ATTACHMENT_ADDED,
+                actor_email=user.email,
+                detail={"filename": entry.get("filename", "attachment")},
+            )
+        session.commit()
+    except AttachmentValidationError as exc:
+        for entry in new_entries:
+            Path(entry["path"]).unlink(missing_ok=True)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    rows = attachment_rows_for_ui(
+        attachments_json,
+        settings=settings,
+        tenant_slug=slug,
+        reply_id=reply.id,
+        quote_name=reply.quote_external_id,
+    )
+    return JSONResponse({"ok": True, "attachments": rows})
+
+
+@router.get("/bots/{slug}/validation/{reply_id}/attachments/file")
+def view_validation_attachment_file(
+    slug: str,
+    reply_id: int,
+    path: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = _pending_reply_for_tenant(pending_repo, reply_id, tenant.id)
+    target = Path(path)
+    allowed = is_user_attachment_path(settings, slug, reply.id, target)
+    if not allowed and reply.quote_external_id:
+        allowed = is_quote_pdf_path(settings, slug, reply.quote_external_id, target)
+    if not allowed or not target.is_file():
+        raise HTTPException(status_code=404, detail="Attachment not found")
+    mime_type = "application/octet-stream"
+    for entry in attachment_rows_for_ui(
+        reply.attachments_json,
+        settings=settings,
+        tenant_slug=slug,
+        reply_id=reply.id,
+        quote_name=reply.quote_external_id,
+    ):
+        if entry.get("path") == path:
+            mime_type = str(entry.get("mime_type") or mime_type)
+            break
+    inline = mime_type.startswith("image/") or mime_type == "application/pdf"
+    disposition = "inline" if inline else "attachment"
+    filename = target.name
+    return Response(
+        content=target.read_bytes(),
+        media_type=mime_type,
+        headers={"Content-Disposition": f'{disposition}; filename="{filename}"'},
+    )
+
+
+@router.delete("/bots/{slug}/validation/{reply_id}/attachments")
+def delete_validation_attachment(
+    slug: str,
+    reply_id: int,
+    path: str,
+    user: User = Depends(require_validator),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = _pending_reply_for_tenant(pending_repo, reply_id, tenant.id)
+    _require_pending_email_reply(reply)
+    target = Path(path)
+    if not is_user_attachment_path(settings, slug, reply.id, target):
+        raise HTTPException(status_code=400, detail="Invalid attachment path")
+    target.unlink(missing_ok=True)
+    attachments_json = remove_attachment_entry(reply.attachments_json, path)
+    pending_repo.update_quote_fields(reply.id, attachments_json=attachments_json)
+    ValidationAuditService(session).log_event(
+        tenant_id=tenant.id,
+        pending_reply_id=reply.id,
+        action=ValidationAuditAction.ATTACHMENT_REMOVED,
+        actor_email=user.email,
+        detail={"filename": target.name},
+    )
+    session.commit()
+    rows = attachment_rows_for_ui(
+        attachments_json,
+        settings=settings,
+        tenant_slug=slug,
+        reply_id=reply.id,
+        quote_name=reply.quote_external_id,
+    )
+    return JSONResponse({"ok": True, "attachments": rows})
+
+
 @router.post("/bots/{slug}/validation/{reply_id}/approve")
 async def approve_validation_reply(
     request: Request,
     slug: str,
     reply_id: int,
-    user: User = Depends(require_editor),
+    user: User = Depends(require_validator),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
     settings: Settings = Depends(get_settings_dep),
@@ -2121,6 +2424,17 @@ async def approve_validation_reply(
     config = connector.config if connector else {}
     form = await request.form()
     resolved_json = _merge_resolved_selection(form, reply)
+    if (
+        reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE
+        and _quote_pdf_stale_info(session, tenant.id, reply, tenant_slug=slug).get("stale")
+        and not form.get("confirm_stale_pdf")
+    ):
+        request.session["validation_warning"] = (
+            "The quotation was updated in ERPNext since the PDF was last synced. "
+            "Review the latest PDF, then use Proceed & send."
+        )
+        session.commit()
+        return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
     fulfillment = QuoteFulfillmentService(session, settings=settings, tenant_slug=slug)
     try:
         fulfillment.fulfill_and_approve(
@@ -2132,9 +2446,16 @@ async def approve_validation_reply(
         pending_repo.update_quote_fields(reply.id, fulfillment_error=str(exc))
         session.commit()
         request.session["validation_error"] = str(exc)
-        return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+        return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
+    fresh = pending_repo.find_by_id(reply_id)
+    if fresh is not None:
+        ValidationAuditService(session).resolve_reply(
+            fresh,
+            status=PendingReplyStatus.APPROVED,
+            actor_email=user.email,
+        )
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+    return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/save")
@@ -2142,7 +2463,7 @@ async def save_validation_draft(
     request: Request,
     slug: str,
     reply_id: int,
-    user: User = Depends(require_editor),
+    user: User = Depends(require_validator),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
     session: Session = Depends(get_session),
@@ -2168,14 +2489,15 @@ async def save_validation_draft(
     except DraftEditError as exc:
         request.session["validation_error"] = str(exc)
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+    return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/refresh-pdf")
 def refresh_validation_quote_pdf(
+    request: Request,
     slug: str,
     reply_id: int,
-    user: User = Depends(require_editor),
+    user: User = Depends(require_validator),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
     settings: Settings = Depends(get_settings_dep),
@@ -2192,30 +2514,41 @@ def refresh_validation_quote_pdf(
     if not reply.quote_external_id:
         raise HTTPException(status_code=400, detail="No quotation linked yet")
     try:
-        attachments_json = refresh_quote_pdf(
+        attachments_json, erp_modified = refresh_quote_pdf(
             session,
             tenant_id=tenant.id,
             settings=settings,
             tenant_slug=slug,
             quote_name=reply.quote_external_id,
             existing_attachments_json=reply.attachments_json,
+            reply_id=reply.id,
         )
         pending_repo.update_quote_fields(
             reply.id,
             attachments_json=attachments_json,
             fulfillment_error=None,
+            quote_erp_modified=erp_modified,
         )
+        ValidationAuditService(session).log_event(
+            tenant_id=tenant.id,
+            pending_reply_id=reply.id,
+            action=ValidationAuditAction.REFRESH_PDF,
+            actor_email=user.email,
+            detail={"quote_name": reply.quote_external_id},
+        )
+        request.session.pop("validation_error", None)
+        request.session.pop("validation_warning", None)
     except QuoteFulfillmentError as exc:
         pending_repo.update_quote_fields(reply.id, fulfillment_error=str(exc))
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+    return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/resolve")
 async def resolve_validation_quote(
     slug: str,
     reply_id: int,
-    user: User = Depends(require_editor),
+    user: User = Depends(require_validator),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
     session: Session = Depends(get_session),
@@ -2252,15 +2585,21 @@ async def resolve_validation_quote(
         quote_resolved_json=resolved_lines_to_json(resolver.resolve_all(lines)),
         fulfillment_error=None,
     )
+    ValidationAuditService(session).log_event(
+        tenant_id=tenant.id,
+        pending_reply_id=reply.id,
+        action=ValidationAuditAction.RESOLVE_PRODUCTS,
+        actor_email=user.email,
+    )
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+    return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/reject")
 def reject_validation_reply(
     slug: str,
     reply_id: int,
-    user: User = Depends(require_editor),
+    user: User = Depends(require_validator),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
     session: Session = Depends(get_session),
@@ -2274,9 +2613,13 @@ def reject_validation_reply(
     if reply.status != PendingReplyStatus.PENDING:
         raise HTTPException(status_code=400, detail="Reply is not pending")
     cleanup_pending_reply_attachments(reply)
-    pending_repo.update_status(reply_id, PendingReplyStatus.REJECTED)
+    ValidationAuditService(session).resolve_reply(
+        reply,
+        status=PendingReplyStatus.REJECTED,
+        actor_email=user.email,
+    )
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=validation", status_code=303)
+    return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
 
 
 @router.post("/bots/{slug}/chat-test/reset")
@@ -2294,6 +2637,7 @@ def bot_chat_test_reset(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    reject_validation_only(user, user_service)
     repo = SqlAlchemyConversationRepository(session, tenant.id)
     session_id = _dashboard_chat_session_id(
         user,
@@ -2342,6 +2686,7 @@ def bot_chat_test_send(
 ) -> ChatTestSendOut:
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    reject_validation_only(user, user_service)
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is empty")
     try:
@@ -2502,6 +2847,7 @@ def bot_email_test_send(
     _require_dev_email_test(settings)
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    reject_validation_only(user, user_service)
     try:
         config_in = get_email_test_connectors(session, tenant.id)
         inject_test_email(
@@ -2535,6 +2881,7 @@ def bot_email_test_poll(
     _require_dev_email_test(settings)
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    reject_validation_only(user, user_service)
     factory = request.app.state.session_factory
     try:
         processed = poll_tenant_now(factory, settings, tenant)

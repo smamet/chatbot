@@ -206,6 +206,9 @@ class PendingReplyRow(Base):
     quote_external_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     attachments_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
     fulfillment_error: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    quote_erp_modified: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -229,6 +232,24 @@ class PendingReplyEditRow(Base):
     body_before: Mapped[str] = mapped_column(Text())
     body_after: Mapped[str] = mapped_column(Text())
     diff: Mapped[str] = mapped_column(Text())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class PendingReplyAuditEventRow(Base):
+    __tablename__ = "pending_reply_audit_events"
+    __table_args__ = (
+        Index("ix_pending_reply_audit_tenant_reply", "tenant_id", "pending_reply_id"),
+        Index("ix_pending_reply_audit_tenant_created", "tenant_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    pending_reply_id: Mapped[int] = mapped_column(ForeignKey("pending_replies.id"))
+    action: Mapped[str] = mapped_column(String(32))
+    actor_email: Mapped[str] = mapped_column(String(256), default="")
+    detail_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )

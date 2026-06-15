@@ -46,3 +46,17 @@ def require_editor(
     if not user_service.can_edit(user):
         raise HTTPException(status_code=403, detail="Read-only user")
     return user
+
+
+def require_validator(
+    user: User = Depends(require_user),
+    user_service: UserService = Depends(get_user_service),
+) -> User:
+    if not user_service.can_validate(user):
+        raise HTTPException(status_code=403, detail="Validation access required")
+    return user
+
+
+def reject_validation_only(user: User, user_service: UserService) -> None:
+    if user_service.is_validation_only(user):
+        raise HTTPException(status_code=403, detail="Forbidden")

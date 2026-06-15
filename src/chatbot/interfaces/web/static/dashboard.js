@@ -372,4 +372,18 @@
       }
     });
   });
+
+  document.querySelectorAll(".validation-inbox-row[data-href]").forEach((row) => {
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("a, button, input, select, textarea, label")) {
+        return;
+      }
+      window.location.assign(row.dataset.href);
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      window.location.assign(row.dataset.href);
+    });
+  });
 })();

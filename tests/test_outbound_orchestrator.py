@@ -31,6 +31,7 @@ def test_queue_after_chat_precreates_quote_when_enabled() -> None:
         quote_name="QTN-0001",
         attachments_json='[{"filename":"QTN-0001.pdf","path":"/tmp/q.pdf"}]',
         resolved_json='[{"requested_label":"Widget","qty":1,"item_code":"SKU-1","status":"resolved"}]',
+        quote_erp_modified="2026-06-15 14:17:39",
     )
     pending = SimpleNamespace(id=99)
 
@@ -49,7 +50,9 @@ def test_queue_after_chat_precreates_quote_when_enabled() -> None:
     ), patch(
         "chatbot.application.outbound_orchestrator._queue_quote_pending",
         return_value=pending,
-    ) as queue_mock:
+    ) as queue_mock, patch(
+        "chatbot.application.outbound_orchestrator.SqlAlchemyPendingReplyRepository",
+    ) as repo_cls:
         status, out = queue_after_chat(
             session,
             tenant_id=1,
@@ -66,6 +69,10 @@ def test_queue_after_chat_precreates_quote_when_enabled() -> None:
     queue_mock.assert_called_once()
     assert queue_mock.call_args.kwargs["quote_external_id"] == "QTN-0001"
     assert queue_mock.call_args.kwargs["attachments_json"] == created.attachments_json
+    repo_cls.return_value.update_quote_fields.assert_called_once_with(
+        pending.id,
+        quote_erp_modified="2026-06-15 14:17:39",
+    )
 
 
 def test_queue_after_chat_keeps_manual_validation_when_creation_disabled() -> None:

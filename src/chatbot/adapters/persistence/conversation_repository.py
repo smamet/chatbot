@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 
 from sqlalchemy import delete, desc, func, select
 from sqlalchemy.orm import Session
@@ -8,6 +8,23 @@ from sqlalchemy.orm import Session
 from chatbot.adapters.persistence.orm import MessageRow
 from chatbot.application.context_debug import context_debug_from_json, context_debug_to_json
 from chatbot.domain.models.message import ChatMessage, MessageRole
+
+
+def _as_utc(value: datetime) -> datetime:
+    return value.replace(tzinfo=UTC) if value.tzinfo is None else value
+
+
+def _row_to_message(row: MessageRow) -> ChatMessage:
+    try:
+        role = MessageRole(row.role)
+    except ValueError:
+        role = MessageRole.USER
+    return ChatMessage(
+        role=role,
+        content=row.content,
+        context_debug=context_debug_from_json(row.context_debug_json),
+        created_at=_as_utc(row.created_at),
+    )
 
 
 class SqlAlchemyConversationRepository:
@@ -38,20 +55,7 @@ class SqlAlchemyConversationRepository:
         )
         rows = list(self._session.scalars(stmt))
         rows.reverse()
-        out: list[ChatMessage] = []
-        for r in rows:
-            try:
-                role = MessageRole(r.role)
-            except ValueError:
-                role = MessageRole.USER
-            out.append(
-                ChatMessage(
-                    role=role,
-                    content=r.content,
-                    context_debug=context_debug_from_json(r.context_debug_json),
-                )
-            )
-        return out
+        return [_row_to_message(r) for r in rows]
 
     def list_messages_before(
         self, session_id: str, before: datetime, *, limit: int = 200
@@ -67,24 +71,17 @@ class SqlAlchemyConversationRepository:
             .limit(limit)
         )
         rows = list(self._session.scalars(stmt))
-        out: list[ChatMessage] = []
-        for r in rows:
-            try:
-                role = MessageRole(r.role)
-            except ValueError:
-                role = MessageRole.USER
-            out.append(
-                ChatMessage(
-                    role=role,
-                    content=r.content,
-                    context_debug=context_debug_from_json(r.context_debug_json),
-                )
-            )
-        return out
+        return [_row_to_message(r) for r in rows]
 
     def last_user_message_before(self, session_id: str, before: datetime) -> str | None:
+        meta = self.last_user_message_with_time_before(session_id, before)
+        return meta[0] if meta else None
+
+    def last_user_message_with_time_before(
+        self, session_id: str, before: datetime
+    ) -> tuple[str, datetime] | None:
         stmt = (
-            select(MessageRow.content)
+            select(MessageRow.content, MessageRow.created_at)
             .where(
                 MessageRow.tenant_id == self._tenant_id,
                 MessageRow.session_id == session_id,
@@ -94,7 +91,10 @@ class SqlAlchemyConversationRepository:
             .order_by(desc(MessageRow.id))
             .limit(1)
         )
-        return self._session.scalar(stmt)
+        row = self._session.execute(stmt).first()
+        if row is None:
+            return None
+        return row[0], _as_utc(row[1])
 
     def list_session_ids(self, *, limit: int = 100) -> list[str]:
         stmt = (

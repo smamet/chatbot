@@ -22,6 +22,16 @@ cp .env.example .env
 | http://localhost:80/… | Same via Caddy (optional) |
 | `POST /c/{slug}/chat` | Chat API (`Authorization: Bearer <tenant_token>`) |
 
+## Dashboard users & roles
+
+| Role | Who | Access |
+|------|-----|--------|
+| `admin` | Platform admin | Everything |
+| `client_admin` | Bot manager | Assigned bots — config, connectors, validation |
+| `client_operator` | Validation operator | Assigned bots — validation inbox/detail/history only |
+
+Create an operator: `./sail chatbot user-create op@example.com -p '…' --role client_operator`, then an admin assigns bot access under **Users**. On login, a single-bot operator lands on the validation inbox; multiple bots show a picker where **Open** goes straight to validation.
+
 **Sail commands**
 
 ```bash
@@ -79,6 +89,8 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 | URL | Purpose |
 |-----|---------|
 | http://127.0.0.1:8025 | Mailpit — view outbound emails after Validation approve |
+
+**Validation (email):** inbox on the bot **Validation** tab; open a pending reply to edit the draft, attach files (drag-and-drop), and approve. Attachments are stored under `data/attachments/{slug}/{reply_id}/` and removed on approve/reject. Quote PDFs from ERPNext are attached automatically when applicable.
 | http://127.0.0.1:8081 | GreenMail REST API |
 | Dashboard → Test email | Inject simulated client mail into bot inbox |
 

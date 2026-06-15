@@ -554,3 +554,78 @@ def test_pdf_failure_hint_broken_images() -> None:
     hint = ErpNextClient._pdf_failure_hint("PDF generation failed because of broken image links")
     assert "host_name" in hint
     assert "broken image" not in hint.lower() or "load images" in hint.lower()
+
+
+def test_submit_quotation_fetches_fresh_doc_before_submit() -> None:
+    client = ErpNextClient(_config())
+    submitted: list[dict] = []
+
+    def fake_get_quotation(name: str) -> dict:
+        if submitted:
+            return {"name": name, "doctype": "Quotation", "docstatus": 1}
+        return {
+            "name": name,
+            "doctype": "Quotation",
+            "docstatus": 0,
+            "modified": "2026-06-15 14:18:15.466254",
+        }
+
+    def fake_post_write(path: str, *, json_body: dict) -> dict:
+        submitted.append(json_body["doc"])
+        return {"message": "ok"}
+
+    with patch.object(client, "get_quotation", side_effect=fake_get_quotation), patch.object(
+        client, "_post_write", side_effect=fake_post_write
+    ):
+        assert client.submit_quotation("QTN-0001") is None
+
+    assert submitted[0]["modified"] == "2026-06-15 14:18:15.466254"
+    assert submitted[0]["docstatus"] == 0
+
+
+def test_submit_quotation_skips_when_already_submitted() -> None:
+    client = ErpNextClient(_config())
+
+    with patch.object(
+        client,
+        "get_quotation",
+        return_value={"name": "QTN-0002", "doctype": "Quotation", "docstatus": 1},
+    ), patch.object(client, "_post_write") as post_write:
+        assert client.submit_quotation("QTN-0002") is None
+
+    post_write.assert_not_called()
+
+
+def test_submit_quotation_retries_after_timestamp_mismatch() -> None:
+    client = ErpNextClient(_config())
+    get_calls = [
+        {
+            "name": "QTN-0003",
+            "doctype": "Quotation",
+            "docstatus": 0,
+            "modified": "2026-06-15 14:17:39.476598",
+        },
+        {
+            "name": "QTN-0003",
+            "doctype": "Quotation",
+            "docstatus": 0,
+            "modified": "2026-06-15 14:18:15.466254",
+        },
+        {
+            "name": "QTN-0003",
+            "doctype": "Quotation",
+            "docstatus": 1,
+            "modified": "2026-06-15 14:18:15.466254",
+        },
+    ]
+
+    with patch.object(client, "get_quotation", side_effect=get_calls), patch.object(
+        client,
+        "_post_write",
+        side_effect=[
+            {"_erpnext_error": "modified after you have opened it"},
+            {"message": "ok"},
+        ],
+    ):
+        assert client.submit_quotation("QTN-0003") is None
+

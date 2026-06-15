@@ -902,12 +902,33 @@ class ErpNextClient:
         safe = name.strip()
         if not safe:
             return "Missing quotation name"
-        result = self._post_write(
-            "/api/method/frappe.client.submit",
-            json_body={"doc": {"doctype": "Quotation", "name": safe}},
-        )
-        if result.get("_erpnext_error"):
-            return str(result["_erpnext_error"])
+
+        last_error: str | None = None
+        for attempt in range(2):
+            doc = self.get_quotation(safe)
+            if not doc:
+                return f"Quotation {safe} not found"
+            docstatus = doc.get("docstatus")
+            if docstatus == 1:
+                return None
+            if docstatus == 2:
+                return f"Quotation {safe} is cancelled"
+            if docstatus not in (0, None):
+                return f"Quotation {safe} cannot be submitted (docstatus={docstatus})"
+
+            result = self._post_write(
+                "/api/method/frappe.client.submit",
+                json_body={"doc": doc},
+            )
+            if not result.get("_erpnext_error"):
+                break
+            last_error = str(result["_erpnext_error"])
+            if attempt == 0 and "modified after" in last_error.lower():
+                continue
+            return last_error
+        else:
+            return last_error
+
         doc = self.get_quotation(safe)
         if doc.get("docstatus") != 1:
             status = doc.get("docstatus")

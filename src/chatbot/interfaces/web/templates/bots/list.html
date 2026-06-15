@@ -2,7 +2,11 @@
 {% block body %}
 <div class="page-header">
   <h1>Bots</h1>
+  {% if user.role == 'client_operator' %}
+  <p class="subtitle">Select a bot to open validation</p>
+  {% else %}
   <p class="subtitle">Manage your chatbot tenants</p>
+  {% endif %}
 </div>
 <div class="actions-bar">
   {% if user.role == 'admin' %}
@@ -21,7 +25,7 @@
       <td><strong>{{ t.name }}</strong></td>
       <td><code>{{ t.slug }}</code></td>
       <td>{% if t.hooks_enabled %}<span class="badge on">ON</span>{% else %}<span class="badge off">OFF</span>{% endif %}</td>
-      <td><a href="/dashboard/bots/{{ t.slug }}" class="btn btn-secondary btn-sm">Open</a></td>
+      <td><a href="/dashboard/bots/{{ t.slug }}{% if user.role == 'client_operator' %}?tab=validation{% endif %}" class="btn btn-secondary btn-sm">Open</a></td>
     </tr>
     {% else %}
     <tr><td colspan="4" class="empty-state">No bots yet</td></tr>

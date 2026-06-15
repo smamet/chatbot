@@ -8,7 +8,7 @@ from enum import StrEnum
 class UserRole(StrEnum):
     ADMIN = "admin"
     CLIENT_ADMIN = "client_admin"
-    CLIENT_USER = "client_user"
+    CLIENT_OPERATOR = "client_operator"
 
 
 @dataclass(frozen=True)
