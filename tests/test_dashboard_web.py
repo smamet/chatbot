@@ -1229,6 +1229,207 @@ def test_chat_test_queues_quote_hook_when_unresolved(dashboard_env) -> None:
         assert pending[0].session_id == "email:client@example.com"
 
 
+def test_chat_test_simulates_email_channel_queues_plain_reply(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "email",
+            "direction": "out",
+            "mode": "validation",
+            "active": "on",
+            "smtp_host": "smtp.example.com",
+            "smtp_port": "587",
+            "username": "bot@example.com",
+            "password": "secret",
+            "from_addr": "bot@example.com",
+        },
+        follow_redirects=False,
+    )
+
+    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+
+    original_run = dash_mod._run_dashboard_chat
+
+    def _plain_run(request, settings, tenant, user, message, session, *, test_email="", test_phone="", test_session=""):
+        session_id = dash_mod._dashboard_chat_session_id(
+            user,
+            test_email=test_email,
+            test_phone=test_phone,
+            require_identity=False,
+        )
+        result = SimpleNamespace(
+            text="Here is the information you requested.",
+            usage=SimpleNamespace(prompt_tokens=1, candidates_tokens=1, total_tokens=2),
+            hook_type=None,
+            hook_payload_json=None,
+            hook_event_id=None,
+        )
+        return session_id, result
+
+    dash_mod._run_dashboard_chat = _plain_run  # type: ignore[assignment]
+    try:
+        r = client.post(
+            f"/dashboard/bots/{slug}/chat-test/send",
+            data={
+                "message": "Tell me about deployment",
+                "test_email": "client@example.com",
+                "channel": "email",
+            },
+        )
+    finally:
+        dash_mod._run_dashboard_chat = original_run  # type: ignore[assignment]
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["queued"] is True
+    assert body["hook_type"] is None
+    assert "email" in (body["message"] or "").lower()
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).list_pending(tenant_id)
+        assert len(pending) == 1
+        assert pending[0].channel == "email"
+        assert pending[0].draft_html is not None
+
+
+def test_chat_test_simulates_email_channel_queues_with_draft_html(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    _save_erpnext_integration(client, slug, allow_create_quotation="on")
+    client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "email",
+            "direction": "out",
+            "mode": "validation",
+            "active": "on",
+            "smtp_host": "smtp.example.com",
+            "smtp_port": "587",
+            "username": "bot@example.com",
+            "password": "secret",
+            "from_addr": "bot@example.com",
+        },
+        follow_redirects=False,
+    )
+
+    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+
+    original_run = dash_mod._run_dashboard_chat
+
+    def _hook_run(request, settings, tenant, user, message, session, *, test_email="", test_phone="", test_session=""):
+        session_id = dash_mod._dashboard_chat_session_id(
+            user,
+            test_email=test_email,
+            test_phone=test_phone,
+            require_identity=False,
+        )
+        result = SimpleNamespace(
+            text="Your quote is ready.",
+            usage=SimpleNamespace(prompt_tokens=1, candidates_tokens=1, total_tokens=2),
+            hook_type="quote.create",
+            hook_payload_json='{"type":"quote.create","lines":[{"product":"Widget","qty":1}]}',
+            hook_event_id=None,
+        )
+        return session_id, result
+
+    dash_mod._run_dashboard_chat = _hook_run  # type: ignore[assignment]
+    try:
+        with patch(
+            "chatbot.interfaces.api.routers.dashboard_web.resolve_quote_hook",
+            return_value=(
+                SimpleNamespace(lines=(SimpleNamespace(product="Widget", qty=1, item_code=None),), notes=None),
+                '[{"requested_label":"Widget","qty":1,"item_code":"SKU-1","status":"resolved"}]',
+            ),
+        ), patch(
+            "chatbot.interfaces.api.routers.dashboard_web.create_quote_for_session",
+        ) as create_mock:
+            r = client.post(
+                f"/dashboard/bots/{slug}/chat-test/send",
+                data={
+                    "message": "I need a quote",
+                    "test_email": "client@example.com",
+                    "channel": "email",
+                },
+            )
+    finally:
+        dash_mod._run_dashboard_chat = original_run  # type: ignore[assignment]
+
+    assert r.status_code == 200
+    body = r.json()
+    create_mock.assert_not_called()
+    assert body["queued"] is True
+    assert body["pdf_url"] is None
+    assert "email" in (body["message"] or "").lower()
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).list_pending(tenant_id)
+        assert len(pending) == 1
+        assert pending[0].channel == "email"
+        assert pending[0].draft_html is not None
+        assert "<" in pending[0].draft_html
+
+
+def test_chat_test_simulated_email_requires_email_connector(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "whatsapp",
+            "direction": "out",
+            "mode": "validation",
+            "active": "on",
+            "phone_number_id": "123",
+            "access_token": "tok",
+        },
+        follow_redirects=False,
+    )
+
+    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+
+    original_run = dash_mod._run_dashboard_chat
+
+    def _hook_run(request, settings, tenant, user, message, session, *, test_email="", test_phone="", test_session=""):
+        return "email:client@example.com", SimpleNamespace(
+            text="Reply",
+            hook_type="quote.create",
+            hook_payload_json='{"type":"quote.create","lines":[{"product":"X","qty":1}]}',
+            hook_event_id=None,
+        )
+
+    dash_mod._run_dashboard_chat = _hook_run  # type: ignore[assignment]
+    try:
+        r = client.post(
+            f"/dashboard/bots/{slug}/chat-test/send",
+            data={
+                "message": "quote",
+                "test_email": "client@example.com",
+                "channel": "email",
+            },
+        )
+    finally:
+        dash_mod._run_dashboard_chat = original_run  # type: ignore[assignment]
+
+    assert r.status_code == 200
+    body = r.json()
+    assert body["queued"] is False
+    assert "email" in (body["message"] or "").lower()
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        assert SqlAlchemyPendingReplyRepository(session).list_pending(tenant_id) == []
+
+
 def test_sync_catalog_endpoint_starts_background_job(dashboard_env) -> None:
     client, admin, _, slug, *_ = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -1255,3 +1456,56 @@ def test_purge_catalog_endpoint(dashboard_env) -> None:
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert not list(catalog_dir.glob("*.md"))
+
+
+def test_upload_documents_auto_syncs(dashboard_env) -> None:
+    from chatbot.application.sync_service import IngestSyncService
+
+    client, admin, _, slug, _, data, _ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+
+    with patch.object(
+        IngestSyncService,
+        "reconcile_root",
+        return_value=["ingested 1 chunks: new.md"],
+    ) as mock_reconcile:
+        r = client.post(
+            f"/dashboard/bots/{slug}/documents",
+            files=[("files", ("new.md", b"# New doc\n", "text/markdown"))],
+            follow_redirects=False,
+        )
+
+    assert r.status_code == 303
+    mock_reconcile.assert_called_once()
+    assert mock_reconcile.call_args.kwargs == {"fresh": False}
+    assert (data / "docs" / slug / "new.md").is_file()
+    r = client.get(f"/dashboard/bots/{slug}?tab=documents")
+    assert "ingested 1 chunks: new.md" in r.text
+
+
+def test_delete_document_auto_syncs(dashboard_env) -> None:
+    from chatbot.application.sync_service import IngestSyncService
+
+    client, admin, _, slug, _, data, _ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    docs_dir = data / "docs" / slug
+    docs_dir.mkdir(parents=True, exist_ok=True)
+    (docs_dir / "gone.md").write_text("# gone\n", encoding="utf-8")
+
+    with patch.object(
+        IngestSyncService,
+        "reconcile_root",
+        return_value=["pruned missing: gone.md"],
+    ) as mock_reconcile:
+        r = client.post(
+            f"/dashboard/bots/{slug}/documents/delete",
+            data={"path": "gone.md"},
+            follow_redirects=False,
+        )
+
+    assert r.status_code == 303
+    mock_reconcile.assert_called_once()
+    assert mock_reconcile.call_args.kwargs == {"fresh": False}
+    assert not (docs_dir / "gone.md").is_file()
+    r = client.get(f"/dashboard/bots/{slug}?tab=documents")
+    assert "pruned missing: gone.md" in r.text

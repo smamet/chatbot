@@ -14,6 +14,14 @@ from chatbot.domain.contracts.embedder import Embedder
 from chatbot.domain.contracts.vector_store import VectorRecord, VectorStore
 
 
+def file_content_hash(file_path: Path) -> str:
+    h = hashlib.sha256()
+    with file_path.open("rb") as f:
+        for block in iter(lambda: f.read(65536), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 class IngestService:
     def __init__(
         self,
@@ -44,11 +52,7 @@ class IngestService:
         return logs
 
     def _file_hash(self, file_path: Path) -> str:
-        h = hashlib.sha256()
-        with file_path.open("rb") as f:
-            for block in iter(lambda: f.read(65536), b""):
-                h.update(block)
-        return h.hexdigest()
+        return file_content_hash(file_path)
 
     def _ingest_file(self, file_path: Path) -> list[str]:
         suffix = file_path.suffix.lower()

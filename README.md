@@ -30,7 +30,7 @@ cp .env.example .env
 ./sail logs           # follow logs
 ./sail shell          # bash in API container
 ./sail mysql          # MySQL CLI
-./sail chatbot …      # CLI (tenant-create, sync, user-create, …)
+./sail chatbot …      # CLI (tenant-create, sync, catalog-rag, user-create, …)
 ./sail migrate        # alembic upgrade head
 ./sail test           # pytest in container
 ./sail worker-logs    # automation worker logs
@@ -139,6 +139,17 @@ When an **ERPNext integration** is active, the dashboard lets you export the liv
 3. Or click **Sync catalog now** (runs in the background; refresh the page for last sync / item count / error).
 
 Each active item becomes one markdown file under `data/catalog/{slug}/{item_code}.md`. The RAG pipeline re-embeds **only files whose content changed** (content hash). Stock and price in RAG are a **snapshot** at sync time; live quotes still use hooks + `ProductResolver`.
+
+**Resume a partial index** (after 429/503 or interrupted rebuild) — same pipeline as dashboard/worker, with progress bar:
+
+```bash
+./sail chatbot catalog-rag rebuild my-bot              # missing/changed files only
+./sail chatbot catalog-rag rebuild my-bot --dry-run    # show counts, no API calls
+./sail chatbot catalog-rag rebuild my-bot --all        # scan all catalog .md (unchanged skip embed)
+./sail chatbot catalog-rag sync my-bot                 # ERPNext fetch + RAG (dashboard equivalent)
+```
+
+**Embedding rate limits:** all RAG paths share `GeminiEmbedder` — max speed until Google returns 429/503, then adaptive backoff (`Retry-After` header or exponential). Optional env: `EMBED_RETRY_MAX` (default 5), `EMBED_RETRY_BASE_429_SECONDS` (30), `EMBED_RETRY_BASE_503_SECONDS` (5).
 
 **Pricing in catalog files:** paginated fetch from ERPNext **Item Price** (configured price list), fallback to `Item.standard_rate`, otherwise `Price: not available` — never `0.0`.
 

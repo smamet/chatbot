@@ -1105,6 +1105,15 @@ a:hover {
   vertical-align: middle;
 }
 
+.chat-channel-grid {
+  margin-bottom: var(--space-sm);
+}
+
+.chat-channel-grid select {
+  width: 100%;
+  max-width: 20rem;
+}
+
 .chat-hint {
   margin: calc(-1 * var(--space-sm)) 0 var(--space-sm);
   font-size: 0.75rem;

@@ -1,18 +1,22 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from chatbot.adapters.erpnext.client import ErpNextClient, _positive_rate
 from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+from chatbot.adapters.persistence.orm import IngestedFileRow
 from chatbot.adapters.persistence.tenant_paths import safe_catalog_filename, tenant_catalog_dir
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
+from chatbot.application.ingest_service import file_content_hash
 from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.application.tenant_service import TenantService
@@ -27,7 +31,23 @@ class CatalogSyncResult:
     item_count: int = 0
     files_written: int = 0
     files_removed: int = 0
+    rag_files_indexed: int = 0
     logs: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CatalogRagIndexPlan:
+    needs_embed: list[Path]
+    already_indexed: list[Path]
+
+
+@dataclass
+class CatalogFileSyncResult:
+    written: int
+    removed: int
+    logs: list[str]
+    changed_paths: list[Path] = field(default_factory=list)
+    removed_paths: list[Path] = field(default_factory=list)
 
 
 def catalog_sync_enabled(config: dict[str, Any]) -> bool:
@@ -118,6 +138,29 @@ def render_item_markdown(
     return "\n".join(lines).strip() + "\n"
 
 
+_SYNC_DATE_LINE = re.compile(r"^- Stock/price as of:.*$", re.MULTILINE)
+
+
+def catalog_content_for_compare(content: str) -> str:
+    """Normalize catalog markdown for change detection (ignore volatile sync timestamp)."""
+    without_date = _SYNC_DATE_LINE.sub("", content)
+    return without_date.strip() + "\n"
+
+
+def _group_catalog_items_by_path(
+    items: list[dict[str, Any]],
+    catalog_root: Path,
+) -> dict[Path, list[dict[str, Any]]]:
+    grouped: dict[Path, list[dict[str, Any]]] = {}
+    for item in items:
+        code = str(item.get("item_code", "")).strip()
+        if not code:
+            continue
+        path = catalog_root / f"{safe_catalog_filename(code)}.md"
+        grouped.setdefault(path, []).append(item)
+    return grouped
+
+
 def sync_catalog_files(
     settings: Settings,
     slug: str,
@@ -127,21 +170,27 @@ def sync_catalog_files(
     include_stock: bool,
     price_by_code: dict[str, dict[str, Any]] | None = None,
     sync_date: str | None = None,
-) -> tuple[int, int, list[str]]:
+) -> CatalogFileSyncResult:
     catalog_root = tenant_catalog_dir(settings, slug)
     sync_label = sync_date or datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
     logs: list[str] = []
     written = 0
-    active_paths: set[Path] = set()
+    changed_paths: list[Path] = []
+    removed_paths: list[Path] = []
     prices = price_by_code or {}
+    grouped = _group_catalog_items_by_path(items, catalog_root)
+    active_paths = set(grouped.keys())
 
-    for item in items:
+    for path, path_items in sorted(grouped.items()):
+        path_items.sort(key=lambda item: str(item.get("item_code", "")).strip())
+        item = path_items[0]
         code = str(item.get("item_code", "")).strip()
-        if not code:
-            continue
-        safe = safe_catalog_filename(code)
-        path = catalog_root / f"{safe}.md"
-        active_paths.add(path)
+        if len(path_items) > 1:
+            codes = [str(entry.get("item_code", "")).strip() for entry in path_items]
+            logs.append(
+                f"note: {path.name} shared by {len(path_items)} item codes "
+                f"({', '.join(codes)}), using {code}"
+            )
         stock_qty = stock_totals.get(code) if include_stock else None
         content = render_item_markdown(
             item,
@@ -150,10 +199,13 @@ def sync_catalog_files(
             include_stock=include_stock,
             price_entry=prices.get(code),
         )
-        if path.is_file() and path.read_text(encoding="utf-8") == content:
-            continue
+        if path.is_file():
+            existing = path.read_text(encoding="utf-8")
+            if catalog_content_for_compare(existing) == catalog_content_for_compare(content):
+                continue
         path.write_text(content, encoding="utf-8")
         written += 1
+        changed_paths.append(path)
         logs.append(f"wrote: {path.name}")
 
     removed = 0
@@ -161,9 +213,42 @@ def sync_catalog_files(
         if path not in active_paths:
             path.unlink(missing_ok=True)
             removed += 1
+            removed_paths.append(path)
             logs.append(f"removed: {path.name}")
 
-    return written, removed, logs
+    return CatalogFileSyncResult(
+        written=written,
+        removed=removed,
+        logs=logs,
+        changed_paths=changed_paths,
+        removed_paths=removed_paths,
+    )
+
+
+def catalog_rag_index_plan(
+    session: Session,
+    tenant_id: int,
+    catalog_root: Path,
+) -> CatalogRagIndexPlan:
+    if not catalog_root.is_dir():
+        return CatalogRagIndexPlan(needs_embed=[], already_indexed=[])
+
+    indexed = {
+        row.path: row.content_hash
+        for row in session.scalars(
+            select(IngestedFileRow).where(IngestedFileRow.tenant_id == tenant_id)
+        ).all()
+    }
+    needs_embed: list[Path] = []
+    already_indexed: list[Path] = []
+    for path in sorted(catalog_root.glob("*.md")):
+        key = str(path.resolve())
+        digest = file_content_hash(path)
+        if indexed.get(key) == digest:
+            already_indexed.append(path)
+        else:
+            needs_embed.append(path)
+    return CatalogRagIndexPlan(needs_embed=needs_embed, already_indexed=already_indexed)
 
 
 def reconcile_catalog_rag(
@@ -172,8 +257,12 @@ def reconcile_catalog_rag(
     settings: Settings,
     tenant_id: int,
     slug: str,
+    paths_to_reindex: list[Path] | None = None,
+    reconcile_all: bool = False,
     batch_size: int = 100,
     pause_seconds: float = 0.0,
+    on_file_done: Callable[[Path, str], None] | None = None,
+    commit_each_batch: bool = False,
 ) -> list[str]:
     merged = settings
     tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
@@ -192,14 +281,31 @@ def reconcile_catalog_rag(
         tenant_id=tenant_id,
     )
     logs = sync_svc.prune_missing_under_root(catalog_root)
-    md_files = sorted(catalog_root.glob("*.md"))
-    logs.extend(
-        sync_svc.ingest_paths_batched(
-            md_files,
-            batch_size=batch_size,
-            pause_seconds=pause_seconds,
+    if reconcile_all:
+        plan = catalog_rag_index_plan(session, tenant_id, catalog_root)
+        md_files = sorted(catalog_root.glob("*.md"))
+        logs.append(
+            f"index plan: {len(plan.needs_embed)} to embed, "
+            f"{len(plan.already_indexed)} already indexed"
         )
-    )
+    elif paths_to_reindex:
+        md_files = sorted({path.resolve() for path in paths_to_reindex if path.is_file()})
+    else:
+        md_files = []
+        logs.append("skipped RAG ingest (no catalog file changes)")
+
+    batch_commit = commit_each_batch or len(md_files) > 50
+    if md_files:
+        logs.extend(
+            sync_svc.ingest_paths_batched(
+                md_files,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                commit_each_batch=batch_commit,
+                on_file_done=on_file_done,
+            )
+        )
+    logs.extend(sync_svc.maybe_optimize())
     return logs
 
 
@@ -213,6 +319,9 @@ def sync_erpnext_catalog_for_tenant(
     client: ErpNextClient | None = None,
     batch_size: int = 100,
     pause_seconds: float = 0.0,
+    force_rag_reconcile: bool = False,
+    on_file_done: Callable[[Path, str], None] | None = None,
+    commit_each_batch: bool = False,
 ) -> CatalogSyncResult:
     erp_client = client or ErpNextClient(config)
     include_stock = catalog_include_stock(config)
@@ -228,7 +337,7 @@ def sync_erpnext_catalog_for_tenant(
     except Exception as exc:
         return CatalogSyncResult(ok=False, message=str(exc))
 
-    written, removed, file_logs = sync_catalog_files(
+    file_result = sync_catalog_files(
         settings,
         tenant_slug,
         items,
@@ -237,32 +346,45 @@ def sync_erpnext_catalog_for_tenant(
         price_by_code=price_by_code,
         sync_date=sync_date,
     )
+    paths_to_reindex = file_result.changed_paths
     try:
         rag_logs = reconcile_catalog_rag(
             session,
             settings=settings,
             tenant_id=tenant_id,
             slug=tenant_slug,
+            paths_to_reindex=paths_to_reindex,
+            reconcile_all=force_rag_reconcile,
             batch_size=batch_size,
             pause_seconds=pause_seconds,
+            on_file_done=on_file_done,
+            commit_each_batch=commit_each_batch,
         )
     except Exception as exc:
         return CatalogSyncResult(
             ok=False,
             message=str(exc),
             item_count=len(items),
-            files_written=written,
-            files_removed=removed,
-            logs=file_logs,
+            files_written=file_result.written,
+            files_removed=file_result.removed,
+            logs=file_result.logs,
         )
+
+    rag_indexed = sum(1 for line in rag_logs if line.startswith("ingested "))
+    message = f"Catalog synced: {len(items)} items"
+    if file_result.written == 0 and file_result.removed == 0 and not force_rag_reconcile:
+        message += " (no file changes, RAG ingest skipped)"
+    elif rag_indexed:
+        message += f" ({rag_indexed} files re-indexed)"
 
     return CatalogSyncResult(
         ok=True,
-        message=f"Catalog synced: {len(items)} items",
+        message=message,
         item_count=len(items),
-        files_written=written,
-        files_removed=removed,
-        logs=file_logs + rag_logs,
+        files_written=file_result.written,
+        files_removed=file_result.removed,
+        rag_files_indexed=rag_indexed,
+        logs=file_result.logs + rag_logs,
     )
 
 

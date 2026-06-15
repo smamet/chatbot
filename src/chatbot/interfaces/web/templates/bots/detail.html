@@ -196,8 +196,9 @@
     <h2 class="card-title">Upload &amp; sync</h2>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/documents" enctype="multipart/form-data" id="doc-upload-form">
       <label>Upload files<input type="file" name="files" multiple></label>
+      <p class="field-hint">Upload and delete sync the index automatically. Use <strong>Sync documents</strong> for fresh sync or after editing files on disk.</p>
       <div class="form-actions">
-        <button type="submit" class="btn-primary" data-loading="Uploading…">Upload</button>
+        <button type="submit" class="btn-primary" data-loading="Uploading &amp; syncing…">Upload</button>
       </div>
     </form>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/sync" id="doc-sync-form" class="form-actions--bordered">
@@ -1214,6 +1215,19 @@
       <button type="submit" class="btn-secondary btn-sm">Clear history</button>
     </form>
   </div>
+  {% if show_chat_channel_selector %}
+  <div class="form-grid chat-channel-grid">
+    <label>Simulate channel
+      <select id="chat-test-channel">
+        <option value="">Auto (direct)</option>
+        {% for c in chat_outbound_connectors %}
+        <option value="{{ c.type }}">{{ c.type }} — {{ c.mode }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <p class="text-muted field-hint">Choose a channel to queue replies for validation like production (e.g. email WYSIWYG). Auto keeps direct quote creation.</p>
+  {% endif %}
   {% if has_customer_integration %}
   <div class="form-grid chat-identity-grid">
     <label>Test email<input type="email" id="chat-test-email" value="{{ chat_test_email }}" placeholder="customer@example.com"></label>
@@ -1221,8 +1235,15 @@
   </div>
   <p class="text-muted field-hint">
     Optional — email and phone are both sent to ERPNext / QuickBooks when filled (better customer match).
+    Required when simulating <strong>email</strong>.
     <button type="button" class="btn-ghost btn-sm" id="chat-clear-identity">Clear identity (anonymous test)</button>
   </p>
+  {% elif show_chat_channel_selector %}
+  <div class="form-grid chat-identity-grid">
+    <label>Test email<input type="email" id="chat-test-email" value="{{ chat_test_email }}" placeholder="customer@example.com"></label>
+    <label>Test phone<input type="text" id="chat-test-phone" value="{{ chat_test_phone }}" placeholder="+33612345678"></label>
+  </div>
+  <p class="text-muted field-hint">Test email is required when simulating <strong>email</strong>.</p>
   {% endif %}
   <div class="chat-thread" id="chat-thread"></div>
   <script id="chat-initial" type="application/json">{{ chat_messages_json|safe }}</script>

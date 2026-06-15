@@ -8,9 +8,11 @@ from chatbot.adapters.persistence.engine import create_db_engine, session_factor
 from chatbot.adapters.persistence.tenant_paths import safe_catalog_filename, tenant_catalog_dir
 from chatbot.application.erpnext_catalog_sync_service import (
     catalog_price_list,
+    catalog_rag_index_plan,
     catalog_sync_due,
     catalog_sync_enabled,
     render_item_markdown,
+    reconcile_catalog_rag,
     sync_catalog_files,
     sync_erpnext_catalog_for_tenant,
 )
@@ -261,7 +263,7 @@ def test_sync_catalog_files_writes_prunes_and_skips_unchanged(
     stale = root / "OLD.md"
     stale.write_text("# old\n", encoding="utf-8")
 
-    written1, removed1, _ = sync_catalog_files(
+    result1 = sync_catalog_files(
         test_settings,
         slug,
         items,
@@ -269,13 +271,14 @@ def test_sync_catalog_files_writes_prunes_and_skips_unchanged(
         include_stock=True,
         sync_date="2026-06-09 12:00 UTC",
     )
-    assert written1 == 2
-    assert removed1 == 1
+    assert result1.written == 2
+    assert result1.removed == 1
+    assert len(result1.changed_paths) == 2
     assert not stale.exists()
     assert (root / "KEEP.md").is_file()
     assert (root / "NEW.md").is_file()
 
-    written2, removed2, _ = sync_catalog_files(
+    result2 = sync_catalog_files(
         test_settings,
         slug,
         items,
@@ -283,8 +286,51 @@ def test_sync_catalog_files_writes_prunes_and_skips_unchanged(
         include_stock=True,
         sync_date="2026-06-09 12:00 UTC",
     )
-    assert written2 == 0
-    assert removed2 == 0
+    assert result2.written == 0
+    assert result2.removed == 0
+    assert result2.changed_paths == []
+
+
+def test_sync_catalog_files_skips_write_when_only_sync_date_changes(
+    test_settings: SettingsForTests,
+) -> None:
+    slug = "catalog-sync-date-bot"
+    items = [
+        {
+            "item_code": "KEEP",
+            "item_name": "Keep me",
+            "standard_rate": 1,
+            "stock_uom": "Nos",
+        },
+    ]
+    root = tenant_catalog_dir(test_settings, slug)
+
+    result1 = sync_catalog_files(
+        test_settings,
+        slug,
+        items,
+        {"KEEP": 4},
+        include_stock=True,
+        sync_date="2026-06-14 10:00 UTC",
+    )
+    assert result1.written == 1
+    content = (root / "KEEP.md").read_text(encoding="utf-8")
+    assert "Stock/price as of: 2026-06-14 10:00 UTC" in content
+
+    result2 = sync_catalog_files(
+        test_settings,
+        slug,
+        items,
+        {"KEEP": 4},
+        include_stock=True,
+        sync_date="2026-06-14 11:00 UTC",
+    )
+    assert result2.written == 0
+    assert result2.removed == 0
+    assert result2.changed_paths == []
+    assert "Stock/price as of: 2026-06-14 10:00 UTC" in (root / "KEEP.md").read_text(
+        encoding="utf-8"
+    )
 
 
 def test_sync_catalog_files_writes_price_from_price_list(
@@ -292,7 +338,7 @@ def test_sync_catalog_files_writes_price_from_price_list(
 ) -> None:
     slug = "catalog-price-bot"
     items = [{"item_code": "8.2.7", "item_name": "Keyboard", "standard_rate": 0, "stock_uom": "Nos"}]
-    written, _, _ = sync_catalog_files(
+    result = sync_catalog_files(
         test_settings,
         slug,
         items,
@@ -307,9 +353,54 @@ def test_sync_catalog_files_writes_price_from_price_list(
         },
         sync_date="2026-06-09 12:00 UTC",
     )
-    assert written == 1
+    assert result.written == 1
     content = (tenant_catalog_dir(test_settings, slug) / "8.2.7.md").read_text(encoding="utf-8")
     assert "Price: 34176 MUR (Standard Selling)" in content
+
+
+def test_sync_catalog_files_duplicate_item_codes_are_stable(
+    test_settings: SettingsForTests,
+) -> None:
+    slug = "catalog-dup-bot"
+    items = [
+        {
+            "item_code": "DS-7616NXI-K2/16P",
+            "item_name": "Slash code",
+            "standard_rate": 1,
+            "stock_uom": "Nos",
+        },
+        {
+            "item_code": "DS-7616NXI-K2-16P",
+            "item_name": "Dash code",
+            "standard_rate": 1,
+            "stock_uom": "Nos",
+        },
+    ]
+    root = tenant_catalog_dir(test_settings, slug)
+    path = root / "DS-7616NXI-K2-16P.md"
+
+    result1 = sync_catalog_files(
+        test_settings,
+        slug,
+        items,
+        {},
+        include_stock=False,
+        sync_date="2026-06-14 10:00 UTC",
+    )
+    assert result1.written == 1
+    first = path.read_text(encoding="utf-8")
+
+    result2 = sync_catalog_files(
+        test_settings,
+        slug,
+        items,
+        {},
+        include_stock=False,
+        sync_date="2026-06-14 11:00 UTC",
+    )
+    assert result2.written == 0
+    assert path.read_text(encoding="utf-8") == first
+    assert any("shared by 2 item codes" in line for line in result1.logs)
 
 
 def test_catalog_sync_due_respects_interval() -> None:
@@ -344,7 +435,15 @@ def test_sync_erpnext_catalog_for_tenant_batches_rag(
 
     ingest_calls: list[int] = []
 
-    def fake_batched(self, paths, *, batch_size=100, pause_seconds=0.0):
+    def fake_batched(
+        self,
+        paths,
+        *,
+        batch_size=100,
+        pause_seconds=0.0,
+        commit_each_batch=False,
+        on_file_done=None,
+    ):
         ingest_calls.append(len(paths))
         return [f"ingested:{len(paths)}"]
 
@@ -372,6 +471,58 @@ def test_sync_erpnext_catalog_for_tenant_batches_rag(
     path = tenant_catalog_dir(test_settings, tenant.slug) / "ITEM-1.md"
     assert path.is_file()
     client.fetch_price_list_rates.assert_called_once_with("Standard Selling")
+
+
+def test_sync_erpnext_catalog_skips_rag_when_no_file_changes(
+    test_settings: SettingsForTests,
+    test_tenant,
+) -> None:
+    tenant, _ = test_tenant
+    slug = tenant.slug
+    client = MagicMock()
+    client.list_catalog_items.return_value = [
+        {
+            "item_code": "ITEM-1",
+            "item_name": "One",
+            "standard_rate": 1,
+            "stock_uom": "Nos",
+        }
+    ]
+    client.fetch_stock_totals.return_value = {"ITEM-1": 3}
+    client.fetch_price_list_rates.return_value = {}
+
+    with patch.object(IngestSyncService, "ingest_paths_batched") as mock_ingest, patch.object(
+        IngestSyncService, "maybe_optimize", return_value=[]
+    ), patch(
+        "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
+    ), patch("chatbot.application.erpnext_catalog_sync_service.LanceVectorStore"):
+        engine = create_db_engine(test_settings, for_tests=True)
+        factory = session_factory(engine)
+        with factory() as session:
+            sync_erpnext_catalog_for_tenant(
+                session,
+                settings=test_settings,
+                tenant_id=tenant.id,
+                tenant_slug=slug,
+                config={"sync_catalog_to_rag": True},
+                client=client,
+            )
+            mock_ingest.reset_mock()
+            result = sync_erpnext_catalog_for_tenant(
+                session,
+                settings=test_settings,
+                tenant_id=tenant.id,
+                tenant_slug=slug,
+                config={"sync_catalog_to_rag": True},
+                client=client,
+            )
+        engine.dispose()
+
+    assert result.ok is True
+    assert result.files_written == 0
+    assert result.rag_files_indexed == 0
+    assert "RAG ingest skipped" in result.message
+    mock_ingest.assert_not_called()
 
 
 def test_sync_skips_price_fetch_when_price_list_blank(
@@ -402,6 +553,107 @@ def test_sync_skips_price_fetch_when_price_list_blank(
         engine.dispose()
 
     client.fetch_price_list_rates.assert_not_called()
+
+
+def test_reconcile_catalog_rag_skips_ingest_when_no_paths(
+    test_settings: SettingsForTests,
+    test_tenant,
+) -> None:
+    tenant, _ = test_tenant
+    catalog_dir = tenant_catalog_dir(test_settings, tenant.slug)
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    (catalog_dir / "ITEM-1.md").write_text("# One\n", encoding="utf-8")
+
+    with patch.object(
+        IngestSyncService,
+        "ingest_paths_batched",
+        return_value=["should-not-run"],
+    ) as mock_ingest, patch(
+        "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
+    ), patch("chatbot.application.erpnext_catalog_sync_service.LanceVectorStore"):
+        engine = create_db_engine(test_settings, for_tests=True)
+        factory = session_factory(engine)
+        with factory() as session:
+            logs = reconcile_catalog_rag(
+                session,
+                settings=test_settings,
+                tenant_id=tenant.id,
+                slug=tenant.slug,
+                paths_to_reindex=[],
+            )
+        engine.dispose()
+
+    mock_ingest.assert_not_called()
+    assert any("skipped RAG ingest" in line for line in logs)
+
+
+def test_reconcile_catalog_rag_calls_optimize(
+    test_settings: SettingsForTests,
+    test_tenant,
+) -> None:
+    tenant, _ = test_tenant
+    catalog_dir = tenant_catalog_dir(test_settings, tenant.slug)
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    (catalog_dir / "ITEM-1.md").write_text("# One\n", encoding="utf-8")
+
+    with patch.object(
+        IngestSyncService,
+        "ingest_paths_batched",
+        return_value=["unchanged: item"],
+    ), patch.object(
+        IngestSyncService,
+        "maybe_optimize",
+        return_value=["optimized LanceDB table (stats)"],
+    ) as mock_optimize, patch(
+        "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
+    ), patch("chatbot.application.erpnext_catalog_sync_service.LanceVectorStore"):
+        engine = create_db_engine(test_settings, for_tests=True)
+        factory = session_factory(engine)
+        with factory() as session:
+            logs = reconcile_catalog_rag(
+                session,
+                settings=test_settings,
+                tenant_id=tenant.id,
+                slug=tenant.slug,
+                paths_to_reindex=[catalog_dir / "ITEM-1.md"],
+            )
+        engine.dispose()
+
+    mock_optimize.assert_called_once()
+    assert "optimized LanceDB table" in logs[-1]
+
+
+def test_catalog_rag_index_plan_splits_missing_and_indexed(
+    test_settings: SettingsForTests,
+    test_tenant,
+) -> None:
+    from chatbot.adapters.persistence.orm import IngestedFileRow
+    from chatbot.application.ingest_service import file_content_hash
+
+    tenant, _ = test_tenant
+    catalog_dir = tenant_catalog_dir(test_settings, tenant.slug)
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    indexed_path = catalog_dir / "indexed.md"
+    missing_path = catalog_dir / "missing.md"
+    indexed_path.write_text("# indexed\n", encoding="utf-8")
+    missing_path.write_text("# missing\n", encoding="utf-8")
+
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    with factory() as session:
+        session.add(
+            IngestedFileRow(
+                tenant_id=tenant.id,
+                path=str(indexed_path.resolve()),
+                content_hash=file_content_hash(indexed_path),
+            )
+        )
+        session.commit()
+        plan = catalog_rag_index_plan(session, tenant.id, catalog_dir)
+    engine.dispose()
+
+    assert missing_path in plan.needs_embed
+    assert indexed_path in plan.already_indexed
 
 
 def test_apply_catalog_rag_transition_purges_on_disable(test_settings, test_tenant) -> None:

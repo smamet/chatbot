@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from pathlib import Path
 
 import lancedb
@@ -65,3 +66,15 @@ class LanceVectorStore:
                 )
             )
         return out
+
+    def optimize(self, *, cleanup_older_than: timedelta | None = None) -> str | None:
+        if self._TABLE not in self._db.table_names():
+            return None
+        tbl = self._db.open_table(self._TABLE)
+        if tbl.count_rows() == 0:
+            return None
+        kwargs: dict[str, timedelta] = {}
+        if cleanup_older_than is not None:
+            kwargs["cleanup_older_than"] = cleanup_older_than
+        stats = tbl.optimize(**kwargs)
+        return f"optimized LanceDB table ({stats})"

@@ -7,9 +7,14 @@ import typer
 
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir, tenant_lancedb_dir
+from chatbot.adapters.persistence.tenant_paths import tenant_catalog_dir, tenant_docs_dir, tenant_lancedb_dir
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
+from chatbot.application.erpnext_catalog_sync_service import (
+    catalog_rag_index_plan,
+    reconcile_catalog_rag,
+    sync_erpnext_catalog_for_tenant,
+)
 from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
@@ -17,6 +22,8 @@ from chatbot.config.settings import get_settings
 from chatbot.domain.models.tenant import TenantConfig
 
 app = typer.Typer(no_args_is_help=True, help="Multi-tenant chatbot CLI.")
+catalog_rag_app = typer.Typer(no_args_is_help=True, help="Catalog RAG index (shared with dashboard/worker).")
+app.add_typer(catalog_rag_app, name="catalog-rag")
 
 
 def _resolve_password(password: str | None, *, command_hint: str) -> str:
@@ -70,6 +77,143 @@ def sync_cmd(
         for line in svc.reconcile_root(root, fresh=fresh):
             typer.echo(line)
         session.commit()
+
+
+def _catalog_rag_on_file_done(progress, task_id):
+    def callback(path: Path, log_line: str) -> None:
+        progress.advance(task_id)
+        progress.console.print(f"  {path.name}: {log_line}")
+
+    return callback
+
+
+def _catalog_rag_progress(**kwargs):
+    from rich.console import Console
+    from rich.progress import BarColumn, Progress, TaskProgressColumn, TextColumn, TimeRemainingColumn
+
+    return Progress(
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        TimeRemainingColumn(),
+        console=Console(stderr=True),
+        **kwargs,
+    )
+
+
+@catalog_rag_app.command("rebuild")
+def catalog_rag_rebuild_cmd(
+    slug: Annotated[str, typer.Argument(help="Tenant slug")],
+    all_files: Annotated[
+        bool,
+        typer.Option("--all", help="Scan all catalog files (unchanged still skip embedding)"),
+    ] = False,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Show index plan only")] = False,
+) -> None:
+    """Resume or rebuild catalog RAG index (missing/changed files only by default)."""
+    settings = get_settings()
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+    with factory() as session:
+        tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
+        tenant = tenant_svc.get_by_slug(slug)
+        if tenant is None:
+            typer.echo(f"Unknown tenant slug: {slug}", err=True)
+            raise typer.Exit(1)
+
+        catalog_root = tenant_catalog_dir(settings, slug)
+        plan = catalog_rag_index_plan(session, tenant.id, catalog_root)
+        total = len(list(catalog_root.glob("*.md"))) if all_files else len(plan.needs_embed)
+
+        typer.echo(
+            f"Catalog: {len(plan.needs_embed) + len(plan.already_indexed)} files, "
+            f"{len(plan.needs_embed)} need embedding, "
+            f"{len(plan.already_indexed)} already indexed"
+        )
+        if dry_run:
+            typer.echo(f"Dry run: would process {total} file(s)")
+            return
+
+        if total == 0:
+            typer.echo("Nothing to embed.")
+            return
+
+        with _catalog_rag_progress() as progress:
+            task_id = progress.add_task("Embedding catalog", total=total)
+            logs = reconcile_catalog_rag(
+                session,
+                settings=settings,
+                tenant_id=tenant.id,
+                slug=slug,
+                paths_to_reindex=plan.needs_embed if not all_files else None,
+                reconcile_all=all_files,
+                on_file_done=_catalog_rag_on_file_done(progress, task_id),
+                commit_each_batch=True,
+            )
+        session.commit()
+
+    for line in logs:
+        if line.startswith(("ingested ", "unchanged:")):
+            continue
+        typer.echo(line)
+
+
+@catalog_rag_app.command("sync")
+def catalog_rag_sync_cmd(
+    slug: Annotated[str, typer.Argument(help="Tenant slug")],
+    all_files: Annotated[
+        bool,
+        typer.Option("--all", help="Force full catalog RAG reconcile after ERP sync"),
+    ] = False,
+) -> None:
+    """Fetch ERPNext catalog and reconcile RAG (same as dashboard Sync catalog now)."""
+    from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+    from chatbot.application.integration_service import IntegrationService
+    from chatbot.domain.models.integration import IntegrationType
+
+    settings = get_settings()
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+    with factory() as session:
+        tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
+        tenant = tenant_svc.get_by_slug(slug)
+        if tenant is None:
+            typer.echo(f"Unknown tenant slug: {slug}", err=True)
+            raise typer.Exit(1)
+
+        integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
+            tenant.id,
+            type=IntegrationType.ERPNEXT,
+        )
+        if integration is None:
+            typer.echo(f"No active ERPNext integration for {slug}", err=True)
+            raise typer.Exit(1)
+
+        catalog_root = tenant_catalog_dir(settings, slug)
+        plan = catalog_rag_index_plan(session, tenant.id, catalog_root)
+        embed_total = len(list(catalog_root.glob("*.md"))) if all_files else len(plan.needs_embed)
+
+        with _catalog_rag_progress(disable=embed_total == 0) as progress:
+            task_id = progress.add_task("Embedding catalog", total=max(embed_total, 1))
+            result = sync_erpnext_catalog_for_tenant(
+                session,
+                settings=settings,
+                tenant_id=tenant.id,
+                tenant_slug=slug,
+                config=integration.config,
+                force_rag_reconcile=all_files,
+                on_file_done=_catalog_rag_on_file_done(progress, task_id),
+                commit_each_batch=True,
+            )
+        session.commit()
+
+    typer.echo(result.message)
+    if not result.ok:
+        raise typer.Exit(1)
+    for line in result.logs:
+        if line.startswith(("ingested ", "unchanged:", "wrote:", "removed:")):
+            continue
+        typer.echo(line)
 
 
 @app.command("user-create")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Protocol, runtime_checkable
 
 
@@ -34,4 +35,8 @@ class VectorStore(Protocol):
         ...
 
     def search(self, query_vector: list[float], *, top_k: int) -> list[RetrievedChunk]:
+        ...
+
+    def optimize(self, *, cleanup_older_than: timedelta | None = None) -> str | None:
+        """Compact table and prune old LanceDB versions; return log line or None if skipped."""
         ...

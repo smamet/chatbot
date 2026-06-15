@@ -34,7 +34,7 @@ from chatbot.application.bot_bundle_service import (
 )
 from chatbot.adapters.erpnext.client import ErpNextClient
 from chatbot.adapters.mail.body_format import email_draft_html_from_markdown
-from chatbot.application.channel_outbound import approve_pending_reply
+from chatbot.application.channel_outbound import approve_pending_reply, get_outbound_connector
 from chatbot.application.customer_access_gate import build_channel_session_id, resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
 from chatbot.application.erpnext_catalog_sync_service import (
@@ -489,6 +489,73 @@ def _first_active_outbound_connector(session: Session, tenant_id: int) -> Connec
         if conn.direction == ConnectorDirection.OUT and conn.active:
             return conn
     return None
+
+
+def _normalize_chat_test_channel(channel: str) -> str:
+    return (channel or "").strip().lower()
+
+
+def _is_simulated_chat_channel(channel: str) -> bool:
+    normalized = _normalize_chat_test_channel(channel)
+    return bool(normalized) and normalized != "auto"
+
+
+def _outbound_connector_for_chat_test(
+    session: Session, tenant_id: int, *, channel: str
+) -> tuple[Connector | None, str | None]:
+    if _is_simulated_chat_channel(channel):
+        normalized = _normalize_chat_test_channel(channel)
+        try:
+            connector_type = ConnectorType(normalized)
+        except ValueError:
+            return None, f"Unknown channel: {normalized}"
+        svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+        conn = get_outbound_connector(svc, tenant_id, connector_type)
+        if conn is None:
+            return None, f"No active outbound {normalized} connector is configured."
+        return conn, None
+    return _first_active_outbound_connector(session, tenant_id), None
+
+
+def _apply_simulated_channel_outbound(
+    session: Session,
+    *,
+    tenant: Tenant,
+    slug: str,
+    channel: str,
+    session_id: str,
+    test_email: str,
+    test_phone: str,
+    result,
+    settings: Settings,
+) -> tuple[str | None, bool, int | None, str | None]:
+    """Mirror mail worker: always route through queue_after_chat for simulated channels."""
+    connector, connector_error = _outbound_connector_for_chat_test(
+        session, tenant.id, channel=channel
+    )
+    if connector is None:
+        return connector_error, False, None, None
+    email, phone = resolve_manual_identity(test_email=test_email, test_phone=test_phone)
+    simulated = _normalize_chat_test_channel(channel)
+    if simulated == ConnectorType.EMAIL.value and not email:
+        return "Set Test email to simulate an email reply.", False, None, None
+    recipient_id = email or phone or session_id
+    queue_status, pending = queue_after_chat(
+        session,
+        tenant_id=tenant.id,
+        connector=connector,
+        session_id=session_id,
+        recipient_id=recipient_id,
+        result=result,
+        settings=settings,
+        tenant_slug=slug,
+    )
+    validation_url = f"/dashboard/bots/{slug}?tab=validation"
+    if queue_status == "queued" and pending is not None:
+        return f"Reply queued for validation ({simulated}).", True, pending.id, validation_url
+    if queue_status == "ok":
+        return f"Reply sent via {simulated} (connector direct mode).", False, None, None
+    return "Reply was not queued.", False, None, None
 
 
 def _run_dashboard_chat(
@@ -998,6 +1065,12 @@ def bot_detail(
                     "message": f"Quotation: {session_row.last_quote_name}",
                 }
         ctx["chat_quote_pdf_json"] = json.dumps(chat_quote_pdf) if chat_quote_pdf else "null"
+        ctx["chat_outbound_connectors"] = [
+            {"type": c.type.value, "mode": c.mode.value}
+            for c in connectors
+            if c.direction == ConnectorDirection.OUT and c.active
+        ]
+        ctx["show_chat_channel_selector"] = bool(ctx["chat_outbound_connectors"])
     elif tab == "validation":
         ctx["pending_replies"] = pending_repo.list_pending(tenant.id)
         ctx["pending_replies_ui"] = _pending_replies_for_ui(
@@ -1235,6 +1308,27 @@ def bot_restore_hook_instructions(
     )
 
 
+def _reconcile_tenant_documents(
+    session: Session,
+    *,
+    settings: Settings,
+    tenant: Tenant,
+    fresh: bool = False,
+) -> list[str]:
+    merged = merge_tenant_settings(settings, tenant)
+    docs = tenant_docs_dir(settings, tenant.slug)
+    store = LanceVectorStore(settings.lancedb_root / tenant.slug)
+    embedder = GeminiEmbedder()
+    sync_svc = IngestSyncService(
+        settings=merged,
+        embedder=embedder,
+        vector_store=store,
+        session=session,
+        tenant_id=tenant.id,
+    )
+    return sync_svc.reconcile_root(docs, fresh=fresh)
+
+
 @router.post("/bots/{slug}/documents")
 async def bot_upload_documents(
     request: Request,
@@ -1254,12 +1348,16 @@ async def bot_upload_documents(
         dest = docs / name
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(await f.read())
+    request.session["sync_logs"] = _reconcile_tenant_documents(
+        session, settings=settings, tenant=tenant, fresh=False
+    )
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=documents", status_code=303)
 
 
 @router.post("/bots/{slug}/documents/delete")
 def bot_delete_document(
+    request: Request,
     slug: str,
     path: str = Form(...),
     user: User = Depends(require_editor),
@@ -1279,6 +1377,9 @@ def bot_delete_document(
         raise HTTPException(status_code=400, detail="Invalid path")
     if target.is_file():
         target.unlink()
+    request.session["sync_logs"] = _reconcile_tenant_documents(
+        session, settings=settings, tenant=tenant, fresh=False
+    )
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=documents", status_code=303)
 
@@ -1296,18 +1397,12 @@ def bot_sync_documents(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    merged = merge_tenant_settings(settings, tenant)
-    docs = tenant_docs_dir(settings, slug)
-    store = LanceVectorStore(settings.lancedb_root / slug)
-    embedder = GeminiEmbedder()
-    sync_svc = IngestSyncService(
-        settings=merged,
-        embedder=embedder,
-        vector_store=store,
-        session=session,
-        tenant_id=tenant.id,
+    request.session["sync_logs"] = _reconcile_tenant_documents(
+        session,
+        settings=settings,
+        tenant=tenant,
+        fresh=fresh == "on",
     )
-    request.session["sync_logs"] = sync_svc.reconcile_root(docs, fresh=fresh == "on")
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=documents", status_code=303)
 
@@ -1688,6 +1783,7 @@ def _run_catalog_sync_background(
     tenant_slug: str,
     integration_id: int,
     config: dict,
+    force_rag_reconcile: bool = False,
 ) -> None:
     engine = create_db_engine(settings)
     factory = session_factory(engine)
@@ -1699,6 +1795,7 @@ def _run_catalog_sync_background(
                 tenant_id=tenant_id,
                 tenant_slug=tenant_slug,
                 config=config,
+                force_rag_reconcile=force_rag_reconcile,
             )
             update_catalog_sync_metadata(session, integration_id, result=result)
             session.commit()
@@ -1717,6 +1814,7 @@ def _run_catalog_sync_background(
 @router.post("/bots/{slug}/integrations/erpnext/sync-catalog")
 async def sync_erpnext_catalog(
     slug: str,
+    force_rag: str = Form(""),
     user: User = Depends(require_editor),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -1746,6 +1844,7 @@ async def sync_erpnext_catalog(
             "tenant_slug": tenant.slug,
             "integration_id": integration.id,
             "config": config,
+            "force_rag_reconcile": force_rag.strip().lower() in ("on", "1", "true", "yes"),
         },
         daemon=True,
     )
@@ -2234,6 +2333,7 @@ def bot_chat_test_send(
     test_email: str = Form(""),
     test_phone: str = Form(""),
     test_session: str = Form(""),
+    channel: str = Form(""),
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -2267,7 +2367,21 @@ def bot_chat_test_send(
         pdf_warning: str | None = None
         if _is_trackable_test_session(session_id):
             TestChatSessionRepository(session, tenant.id).upsert(session_id)
-        if hook_type:
+        if _is_simulated_chat_channel(channel):
+            status_message, queued, pending_reply_id, validation_url = (
+                _apply_simulated_channel_outbound(
+                    session,
+                    tenant=tenant,
+                    slug=slug,
+                    channel=channel,
+                    session_id=session_id,
+                    test_email=test_email,
+                    test_phone=test_phone,
+                    result=result,
+                    settings=settings,
+                )
+            )
+        elif hook_type:
             connector = _first_active_outbound_connector(session, tenant.id)
             if connector is None:
                 status_message = (

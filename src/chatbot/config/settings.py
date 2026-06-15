@@ -36,6 +36,13 @@ class Settings(BaseSettings):
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     chat_model: str = Field(default="gemini-2.0-flash", validation_alias="CHAT_MODEL")
     embedding_model: str = Field(default="gemini-embedding-001", validation_alias="EMBEDDING_MODEL")
+    embed_retry_max: int = Field(default=5, validation_alias="EMBED_RETRY_MAX")
+    embed_retry_base_429_seconds: float = Field(
+        default=30.0, validation_alias="EMBED_RETRY_BASE_429_SECONDS"
+    )
+    embed_retry_base_503_seconds: float = Field(
+        default=5.0, validation_alias="EMBED_RETRY_BASE_503_SECONDS"
+    )
     rewrite_model: str = Field(default="gemini-2.0-flash", validation_alias="REWRITE_MODEL")
 
     database_url: str = Field(
@@ -53,6 +60,12 @@ class Settings(BaseSettings):
     chunk_overlap: int = Field(default=100, validation_alias="CHUNK_OVERLAP")
     rag_rewrite_lang_filter: bool = Field(default=True, validation_alias="RAG_REWRITE_LANG_FILTER")
     rag_verbose: bool = Field(default=False, validation_alias="RAG_VERBOSE")
+    lancedb_optimize_after_sync: bool = Field(
+        default=True, validation_alias="LANCEDB_OPTIMIZE_AFTER_SYNC"
+    )
+    lancedb_cleanup_older_than_days: int = Field(
+        default=1, validation_alias="LANCEDB_CLEANUP_OLDER_THAN_DAYS"
+    )
 
     order_modification_window_hours: int = Field(
         default=6, validation_alias="ORDER_MODIFICATION_WINDOW_HOURS"

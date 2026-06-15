@@ -16,6 +16,7 @@
   const sessionLabelEl = document.getElementById("chat-session-label");
   const testEmailInput = document.getElementById("chat-test-email");
   const testPhoneInput = document.getElementById("chat-test-phone");
+  const testChannelSelect = document.getElementById("chat-test-channel");
   const resetEmailInput = document.getElementById("chat-reset-email");
   const resetPhoneInput = document.getElementById("chat-reset-phone");
   const resetTestSessionInput = document.getElementById("chat-reset-test-session");
@@ -77,12 +78,13 @@
         return {
           email: String(parsed.email ?? "").trim(),
           phone: String(parsed.phone ?? "").trim(),
+          channel: String(parsed.channel ?? "").trim(),
         };
       }
     } catch (_) {
       /* ignore corrupt storage */
     }
-    return { email: "", phone: "" };
+    return { email: "", phone: "", channel: "" };
   }
 
   function clearStoredIdentity() {
@@ -94,24 +96,37 @@
     }
   }
 
-  function saveStoredIdentity(email, phone) {
+  function saveStoredIdentity(email, phone, channel = "") {
     try {
-      localStorage.setItem(identityStorageKey, JSON.stringify({ email, phone }));
+      localStorage.setItem(
+        identityStorageKey,
+        JSON.stringify({ email, phone, channel: channel || "" })
+      );
     } catch (_) {
       /* ignore quota / private mode */
     }
+  }
+
+  function channelValue() {
+    return testChannelSelect?.value?.trim() || "";
   }
 
   function initIdentityFields() {
     if (!testEmailInput && !testPhoneInput) return;
     const urlEmail = testEmailInput?.value?.trim() || "";
     const urlPhone = testPhoneInput?.value?.trim() || "";
+    const stored = loadStoredIdentity();
     if (urlEmail || urlPhone) {
-      saveStoredIdentity(urlEmail, urlPhone);
+      saveStoredIdentity(urlEmail, urlPhone, stored.channel);
     } else {
-      const { email, phone } = loadStoredIdentity();
-      if (testEmailInput) testEmailInput.value = email;
-      if (testPhoneInput) testPhoneInput.value = phone;
+      if (testEmailInput) testEmailInput.value = stored.email;
+      if (testPhoneInput) testPhoneInput.value = stored.phone;
+    }
+    if (testChannelSelect && stored.channel) {
+      const hasOption = Array.from(testChannelSelect.options).some(
+        (opt) => opt.value === stored.channel
+      );
+      if (hasOption) testChannelSelect.value = stored.channel;
     }
     syncIdentityFields();
   }
@@ -212,7 +227,7 @@
 
   function showHookStatus(data) {
     if (!hookStatusEl) return;
-    if (!data || (!data.pdf_url && !data.queued && !data.hook_type && !data.message)) {
+    if (!data || (!data.pdf_url && !data.queued && !data.message)) {
       hookStatusEl.hidden = true;
       hookStatusEl.textContent = "";
       return;
@@ -269,7 +284,8 @@
     if (loading || !text.trim()) return;
     const { email, phone } = identityValues();
     syncIdentityFields();
-    saveStoredIdentity(email, phone);
+    const channel = channelValue();
+    saveStoredIdentity(email, phone, channel);
     abortController = new AbortController();
     setLoading(true);
     appendMessage("user", text.trim());
@@ -281,6 +297,7 @@
     body.append("test_email", email);
     body.append("test_phone", phone);
     body.append("test_session", anonymousTestSessionForSend());
+    body.append("channel", channel);
 
     try {
       const res = await fetch(sendUrl, {
@@ -348,13 +365,17 @@
 
   testEmailInput?.addEventListener("input", () => {
     const { email, phone } = identityValues();
-    saveStoredIdentity(email, phone);
+    saveStoredIdentity(email, phone, channelValue());
     syncIdentityFields();
   });
   testPhoneInput?.addEventListener("input", () => {
     const { email, phone } = identityValues();
-    saveStoredIdentity(email, phone);
+    saveStoredIdentity(email, phone, channelValue());
     syncIdentityFields();
+  });
+  testChannelSelect?.addEventListener("change", () => {
+    const { email, phone } = identityValues();
+    saveStoredIdentity(email, phone, channelValue());
   });
 
   document.getElementById("chat-clear-identity")?.addEventListener("click", () => {

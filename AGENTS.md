@@ -7,7 +7,7 @@
 - **RAG sources**: uploaded docs in `data/docs/{slug}/`; ERPNext catalogue snapshots in `data/catalog/{slug}/` (one `.md` per item, isolated from document sync).
 - **Auth**: `POST /c/{slug}/chat` with `Authorization: Bearer <tenant_token>` (token must match slug). Admin API: `ADMIN_TOKEN`. Dashboard: session cookie (`/auth/login`).
 - **Hooks**: LLM appends global marker `===HOOK===` + JSON → `hook_events` → `worker-automation` dispatches **automation modules** (`core.orders` → local DB; `erpnext.quote` → validation queue + ERPNext on approve). Module list per bot in `config_json.automation_modules`. Run `./sail migrate` after pull for `006_mail_drafts_uid_unique`.
-- **ERPNext catalog → RAG**: `worker-catalog` polls tenants with active ERPNext + `sync_catalog_to_rag`; fetches paginated Item + Bin (stock aggregate) + Item Price (`catalog_price_list`, default Standard Selling), writes `data/catalog/{slug}/*.md`, then `IngestSyncService` on that folder only. Price line: Item Price → standard_rate → `not available`. Config in integration schema (`sync_catalog_to_rag`, `catalog_sync_interval_minutes`, `catalog_include_stock`, `catalog_price_list`); runtime metadata in encrypted config (`catalog_last_sync_at`, `catalog_last_item_count`, `catalog_last_error`) — merge-safe, not in schema fields. Manual sync: `POST /dashboard/bots/{slug}/integrations/erpnext/sync-catalog` (background thread).
+- **ERPNext catalog → RAG**: `worker-catalog` polls tenants with active ERPNext + `sync_catalog_to_rag`; fetches paginated Item + Bin (stock aggregate) + Item Price (`catalog_price_list`, default Standard Selling), writes `data/catalog/{slug}/*.md`, then `reconcile_catalog_rag()` → `IngestSyncService.ingest_paths_batched()` on that folder only (never `data/docs/`). Price line: Item Price → standard_rate → `not available`. Config in integration schema (`sync_catalog_to_rag`, `catalog_sync_interval_minutes`, `catalog_include_stock`, `catalog_price_list`); runtime metadata in encrypted config (`catalog_last_sync_at`, `catalog_last_item_count`, `catalog_last_error`) — merge-safe, not in schema fields. Manual sync: dashboard **Sync catalog now** or `./sail chatbot catalog-rag sync {slug}`. Resume partial RAG index: `./sail chatbot catalog-rag rebuild {slug}` (uses `catalog_rag_index_plan()` for missing/changed files). Embedding retries (429/503) live in `GeminiEmbedder` only — shared by UI, workers, CLI, document sync.
 - **Connectors**: per-tenant channel creds in `connectors.config_enc` (Fernet via `APP_SECRET_KEY`).
 
 ## Docker (Sail)
@@ -45,6 +45,15 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `work
 - `catalog_price_list`: absent → `Standard Selling`; empty string → Item Price skipped (standard_rate only). Never emit price `0.0` in markdown.
 - Do not call document `reconcile_root` on `data/catalog/` or vice versa — separate roots, separate `IngestSyncService` runs.
 - Metadata keys (`catalog_last_*`) are outside the integration schema; `_merge_integration_config` preserves them on dashboard save. Worker re-reads config before writing metadata.
+- **CLI (same pipeline as dashboard/worker):**
+  ```bash
+  ./sail chatbot catalog-rag rebuild {slug}           # resume: embed missing/changed only
+  ./sail chatbot catalog-rag rebuild {slug} --dry-run
+  ./sail chatbot catalog-rag rebuild {slug} --all     # force full catalog scan (unchanged skip embed)
+  ./sail chatbot catalog-rag sync {slug}              # ERPNext fetch + RAG reconcile
+  ```
+- `catalog_rag_index_plan()` → `needs_embed` / `already_indexed` (content hash vs `ingested_files`). `reconcile_catalog_rag(..., on_file_done, commit_each_batch)` — auto `commit_each_batch` when >50 files.
+- **Embedding:** `GeminiEmbedder.embed_texts()` — no fixed RPM throttle; retry 429 (`Retry-After` or 30×2ⁿ s, max 120) and 503 (5×2ⁿ s, max 30). Env: `EMBED_RETRY_MAX`, `EMBED_RETRY_BASE_429_SECONDS`, `EMBED_RETRY_BASE_503_SECONDS`. SDK HTTP retry disabled (`attempts=1`); app loop owns backoff.
 
 ### Run locally (no Docker)
 
@@ -84,7 +93,7 @@ pytest
 # ./sail test
 ```
 
-Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`, `test_erpnext_catalog_sync_service.py`, `test_erpnext_client.py`.
+Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`, `test_erpnext_catalog_sync_service.py`, `test_erpnext_client.py`, `test_gemini_embedder.py`, `test_cli_catalog_rag.py`.
 
 ## Environment (`.env`)
 
@@ -93,6 +102,8 @@ Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.p
 **Storage:** `DATA_ROOT`, `LANCEDB_ROOT`; `DATABASE_URL` (SQLite local, MySQL in Docker).
 
 **Workers:** `HOOK_POLL_SECONDS`, `MAIL_POLL_SECONDS`, `CATALOG_POLL_SECONDS` (catalog worker poll; default 300).
+
+**Embedding retries:** `EMBED_RETRY_MAX` (default 5), `EMBED_RETRY_BASE_429_SECONDS` (30), `EMBED_RETRY_BASE_503_SECONDS` (5).
 
 **Not used anymore:** `CHAT_API_SECRET`, `PROMPT_PATH`, `LANCEDB_PATH`, `WEBHOOK_TENANT_SLUG`.
 
