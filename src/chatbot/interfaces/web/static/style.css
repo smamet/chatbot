@@ -75,7 +75,6 @@ body {
   text-decoration: none;
   line-height: 0;
   padding: 5px 10px;
-
   box-sizing: border-box;
 }
 
@@ -1235,14 +1234,52 @@ table th {
   margin-bottom: 1rem;
 }
 
+.monitoring-charts--quad {
+  grid-template-columns: 1fr;
+}
+
+@media (min-width: 720px) {
+  .monitoring-charts--quad {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.monitoring-chart-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.monitoring-chart-subtitle {
+  margin: 0 0 0.5rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  line-height: 1.4;
+}
+
 .monitoring-chart-wrap {
   position: relative;
+  flex: 1;
+  min-height: 240px;
+  height: 240px;
+  margin-top: 0.25rem;
+}
+
+.monitoring-chart-wrap--pie {
+  min-height: 220px;
   height: 220px;
+  max-width: 280px;
+  margin-left: auto;
+  margin-right: auto;
 }
 
 .monitoring-chart-wrap canvas {
   width: 100% !important;
   height: 100% !important;
+}
+
+.monitoring-charts .card-title {
+  margin-bottom: 0.15rem;
 }
 
 .monitoring-disclaimer {

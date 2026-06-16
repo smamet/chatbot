@@ -55,3 +55,23 @@ def disk_chart_payload(points: list[DiskDayPoint], *, label: str) -> dict:
         "labels": [p.snapshot_date.isoformat() for p in points],
         "total_bytes": [p.total_bytes for p in points],
     }
+
+
+def multi_disk_chart_payload(*series: tuple[str, list[DiskDayPoint]]) -> dict:
+    if not series:
+        return {"labels": [], "series": []}
+    labels = [p.snapshot_date.isoformat() for p in series[0][1]]
+    return {
+        "labels": labels,
+        "series": [
+            {"label": label, "total_bytes": [p.total_bytes for p in points]}
+            for label, points in series
+        ],
+    }
+
+
+def disk_pie_chart_payload(*, used_bytes: int, free_bytes: int) -> dict:
+    return {
+        "used_bytes": max(0, int(used_bytes)),
+        "free_bytes": max(0, int(free_bytes)),
+    }

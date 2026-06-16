@@ -11,6 +11,7 @@ from chatbot.adapters.persistence.disk_usage_repository import SqlAlchemyDiskUsa
 from chatbot.application.disk_usage_service import DiskUsageService
 from chatbot.application.monitoring_series import (
     disk_chart_payload,
+    disk_pie_chart_payload,
     fill_disk_series,
     fill_token_series,
     token_chart_payload,
@@ -109,6 +110,8 @@ class MonitoringDashboardService:
             until,
         )
 
+        host_live = disk_svc.host_usage()
+
         rows = []
         cost_total = Decimal("0")
         for tenant in tenants:
@@ -143,13 +146,19 @@ class MonitoringDashboardService:
         return {
             "usage_days": days,
             "rows": rows,
-            "host_disk": disk_svc.host_usage(),
+            "host_disk": host_live,
             "platform_internal_cost_usd": cost_total,
             "usage_chart_json": json.dumps(token_chart_payload(token_points)),
-            "disk_charts_json": json.dumps(
-                [
-                    disk_chart_payload(platform_disk, label="All bots (sum)"),
-                    disk_chart_payload(host_disk, label="Host filesystem used"),
-                ]
+            "disk_bot_chart_json": json.dumps(
+                disk_chart_payload(platform_disk, label="Bot data (all bots)")
+            ),
+            "disk_host_chart_json": json.dumps(
+                disk_chart_payload(host_disk, label="Host volume (DATA_ROOT)")
+            ),
+            "disk_pie_chart_json": json.dumps(
+                disk_pie_chart_payload(
+                    used_bytes=host_live.used_bytes,
+                    free_bytes=host_live.free_bytes,
+                )
             ),
         }
