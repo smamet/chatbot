@@ -645,7 +645,7 @@
             <span class="integration-list__name">{{ integration_meta.get(i.type.value, {}).get('label', i.type.value) }}</span>
             <span class="integration-list__meta">
               {% if i.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}
-              <code>{{ integration_endpoint(i) }}</code>
+              <code title="{{ integration_endpoint(i) }}">{{ integration_endpoint(i) }}</code>
             </span>
           </a>
           {% if can_edit %}
@@ -1038,15 +1038,15 @@
 </div>
 
 <section class="card validation-activity" id="validation-activity">
-  <h2 class="card-title">Activity</h2>
-  <p class="text-muted field-hint">Who edited, approved, rejected, or changed attachments (since this feature was deployed).</p>
-  <ul class="validation-activity-list">
+  <h2 class="card-title validation-activity-title">Activity</h2>
+  <p class="text-muted field-hint">Who edited, approved, rejected, or changed attachments (since this feature was deployed). Showing the 25 most recent events across all validation replies.</p>
+  <ul class="validation-activity-list validation-activity-list--scroll">
   {% for entry in validation_activity %}
     <li class="validation-activity-item">
-      <time class="text-muted">{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
-      <strong>{{ entry.actor_email }}</strong>
-      <span>{{ entry.summary }}</span>
-      <a href="/dashboard/bots/{{ tenant.slug }}/validation/{{ entry.pending_reply_id }}">#{{ entry.pending_reply_id }}</a>
+      <time class="validation-activity-time">{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
+      <span class="validation-activity-actor">{{ entry.actor_email }}</span>
+      <span class="validation-activity-summary">{{ entry.summary }}</span>
+      <a class="validation-activity-link" href="/dashboard/bots/{{ tenant.slug }}/validation/{{ entry.pending_reply_id }}">#{{ entry.pending_reply_id }}</a>
       {% if entry.diff %}
       <details class="validation-activity-diff">
         <summary>View diff</summary>
@@ -1079,7 +1079,7 @@
     {% for m in history_messages %}
     <div class="msg-turn msg-turn-{{ m.role.value }}">
       <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
-      {% if bot_dev_mode and m.context_debug %}
+      {% if m.context_debug %}
       <p class="msg-context-debug">{{ m.context_debug | context_debug_label }}</p>
       {% endif %}
     </div>
@@ -1204,7 +1204,7 @@
       <td><code>{{ h.session_id | session_label }}</code></td>
       <td class="text-muted">{{ h.error or '—' }}</td>
       <td>
-        {% if can_edit and h.status.value in ('failed','done') %}
+        {% if dev_mode and is_admin and h.status.value in ('failed','done') %}
         <form method="post" action="/dashboard/hooks/{{ h.id }}/replay" class="no-loader" onclick="event.stopPropagation()"><button type="submit" class="btn-secondary btn-sm">Replay</button></form>
         {% endif %}
       </td>
@@ -1224,6 +1224,5 @@
     </tbody>
   </table>
 </div>
-<script src="/static/validation.js"></script>
 {% endif %}
 {% endblock %}

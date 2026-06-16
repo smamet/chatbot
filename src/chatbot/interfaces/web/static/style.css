@@ -644,6 +644,10 @@ textarea {
   font-family: inherit;
   font-size: 0.9375rem;
   line-height: 1.55;
+  max-width: 100%;
+  min-width: 0;
+  max-height: 20rem;
+  overflow: auto;
 }
 
 .validation-panel-actions {
@@ -728,9 +732,13 @@ textarea {
   text-decoration: underline;
 }
 
-.validation-detail-page .breadcrumb {
-  margin: 0 0 var(--space-xs);
-  font-size: 0.875rem;
+.validation-detail-page .validation-detail-back {
+  margin-top: var(--space-sm);
+  margin-bottom: 0;
+}
+
+.validation-detail-page .validation-detail-meta {
+  margin-bottom: 0;
 }
 
 .validation-detail-grid {
@@ -874,12 +882,25 @@ textarea {
 
 .validation-activity {
   margin-top: var(--space-lg);
+  min-width: 0;
+}
+
+.validation-activity-title,
+.validation-reply-history .validation-activity-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-muted);
 }
 
 .validation-activity-list {
   list-style: none;
   margin: 0;
   padding: 0;
+}
+
+.validation-activity-list--scroll {
+  max-height: 22rem;
+  overflow-y: auto;
 }
 
 .validation-activity-item {
@@ -889,7 +910,37 @@ textarea {
   gap: 0.35rem 0.75rem;
   padding: var(--space-sm) 0;
   border-bottom: 1px solid var(--color-border);
-  font-size: 0.875rem;
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+}
+
+.validation-activity-time {
+  color: #94a3b8;
+}
+
+.validation-activity-actor {
+  color: #64748b;
+  font-weight: 500;
+}
+
+.validation-activity-summary {
+  color: var(--color-text-muted);
+}
+
+.validation-activity-link {
+  color: #64748b;
+  font-weight: 400;
+  text-decoration: none;
+}
+
+.validation-activity-link:hover {
+  color: var(--color-accent);
+  text-decoration: underline;
+}
+
+.validation-activity-diff summary {
+  font-size: 0.75rem;
+  color: #94a3b8;
 }
 
 .validation-activity-item:last-child {
@@ -899,16 +950,24 @@ textarea {
 .validation-activity-diff {
   flex: 1 1 100%;
   margin-top: var(--space-xs);
+  min-width: 0;
+  max-width: 100%;
 }
 
-.validation-activity-diff pre {
+.validation-activity-diff pre,
+.validation-reply-history .validation-activity-diff pre {
   margin: var(--space-xs) 0 0;
   padding: var(--space-sm);
   background: #f8fafc;
   border-radius: var(--radius-sm);
   font-size: 0.75rem;
+  max-width: 100%;
+  min-width: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
   overflow-x: auto;
-  max-height: 12rem;
+  max-height: 14rem;
+  overflow-y: auto;
 }
 
 .validation-reply-history {
@@ -2136,6 +2195,10 @@ button.is-loading,
   }
 }
 
+.integration-list {
+  min-width: 0;
+}
+
 .integration-list__title {
   margin: 0 0 var(--space-md);
   font-size: 0.95rem;
@@ -2157,6 +2220,8 @@ button.is-loading,
   border-radius: var(--radius-sm);
   text-decoration: none;
   color: inherit;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .integration-list__link.is-selected {
@@ -2177,10 +2242,17 @@ button.is-loading,
   align-items: center;
   margin-top: var(--space-xs);
   font-size: 0.75rem;
+  min-width: 0;
 }
 
 .integration-list__meta code {
   font-size: 0.7rem;
+  flex: 1 1 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .integration-list__actions {

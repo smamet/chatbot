@@ -12,7 +12,6 @@
   const stopBtn = document.getElementById("chat-stop");
   const initialEl = document.getElementById("chat-initial");
   const hookStatusEl = document.getElementById("chat-hook-status");
-  const devMode = panel.dataset.devMode === "true";
   const sessionLabelEl = document.getElementById("chat-session-label");
   const testEmailInput = document.getElementById("chat-test-email");
   const testPhoneInput = document.getElementById("chat-test-phone");
@@ -186,7 +185,7 @@
     div.appendChild(body);
     turn.appendChild(div);
 
-    if (devMode && contextSize && role === "assistant") {
+    if (contextSize && role === "assistant") {
       const debug = document.createElement("p");
       debug.className = "msg-context-debug";
       debug.textContent = formatContextSizeLabel(contextSize);

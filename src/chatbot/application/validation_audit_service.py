@@ -11,6 +11,7 @@ from chatbot.adapters.persistence.pending_reply_edit_repository import (
     SqlAlchemyPendingReplyEditRepository,
 )
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from chatbot.application.draft_edit_service import draft_edit_text_diff
 from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
 from chatbot.domain.models.pending_reply_audit import (
     PendingReplyAuditEvent,
@@ -46,6 +47,9 @@ def _audit_summary(action: ValidationAuditAction, detail_json: str | None) -> st
     return action.value
 
 
+VALIDATION_ACTIVITY_LIMIT = 25
+
+
 def _merge_timeline(
     edits: list,
     audits: list[PendingReplyAuditEvent],
@@ -60,7 +64,7 @@ def _merge_timeline(
                 created_at=edit.created_at,
                 action="edit",
                 summary="Edited draft",
-                diff=edit.diff or None,
+                diff=draft_edit_text_diff(edit.body_before, edit.body_after) or None,
             )
         )
     for event in audits:
@@ -128,7 +132,9 @@ class ValidationAuditService:
         )
         return updated
 
-    def list_activity(self, tenant_id: int, *, limit: int = 50) -> list[ValidationTimelineEntry]:
+    def list_activity(
+        self, tenant_id: int, *, limit: int = VALIDATION_ACTIVITY_LIMIT
+    ) -> list[ValidationTimelineEntry]:
         edits = self._edits.list_for_tenant(tenant_id, limit=limit)
         audits = self._audit.list_for_tenant(tenant_id, limit=limit)
         merged = _merge_timeline(edits, audits)

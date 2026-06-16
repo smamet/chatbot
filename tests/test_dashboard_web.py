@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
+from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
 from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.adapters.persistence.user_repository import SqlAlchemyUserRepository
@@ -21,7 +22,9 @@ from chatbot.application.tenant_service import TenantService
 from chatbot.application.user_service import UserService
 from chatbot.config.settings import reset_settings_cache_for_tests
 from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from chatbot.domain.models.context_debug import ContextDebugInfo
 from chatbot.domain.models.fulfillment import FulfillmentKind
+from chatbot.domain.models.hook import HookStatus
 from chatbot.domain.models.integration import IntegrationType
 from chatbot.domain.models.message import ChatMessage, MessageRole
 from chatbot.domain.models.user import UserRole
@@ -262,6 +265,40 @@ def test_admin_bot_crud(dashboard_env) -> None:
     assert 'class="msg-body js-md"' in r.text
     assert "**bold** reply" in r.text
     assert "markdown.js" in r.text
+
+
+def test_history_shows_context_debug_without_bot_dev_mode(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+
+        repo = SqlAlchemyConversationRepository(session, tenant_id)
+        repo.append_message(
+            "email:ctx@example.com",
+            ChatMessage(role=MessageRole.USER, content="hello"),
+        )
+        repo.append_message(
+            "email:ctx@example.com",
+            ChatMessage(
+                role=MessageRole.ASSISTANT,
+                content="reply",
+                context_debug=ContextDebugInfo(
+                    rag_chunks=5,
+                    rag_chars=3500,
+                    customer_chars=3100,
+                    system_chars=10400,
+                ),
+            ),
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=history&sid=email%3Actx%40example.com")
+    assert r.status_code == 200
+    assert "msg-context-debug" in r.text
+    assert "RAG: 5 chunks" in r.text
+    assert "System: 10.4k chars" in r.text
 
 
 def test_editor_cannot_delete_bot(dashboard_env) -> None:
@@ -581,6 +618,53 @@ def test_email_test_send_forbidden_without_dev_mode(dashboard_env, monkeypatch) 
         data={"from_addr": "client@example.com", "subject": "Hi", "body": "Test"},
     )
     assert r.status_code == 403
+
+
+def test_hook_replay_forbidden_without_dev_mode(dashboard_env, monkeypatch) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    monkeypatch.setenv("DEV_MODE", "false")
+    reset_settings_cache_for_tests()
+    with factory() as session:
+        hook = SqlAlchemyHookEventRepository(session, tenant_id).create(
+            session_id="email:client@example.com",
+            hook_type="quote.create",
+            payload_json='{"type":"quote.create"}',
+        )
+        SqlAlchemyHookEventRepository(session, tenant_id).update_status(
+            hook.id, status=HookStatus.DONE
+        )
+        session.commit()
+        hook_id = hook.id
+    _login(client, admin.email, "admin-pass")
+    r = client.post(f"/dashboard/hooks/{hook_id}/replay", follow_redirects=False)
+    assert r.status_code == 403
+
+
+def test_hooks_tab_hides_replay_without_dev_mode(dashboard_env, monkeypatch) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    monkeypatch.setenv("DEV_MODE", "false")
+    reset_settings_cache_for_tests()
+    with factory() as session:
+        SqlAlchemyHookEventRepository(session, tenant_id).create(
+            session_id="email:client@example.com",
+            hook_type="quote.create",
+            payload_json='{"type":"quote.create"}',
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=hooks")
+    assert r.status_code == 200
+    assert "Replay" not in r.text
+    assert 'data-panel="hook-panel-' in r.text
+
+
+def test_validation_activity_shows_scroll_hint(dashboard_env) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=validation")
+    assert r.status_code == 200
+    assert "validation-activity-list--scroll" in r.text
+    assert "25 most recent events" in r.text
 
 
 @patch("chatbot.interfaces.api.routers.dashboard_web.inject_test_email")

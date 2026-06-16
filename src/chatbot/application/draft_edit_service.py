@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import difflib
+import re
+from html.parser import HTMLParser
 
 from markdownify import markdownify as html_to_markdown
 from sqlalchemy.orm import Session
@@ -18,15 +20,66 @@ class DraftEditError(RuntimeError):
     pass
 
 
-def _html_diff(before: str, after: str) -> str:
-    return "".join(
+_BLOCK_END_TAGS = frozenset({"p", "li", "h1", "h2", "h3", "h4", "blockquote", "div"})
+
+
+class _HtmlBlockParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.blocks: list[str] = []
+        self._buf: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() == "br":
+            self._flush()
+        elif tag.lower() == "li":
+            self._buf.append("• ")
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in _BLOCK_END_TAGS:
+            self._flush()
+
+    def handle_data(self, data: str) -> None:
+        self._buf.append(data)
+
+    def _flush(self) -> None:
+        text = "".join(self._buf)
+        text = re.sub(r"\s+", " ", text.replace("\u00a0", " ")).strip()
+        self._buf = []
+        if text:
+            self.blocks.append(text)
+
+
+def _normalize_diff_block(text: str) -> str:
+    return re.sub(r"\s+", " ", text.replace("\u00a0", " ")).strip()
+
+
+def _html_blocks_for_diff(html: str) -> list[str]:
+    parser = _HtmlBlockParser()
+    parser.feed(html or "")
+    parser.close()
+    return parser.blocks
+
+
+def draft_edit_text_diff(before_html: str, after_html: str) -> str:
+    before_blocks = _html_blocks_for_diff(before_html)
+    after_blocks = _html_blocks_for_diff(after_html)
+    if [_normalize_diff_block(block) for block in before_blocks] == [
+        _normalize_diff_block(block) for block in after_blocks
+    ]:
+        return ""
+    lines = list(
         difflib.unified_diff(
-            before.splitlines(keepends=True),
-            after.splitlines(keepends=True),
+            before_blocks,
+            after_blocks,
             fromfile="before",
             tofile="after",
+            lineterm="",
         )
     )
+    if not lines:
+        return ""
+    return "\n".join(lines) + "\n"
 
 
 def save_pending_reply_draft(
@@ -63,7 +116,7 @@ def save_pending_reply_draft(
         edited_by=edited_by,
         body_before=before_html,
         body_after=sanitized,
-        diff=_html_diff(before_html, sanitized),
+        diff=draft_edit_text_diff(before_html, sanitized),
     )
 
     conv = SqlAlchemyConversationRepository(session, tenant_id)

@@ -387,6 +387,25 @@
     });
   });
 
+  document.querySelectorAll(".validation-row[data-panel]").forEach((row) => {
+    const panel = document.getElementById(row.dataset.panel);
+    if (!panel) return;
+    const toggle = () => {
+      const open = row.classList.toggle("is-open");
+      panel.hidden = !open;
+      row.setAttribute("aria-expanded", open ? "true" : "false");
+    };
+    row.addEventListener("click", (event) => {
+      if (event.target.closest("a, button, input, form")) return;
+      toggle();
+    });
+    row.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" && event.key !== " ") return;
+      event.preventDefault();
+      toggle();
+    });
+  });
+
   function initDocUploadDropzone() {
     const form = document.getElementById("doc-upload-form");
     if (!form) return;

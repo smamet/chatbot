@@ -3,13 +3,13 @@
 {% block body %}
 <div class="page-header validation-detail-page">
   <div>
-    <p class="breadcrumb"><a href="{{ validation_inbox_url }}">← Back to inbox</a></p>
     <h1>Validation #{{ reply.id }}</h1>
     <p class="text-muted validation-detail-meta">
       <code>{{ reply.channel }}</code> · <code>{{ reply.session_id | session_label }}</code> ·
       <code>{{ reply.recipient_id }}</code> ·
       Generated {{ reply.created_at.strftime('%Y-%m-%d %H:%M') if reply.created_at else '—' }}
     </p>
+    <a href="{{ validation_inbox_url }}" class="back-link validation-detail-back">← Back to inbox</a>
   </div>
 </div>
 
@@ -267,13 +267,13 @@
 {% endif %}
 
 <section class="card validation-reply-history">
-  <h2 class="card-title">History</h2>
+  <h2 class="card-title validation-activity-title">History</h2>
   <ul class="validation-activity-list">
   {% for entry in reply_timeline %}
     <li class="validation-activity-item">
-      <time class="text-muted">{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
-      <strong>{{ entry.actor_email }}</strong>
-      <span>{{ entry.summary }}</span>
+      <time class="validation-activity-time">{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
+      <span class="validation-activity-actor">{{ entry.actor_email }}</span>
+      <span class="validation-activity-summary">{{ entry.summary }}</span>
       {% if entry.diff %}
       <details class="validation-activity-diff">
         <summary>View diff</summary>

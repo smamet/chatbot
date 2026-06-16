@@ -16,7 +16,9 @@
       <td><span class="badge">{{ h.status.value }}</span></td>
       <td class="text-muted">{{ h.error or '—' }}</td>
       <td>
+        {% if dev_mode %}
         <form method="post" action="/dashboard/hooks/{{ h.id }}/replay" class="no-loader" onclick="event.stopPropagation()"><button type="submit" class="btn-secondary btn-sm">Replay</button></form>
+        {% endif %}
       </td>
       <td class="validation-row-chevron" aria-hidden="true">▶</td>
     </tr>
@@ -34,5 +36,4 @@
     </tbody>
   </table>
 </div>
-<script src="/static/validation.js"></script>
 {% endblock %}

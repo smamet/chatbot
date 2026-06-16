@@ -17,15 +17,18 @@
   {% endif %}
 </div>
 <div class="table-wrap">
-  <table class="data-table">
+  <table class="data-table validation-table">
     <thead><tr><th>Name</th><th>Slug</th><th>Hooks</th><th></th></tr></thead>
     <tbody>
     {% for t in tenants %}
-    <tr>
+    <tr class="validation-row validation-inbox-row"
+        data-href="/dashboard/bots/{{ t.slug }}{% if user.role == 'client_operator' %}?tab=validation{% endif %}"
+        tabindex="0"
+        role="link">
       <td><strong>{{ t.name }}</strong></td>
       <td><code>{{ t.slug }}</code></td>
       <td>{% if t.hooks_enabled %}<span class="badge on">ON</span>{% else %}<span class="badge off">OFF</span>{% endif %}</td>
-      <td><a href="/dashboard/bots/{{ t.slug }}{% if user.role == 'client_operator' %}?tab=validation{% endif %}" class="btn btn-secondary btn-sm">Open</a></td>
+      <td class="validation-row-chevron" aria-hidden="true">▶</td>
     </tr>
     {% else %}
     <tr><td colspan="4" class="empty-state">No bots yet</td></tr>

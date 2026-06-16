@@ -96,7 +96,7 @@ from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.application.user_service import UserService
-from chatbot.application.validation_audit_service import ValidationAuditService
+from chatbot.application.validation_audit_service import VALIDATION_ACTIVITY_LIMIT, ValidationAuditService
 from chatbot.config.settings import Settings
 from chatbot.domain.constants import DEFAULT_HOOK_INSTRUCTIONS
 from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
@@ -684,9 +684,9 @@ def _run_dashboard_chat(
     return session_id, chat.handle_user_message(session_id, message.strip())
 
 
-def _chat_message_ui_dict(message: ChatMessage, *, dev_mode: bool) -> dict:
+def _chat_message_ui_dict(message: ChatMessage) -> dict:
     out = {"role": message.role.value, "content": message.content}
-    if dev_mode and message.context_debug:
+    if message.context_debug:
         dbg = message.context_debug
         out["context_size"] = {
             "rag_chunks": dbg.rag_chunks,
@@ -1154,7 +1154,7 @@ def bot_detail(
         else:
             messages = []
         ctx["chat_messages_json"] = json.dumps(
-            [_chat_message_ui_dict(m, dev_mode=tenant.config.dev_mode) for m in messages]
+            [_chat_message_ui_dict(m) for m in messages]
         )
         session_repo = TestChatSessionRepository(session, tenant.id)
         ctx["test_chat_sidebar_sessions"] = _list_test_chat_sidebar_sessions(session, tenant.id)
@@ -1183,7 +1183,7 @@ def bot_detail(
             vsub = "pending"
         ctx["validation_subtab"] = vsub
         audit_svc = ValidationAuditService(session)
-        ctx["validation_activity"] = audit_svc.list_activity(tenant.id, limit=50)
+        ctx["validation_activity"] = audit_svc.list_activity(tenant.id, limit=VALIDATION_ACTIVITY_LIMIT)
         ctx["fulfillment_kind_quote"] = FulfillmentKind.ERPNEXT_QUOTE.value
         if vsub == "pending":
             replies = pending_repo.list_pending(tenant.id)
@@ -2864,7 +2864,7 @@ def bot_chat_test_send(
         session.commit()
         out_test_session = session_id if session_id.startswith("test:") else None
         context_size = None
-        if tenant.config.dev_mode and result.context_debug is not None:
+        if result.context_debug is not None:
             dbg = result.context_debug
             context_size = {
                 "rag_chunks": dbg.rag_chunks,
@@ -2987,11 +2987,17 @@ def bot_export(
 @router.post("/hooks/{hook_id}/replay")
 def replay_hook(
     hook_id: int,
-    user: User = Depends(require_editor),
+    user: User = Depends(require_user),
+    settings: Settings = Depends(get_settings_dep),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
     session: Session = Depends(get_session),
 ):
+    if not settings.dev_mode or user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail="Hook replay is only available in DEV_MODE for platform admins",
+        )
     repo = SqlAlchemyHookEventRepository(session, tenant_id=None)
     hooks = repo.list_by_tenant(limit=500)
     target = next((h for h in hooks if h.id == hook_id), None)
@@ -3013,6 +3019,7 @@ def hooks_global(
     session: Session = Depends(get_session),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
 ):
     if user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403)
@@ -3027,5 +3034,6 @@ def hooks_global(
             "tenants": tenants,
             "status_class": _status_class,
             "title": "Hooks",
+            "dev_mode": settings.dev_mode,
         },
     )
