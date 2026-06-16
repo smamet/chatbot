@@ -733,8 +733,10 @@ textarea {
 }
 
 .validation-detail-page .validation-detail-back {
-  margin-top: var(--space-sm);
+  display: inline-flex;
+  margin-top: var(--space-md);
   margin-bottom: 0;
+  text-decoration: none;
 }
 
 .validation-detail-page .validation-detail-meta {
