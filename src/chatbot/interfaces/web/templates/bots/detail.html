@@ -26,6 +26,9 @@
   <a href="?tab=email-test" class="{% if tab=='email-test' %}active{% endif %}">Test email</a>
   {% endif %}
   <a href="?tab=hooks" class="{% if tab=='hooks' %}active{% endif %}">Hooks</a>
+  {% if can_edit %}
+  <a href="?tab=monitoring" class="{% if tab=='monitoring' %}active{% endif %}">Monitoring</a>
+  {% endif %}
 </nav>
 {% endif %}
 
@@ -1223,6 +1226,61 @@
     {% endfor %}
     </tbody>
   </table>
+</div>
+
+{% elif tab == 'monitoring' %}
+<div class="card" style="margin-bottom:1rem">
+  <h2 class="card-title">API usage (last {{ usage_days }} days)</h2>
+  <p>
+    <strong>{{ usage_summary.total_tokens }}</strong> total tokens
+    ({{ usage_summary.prompt_tokens }} in / {{ usage_summary.output_tokens }} out),
+    {{ usage_summary.call_count }} API calls
+  </p>
+</div>
+
+<div class="card" style="margin-bottom:1rem">
+  <h2 class="card-title">Disk usage</h2>
+  <p><strong>{{ format_bytes(disk_usage.total_bytes) }}</strong> across {{ disk_usage.total_files }} files</p>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Category</th><th>Size</th><th>Files</th></tr></thead>
+      <tbody>
+      {% for cat in disk_usage.categories %}
+      <tr>
+        <td>{{ cat.label }}</td>
+        <td>{{ format_bytes(cat.bytes) }}</td>
+        <td>{{ cat.file_count }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <h2 class="card-title">Daily API usage</h2>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr><th>Date</th><th>Operation</th><th>Model</th><th>In</th><th>Out</th><th>Total</th><th>Calls</th></tr>
+      </thead>
+      <tbody>
+      {% for row in usage_daily %}
+      <tr>
+        <td>{{ row.usage_date }}</td>
+        <td><code>{{ row.operation }}</code></td>
+        <td><code>{{ row.model or '—' }}</code></td>
+        <td>{{ row.prompt_tokens }}</td>
+        <td>{{ row.output_tokens }}</td>
+        <td>{{ row.total_tokens }}</td>
+        <td>{{ row.call_count }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty-state">No API usage recorded yet</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
 </div>
 {% endif %}
 {% endblock %}

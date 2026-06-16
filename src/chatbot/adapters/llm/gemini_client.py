@@ -5,8 +5,9 @@ from typing import Literal
 from google import genai
 from google.genai import types
 
+from chatbot.adapters.gemini_usage import usage_from_response
 from chatbot.config.settings import Settings, get_settings
-from chatbot.domain.contracts.llm_client import LlmResult, LlmUsage
+from chatbot.domain.contracts.llm_client import LlmResult
 from chatbot.domain.models.attachment import Attachment
 from chatbot.domain.models.message import ChatMessage, MessageRole
 
@@ -71,15 +72,4 @@ class GeminiLlmClient:
             ),
         )
         text = (response.text or "").strip()
-        return LlmResult(text=text, usage=_usage_from_response(response))
-
-
-def _usage_from_response(response: object) -> LlmUsage:
-    meta = getattr(response, "usage_metadata", None)
-    if meta is None:
-        return LlmUsage()
-    return LlmUsage(
-        prompt_tokens=getattr(meta, "prompt_token_count", None),
-        candidates_tokens=getattr(meta, "candidates_token_count", None),
-        total_tokens=getattr(meta, "total_token_count", None),
-    )
+        return LlmResult(text=text, usage=usage_from_response(response))

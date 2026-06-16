@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -339,3 +339,27 @@ class TestChatSessionRow(Base):
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
     )
+
+
+class ApiUsageDailyRow(Base):
+    __tablename__ = "api_usage_daily"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "usage_date",
+            "operation",
+            "model",
+            name="uq_api_usage_daily",
+        ),
+        Index("ix_api_usage_daily_tenant_date", "tenant_id", "usage_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    usage_date: Mapped[date] = mapped_column(Date(), nullable=False)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False)
+    model: Mapped[str] = mapped_column(String(128), default="")
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    output_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    total_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    call_count: Mapped[int] = mapped_column(Integer, default=0)

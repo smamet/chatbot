@@ -19,6 +19,7 @@ from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.ingest_service import file_content_hash
 from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_settings import merge_tenant_settings
+from chatbot.application.usage_metering import metered_embedder
 from chatbot.application.tenant_service import TenantService
 from chatbot.config.settings import Settings
 from chatbot.domain.models.integration import IntegrationType
@@ -272,7 +273,13 @@ def reconcile_catalog_rag(
 
     catalog_root = tenant_catalog_dir(settings, slug)
     store = LanceVectorStore(settings.lancedb_root / slug)
-    embedder = GeminiEmbedder()
+    embedder = metered_embedder(
+        inner=GeminiEmbedder(),
+        tenant_id=tenant_id,
+        operation="embed_catalog",
+        model=merged.embedding_model,
+        session=session,
+    )
     sync_svc = IngestSyncService(
         settings=merged,
         embedder=embedder,

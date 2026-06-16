@@ -5,8 +5,10 @@ import time
 from google import genai
 from google.genai import errors, types
 
+from chatbot.adapters.gemini_usage import usage_from_response
 from chatbot.config.settings import Settings, get_settings
 from chatbot.domain.contracts.embedder import Embedder
+from chatbot.domain.contracts.llm_client import LlmUsage
 
 _RETRYABLE_CODES = frozenset({429, 503})
 _MAX_BACKOFF_429_SECONDS = 120.0
@@ -46,6 +48,11 @@ class GeminiEmbedder:
         self._fixed_model = model
         self._client: genai.Client | None = None
         self._client_api_key: str | None = None
+        self._last_embed_meta: tuple[str, LlmUsage] | None = None
+
+    @property
+    def last_embed_meta(self) -> tuple[str, LlmUsage] | None:
+        return self._last_embed_meta
 
     def _client_and_model(self) -> tuple[genai.Client, str]:
         s: Settings = get_settings()
@@ -70,6 +77,7 @@ class GeminiEmbedder:
         for attempt in range(settings.embed_retry_max):
             try:
                 response = client.models.embed_content(model=model, contents=texts)
+                self._last_embed_meta = (model, usage_from_response(response))
                 return [list(e.values) for e in response.embeddings]
             except errors.APIError as exc:
                 if exc.code not in _RETRYABLE_CODES:

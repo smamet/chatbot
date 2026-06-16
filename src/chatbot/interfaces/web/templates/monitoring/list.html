@@ -1,0 +1,47 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>Monitoring</h1>
+  <p class="subtitle">API usage and disk usage across all bots (last {{ usage_days }} days)</p>
+</div>
+
+<div class="card" style="margin-bottom:1rem">
+  <h2 class="card-title">Host disk</h2>
+  <p>
+    <strong>{{ format_bytes(host_disk.used_bytes) }}</strong> used /
+    {{ format_bytes(host_disk.total_bytes) }} total
+    ({{ format_bytes(host_disk.free_bytes) }} free)
+  </p>
+</div>
+
+<div class="table-wrap">
+  <table class="data-table validation-table">
+    <thead>
+      <tr>
+        <th>Bot</th>
+        <th>Disk total</th>
+        <th>Tokens in</th>
+        <th>Tokens out</th>
+        <th>Total tokens</th>
+        <th>API calls</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+    {% for row in rows %}
+    <tr>
+      <td><code>{{ row.tenant.slug }}</code></td>
+      <td>{{ format_bytes(row.disk.total_bytes) }}</td>
+      <td>{{ row.usage.prompt_tokens }}</td>
+      <td>{{ row.usage.output_tokens }}</td>
+      <td>{{ row.usage.total_tokens }}</td>
+      <td>{{ row.usage.call_count }}</td>
+      <td><a href="/dashboard/bots/{{ row.tenant.slug }}?tab=monitoring">Details</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty-state">No bots</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

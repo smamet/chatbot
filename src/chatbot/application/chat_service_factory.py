@@ -14,6 +14,7 @@ from chatbot.application.integration_enrichment import build_enricher
 from chatbot.application.integration_service import IntegrationService
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.application.tenant_settings import merge_tenant_settings
+from chatbot.application.usage_metering import metered_embedder, metered_llm
 from chatbot.config.settings import Settings
 from chatbot.domain.models.tenant import Tenant
 
@@ -33,8 +34,20 @@ def build_chat_service_for_worker(
     if merged.rag_enabled:
         rag = RagPipeline(
             settings=merged,
-            rewriter_llm=GeminiLlmClient(model=merged.rewrite_model, api_key=api_key),
-            embedder=GeminiEmbedder(api_key=api_key, model=merged.embedding_model),
+            rewriter_llm=metered_llm(
+                inner=GeminiLlmClient(model=merged.rewrite_model, api_key=api_key),
+                tenant_id=tenant.id,
+                operation="rewrite",
+                model=merged.rewrite_model,
+                session=session,
+            ),
+            embedder=metered_embedder(
+                inner=GeminiEmbedder(api_key=api_key, model=merged.embedding_model),
+                tenant_id=tenant.id,
+                operation="embed_chat",
+                model=merged.embedding_model,
+                session=session,
+            ),
             vector_store=LanceVectorStore(tenant_lancedb_dir(settings, tenant.slug)),
             rewrite_language_gate=None,
         )
@@ -44,7 +57,13 @@ def build_chat_service_for_worker(
     return ChatService(
         settings=settings,
         tenant=tenant,
-        llm=GeminiLlmClient(model=merged.chat_model, api_key=api_key),
+        llm=metered_llm(
+            inner=GeminiLlmClient(model=merged.chat_model, api_key=api_key),
+            tenant_id=tenant.id,
+            operation="chat",
+            model=merged.chat_model,
+            session=session,
+        ),
         repo=repo,
         rag=rag,
         hook_repo=hook_repo,

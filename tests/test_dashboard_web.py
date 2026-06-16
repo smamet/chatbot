@@ -73,6 +73,7 @@ def dashboard_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
             return SimpleNamespace(
                 text=f"echo:{message}",
                 usage=SimpleNamespace(prompt_tokens=1, candidates_tokens=1, total_tokens=2),
+                context_debug=None,
             )
 
     app.dependency_overrides.clear()
@@ -2221,3 +2222,55 @@ def test_client_operator_reject_creates_audit(dashboard_env) -> None:
     inbox = client.get(f"/dashboard/bots/{slug}?tab=validation&vsub=rejected")
     assert inbox.status_code == 200
     assert "validation-inbox-row" in inbox.text
+
+
+def test_admin_monitoring_global_page(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    docs = data / "docs" / slug
+    docs.mkdir(parents=True, exist_ok=True)
+    (docs / "note.md").write_text("x", encoding="utf-8")
+
+    with factory() as session:
+        from chatbot.application.usage_recorder_service import UsageRecorderService
+        from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
+        from chatbot.domain.contracts.llm_client import LlmUsage
+
+        UsageRecorderService(SqlAlchemyApiUsageRepository(session)).record(
+            tenant_id,
+            "chat",
+            "gemini-2.0-flash",
+            LlmUsage(prompt_tokens=10, candidates_tokens=5, total_tokens=15),
+        )
+        session.commit()
+
+    r = client.get("/dashboard/monitoring")
+    assert r.status_code == 200
+    assert "Monitoring" in r.text
+    assert slug in r.text
+    assert "10" in r.text
+
+
+def test_client_admin_can_open_bot_monitoring_tab(dashboard_env) -> None:
+    client, _admin, editor, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, editor.email, "edit-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=monitoring")
+    assert r.status_code == 200
+    assert "API usage" in r.text
+    assert "Disk usage" in r.text
+
+
+def test_client_operator_cannot_open_monitoring_tab(dashboard_env) -> None:
+    client, _admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _create_operator(factory, tenant_id)
+    _login(client, "operator@test.com", "op-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=monitoring", follow_redirects=False)
+    assert r.status_code == 303
+    assert "tab=validation" in r.headers["location"]
+
+
+def test_non_admin_cannot_open_global_monitoring(dashboard_env) -> None:
+    client, _admin, editor, _slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, editor.email, "edit-pass")
+    r = client.get("/dashboard/monitoring")
+    assert r.status_code == 403

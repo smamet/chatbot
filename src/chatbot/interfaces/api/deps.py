@@ -23,6 +23,7 @@ from chatbot.application.integration_service import IntegrationService
 from chatbot.application.rag_orchestrator import RagPipeline
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
+from chatbot.application.usage_metering import metered_embedder, metered_llm
 from chatbot.config.settings import Settings, get_settings
 from chatbot.domain.models.tenant import Tenant
 
@@ -137,13 +138,24 @@ def _build_chat_service(
 ) -> ChatService:
     merged = merge_tenant_settings(settings, tenant)
     rag: RagPipeline | None = None
+    api_key = _gemini_api_key(tenant, settings) or None
     if merged.rag_enabled:
         rag = RagPipeline(
             settings=merged,
-            rewriter_llm=GeminiLlmClient(
-                model=merged.rewrite_model, api_key=_gemini_api_key(tenant, settings) or None
+            rewriter_llm=metered_llm(
+                inner=GeminiLlmClient(model=merged.rewrite_model, api_key=api_key),
+                tenant_id=tenant.id,
+                operation="rewrite",
+                model=merged.rewrite_model,
+                session=db_session,
             ),
-            embedder=_embedder_for_tenant(request, tenant, settings),
+            embedder=metered_embedder(
+                inner=_embedder_for_tenant(request, tenant, settings),
+                tenant_id=tenant.id,
+                operation="embed_chat",
+                model=merged.embedding_model,
+                session=db_session,
+            ),
             vector_store=_vector_store_for_tenant(request, tenant, settings),
             rewrite_language_gate=getattr(request.app.state, "rewrite_language_gate", None),
         )
@@ -158,7 +170,13 @@ def _build_chat_service(
     return ChatService(
         settings=settings,
         tenant=tenant,
-        llm=_llm_for_tenant(request, tenant, settings),
+        llm=metered_llm(
+            inner=_llm_for_tenant(request, tenant, settings),
+            tenant_id=tenant.id,
+            operation="chat",
+            model=merged.chat_model,
+            session=db_session,
+        ),
         repo=repo,
         rag=rag,
         hook_repo=hook_repo,

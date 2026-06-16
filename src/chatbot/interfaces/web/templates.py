@@ -12,6 +12,7 @@ from chatbot.application.customer_access_gate import (
     session_resume_params,
     session_test_chat_query,
 )
+from chatbot.application.disk_usage_service import format_bytes
 from chatbot.application.erpnext_error_display import format_erpnext_error_message
 from chatbot.mail.process_since import format_process_since_display
 
@@ -34,4 +35,5 @@ templates.env.filters["session_test_chat_query"] = session_test_chat_query
 templates.env.filters["context_debug_label"] = format_context_debug_label
 templates.env.filters["process_since_display"] = format_process_since_display
 templates.env.filters["erpnext_error"] = format_erpnext_error_message
+templates.env.filters["format_bytes"] = format_bytes
 templates.env.filters["pretty_json"] = pretty_json

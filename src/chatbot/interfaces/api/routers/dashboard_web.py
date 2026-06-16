@@ -16,6 +16,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Resp
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
+from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository, usage_since_date
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
@@ -46,6 +47,7 @@ from chatbot.application.erpnext_catalog_sync_service import (
 )
 from chatbot.application.quote_test_service import create_erpnext_quotation_for_test
 from chatbot.application.hook_prompt_composer import compose_hook_instructions
+from chatbot.application.disk_usage_service import DiskUsageService, format_bytes
 from chatbot.application.draft_edit_service import DraftEditError, save_pending_reply_draft
 from chatbot.application.outbound_orchestrator import erpnext_integration_for_tenant, queue_after_chat
 from chatbot.application.progress_log import ProgressLog
@@ -95,6 +97,8 @@ from chatbot.application.integration_service import IntegrationService
 from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
+from chatbot.application.usage_metering import metered_embedder
+from chatbot.application.usage_recorder_service import UsageRecorderService
 from chatbot.application.user_service import UserService
 from chatbot.application.validation_audit_service import VALIDATION_ACTIVITY_LIMIT, ValidationAuditService
 from chatbot.config.settings import Settings
@@ -1218,6 +1222,18 @@ def bot_detail(
         ctx["integrations_config_json"] = json.dumps(_integration_configs_for_client(integrations))
         ctx["integration_schemas_json"] = json.dumps(integration_schemas_for_template())
         ctx["integration_meta_json"] = json.dumps(integration_meta_for_template())
+    elif tab == "monitoring":
+        if not user_service.can_edit(user):
+            raise HTTPException(status_code=403)
+        usage_days = 30
+        since = usage_since_date(usage_days)
+        recorder = UsageRecorderService(SqlAlchemyApiUsageRepository(session))
+        disk_svc = DiskUsageService(settings)
+        ctx["usage_days"] = usage_days
+        ctx["usage_summary"] = recorder.tenant_summary_since(tenant.id, since)
+        ctx["usage_daily"] = recorder.tenant_daily_since(tenant.id, since)
+        ctx["disk_usage"] = disk_svc.tenant_usage(tenant.slug)
+        ctx["format_bytes"] = format_bytes
     return templates.TemplateResponse(request, "bots/detail.html", ctx)
 
 
@@ -1437,7 +1453,13 @@ def _reconcile_tenant_documents(
     merged = merge_tenant_settings(settings, tenant)
     docs = tenant_docs_dir(settings, tenant.slug)
     store = LanceVectorStore(settings.lancedb_root / tenant.slug)
-    embedder = GeminiEmbedder()
+    embedder = metered_embedder(
+        inner=GeminiEmbedder(),
+        tenant_id=tenant.id,
+        operation="embed_ingest",
+        model=merged.embedding_model,
+        session=session,
+    )
     sync_svc = IngestSyncService(
         settings=merged,
         embedder=embedder,
@@ -2864,7 +2886,7 @@ def bot_chat_test_send(
         session.commit()
         out_test_session = session_id if session_id.startswith("test:") else None
         context_size = None
-        if result.context_debug is not None:
+        if getattr(result, "context_debug", None) is not None:
             dbg = result.context_debug
             context_size = {
                 "rag_chunks": dbg.rag_chunks,
@@ -3010,6 +3032,49 @@ def replay_hook(
     tenant = tenant_service.get_by_id(target.tenant_id)
     slug = tenant.slug if tenant else ""
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=hooks", status_code=303)
+
+
+@router.get("/monitoring", response_class=HTMLResponse)
+def monitoring_global(
+    request: Request,
+    user: User = Depends(require_user),
+    session: Session = Depends(get_session),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    settings: Settings = Depends(get_settings_dep),
+):
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(status_code=403)
+    usage_days = 7
+    since = usage_since_date(usage_days)
+    recorder = UsageRecorderService(SqlAlchemyApiUsageRepository(session))
+    disk_svc = DiskUsageService(settings)
+    tenants = tenant_service.list_tenants()
+    usage_by_tenant = recorder.all_tenant_summaries_since(since)
+    rows = []
+    for tenant in tenants:
+        usage = usage_by_tenant.get(
+            tenant.id,
+            recorder.tenant_summary_since(tenant.id, since),
+        )
+        rows.append(
+            {
+                "tenant": tenant,
+                "disk": disk_svc.tenant_usage(tenant.slug),
+                "usage": usage,
+            }
+        )
+    return templates.TemplateResponse(
+        request,
+        "monitoring/list.html",
+        {
+            "user": user,
+            "rows": rows,
+            "host_disk": disk_svc.host_usage(),
+            "usage_days": usage_days,
+            "format_bytes": format_bytes,
+            "title": "Monitoring",
+        },
+    )
 
 
 @router.get("/hooks", response_class=HTMLResponse)

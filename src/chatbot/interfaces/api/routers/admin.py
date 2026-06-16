@@ -13,6 +13,7 @@ from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.tenant_settings import merge_tenant_settings
+from chatbot.application.usage_metering import metered_embedder
 from chatbot.config.settings import Settings, get_settings
 from chatbot.domain.models.tenant import Tenant, TenantConfig
 from chatbot.interfaces.api.deps import get_session, get_settings_dep, get_tenant_service, require_admin_auth
@@ -231,7 +232,13 @@ def sync_tenant_docs(
     merged = merge_tenant_settings(settings, tenant)
     docs = tenant_docs_dir(settings, slug)
     store = LanceVectorStore(settings.lancedb_root / slug)
-    embedder = GeminiEmbedder()
+    embedder = metered_embedder(
+        inner=GeminiEmbedder(),
+        tenant_id=tenant.id,
+        operation="embed_ingest",
+        model=merged.embedding_model,
+        session=session,
+    )
     sync_svc = IngestSyncService(
         settings=merged,
         embedder=embedder,

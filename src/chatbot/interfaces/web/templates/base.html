@@ -20,6 +20,7 @@
       {% if user and user.role == 'admin' %}
       <a href="/dashboard/users" {% if request.url.path.startswith('/dashboard/users') %}aria-current="page"{% endif %}>Users</a>
       <a href="/dashboard/hooks" {% if request.url.path.startswith('/dashboard/hooks') %}aria-current="page"{% endif %}>Hooks</a>
+      <a href="/dashboard/monitoring" {% if request.url.path.startswith('/dashboard/monitoring') %}aria-current="page"{% endif %}>Monitoring</a>
       {% endif %}
     </nav>
     <form method="post" action="/auth/logout" class="logout-form no-loader">
