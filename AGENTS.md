@@ -56,9 +56,12 @@ Service: `src/chatbot/application/tenant_flush_service.py` (`TenantFlushService.
 
 ```bash
 ./sail chatbot bot-flush {slug} --yes
+./sail chatbot bot-restore {slug} data/backups/{slug}/{timestamp} --yes
 ```
 
 Clears messages, `hook_events`, validation queue (`pending_replies` + edits + audit), orders, `mail_drafts`, `test_chat_sessions`, and runtime dirs `data/attachments/{slug}/`, `data/quotes/{slug}/`. **Does not** delete the tenant, connectors, integrations, `ingested_files`, LanceDB, `data/docs/` or `data/catalog/`, or `mail_imap_uids`. Token unchanged. Destructive — requires `--yes` without a TTY or slug confirmation on a TTY.
+
+**Backup (default on flush):** `data/backups/{slug}/{timestamp}/` with `manifest.json`, `operational.json`, and copies of attachment/quote dirs. `--no-backup` skips. `bot-restore` replaces current operational data with the backup (same slug + `tenant_id` only).
 
 ### ERPNext catalog sync
 

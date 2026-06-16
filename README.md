@@ -40,7 +40,7 @@ Create an operator: `./sail chatbot user-create op@example.com -p '…' --role c
 ./sail logs           # follow logs
 ./sail shell          # bash in API container
 ./sail mysql          # MySQL CLI
-./sail chatbot …      # CLI (tenant-create, sync, catalog-rag, bot-flush, user-create, …)
+./sail chatbot …      # CLI (tenant-create, sync, catalog-rag, bot-flush, bot-restore, user-create, …)
 ./sail migrate        # alembic upgrade head
 ./sail test           # pytest in container
 ./sail worker-logs    # automation worker logs
@@ -136,6 +136,14 @@ chatbot bot-flush my-bot --yes
 ```
 
 Without `--yes`, an interactive terminal prompts you to type the slug to confirm. In non-TTY environments (e.g. `./sail`), `--yes` is required.
+
+By default, a backup is saved under `data/backups/{slug}/{timestamp}/` (JSON + `attachments/` and `quotes/` copies). Pass `--no-backup` to skip. After flush, the CLI prints a restore command.
+
+**Rollback:**
+
+```bash
+./sail chatbot bot-restore my-bot data/backups/my-bot/20260615T143022Z --yes
+```
 
 **Removed:** messages, hook events, validation queue (replies + edits + audit), orders, mail drafts, test chat sessions, `data/attachments/{slug}/`, `data/quotes/{slug}/`.
 

@@ -194,21 +194,27 @@
 
 {% elif tab == 'documents' %}
   {% if can_edit %}
-  <div class="card">
+  <div class="card doc-upload-card">
     <h2 class="card-title">Upload &amp; sync</h2>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/documents" enctype="multipart/form-data" id="doc-upload-form">
-      <label>Upload files<input type="file" name="files" multiple></label>
-      <p class="field-hint">Upload and delete sync the index automatically. Use <strong>Sync documents</strong> for fresh sync or after editing files on disk.</p>
-      <div class="form-actions">
-        <button type="submit" class="btn-primary" data-loading="Uploading &amp; syncing…">Upload</button>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/documents" enctype="multipart/form-data" id="doc-upload-form" class="no-loader">
+      <div class="validation-attachments-dropzone" tabindex="0" role="button" aria-label="Upload documents">
+        <input type="file" name="files" class="validation-attachments-input" multiple hidden>
+        <p>Drop files here or <span class="validation-attachments-browse">browse</span></p>
       </div>
+      <p class="field-hint">Files dropped here are saved and the search index is updated automatically. Same when you delete a file in the table below.</p>
+      <p class="doc-upload-error validation-error" hidden></p>
     </form>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/sync" id="doc-sync-form" class="form-actions--bordered">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/sync" id="doc-sync-form" class="form-actions--bordered doc-sync-form">
+      <p class="field-hint doc-sync-intro">
+        <strong>Manual sync</strong> — only needed if you change files outside this page (SSH, bind mount, <code>chatbot sync</code>).
+        {{ help_tip("Re-reads every file under data/docs/" ~ tenant.slug ~ "/ and updates the vector index. Upload and delete above already sync for you. Use after editing or copying files on disk, or if search results look stale. Does not delete your document files.") }}
+      </p>
       <div class="checkbox-row">
         <input type="checkbox" name="fresh" id="fresh-sync" value="on">
         <label for="fresh-sync">Fresh sync (clear index first)</label>
+        {{ help_tip("Wipes this bot's document index entries under data/docs/" ~ tenant.slug ~ "/, then re-embeds every file from disk. Use after bulk file replacements, suspected index corruption, or when normal sync still returns old chunks. Slower and uses more embedding API calls. Your files on disk are not deleted.") }}
       </div>
-      <div class="form-actions form-actions--compact">
+      <div class="form-actions form-actions--compact doc-sync-actions">
         <button type="submit" class="btn-secondary" id="doc-sync-btn" data-loading="Syncing…">Sync documents</button>
       </div>
     </form>

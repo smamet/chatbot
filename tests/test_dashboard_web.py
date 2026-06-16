@@ -1697,6 +1697,9 @@ def test_upload_documents_auto_syncs(dashboard_env) -> None:
     assert (data / "docs" / slug / "new.md").is_file()
     r = client.get(f"/dashboard/bots/{slug}?tab=documents")
     assert "ingested 1 chunks: new.md" in r.text
+    assert "validation-attachments-dropzone" in r.text
+    assert "Manual sync" in r.text
+    assert "help-tip" in r.text
 
 
 def test_delete_document_auto_syncs(dashboard_env) -> None:

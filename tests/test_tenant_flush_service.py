@@ -174,8 +174,13 @@ def test_flush_removes_operational_data_keeps_rag_and_bot(test_settings, test_te
         assert _count(session, TestChatSessionRow, tenant.id) >= 1
         assert _count(session, IngestedFileRow, tenant.id) >= 1
 
-        logs = TenantFlushService(session, settings=test_settings).flush(slug)
+        logs, backup_path = TenantFlushService(session, settings=test_settings).flush(slug)
         session.commit()
+
+    assert backup_path is not None
+    assert backup_path.is_dir()
+    assert (backup_path / "manifest.json").is_file()
+    assert (backup_path / "operational.json").is_file()
 
     assert any("deleted messages:" in line for line in logs)
     assert any("deleted pending_replies:" in line for line in logs)
@@ -206,6 +211,57 @@ def test_flush_removes_operational_data_keeps_rag_and_bot(test_settings, test_te
     assert (test_settings.data_root / "docs" / slug / "manual.md").is_file()
 
 
+def test_flush_without_backup_skips_backup_dir(test_settings, test_tenant) -> None:
+    tenant, _token = test_tenant
+    _seed_operational_data(test_settings, tenant)
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    with factory() as session:
+        logs, backup_path = TenantFlushService(session, settings=test_settings).flush(
+            tenant.slug, backup=False
+        )
+        session.commit()
+    assert backup_path is None
+    assert not any("backup saved:" in line for line in logs)
+
+
+def test_flush_and_restore_roundtrip(test_settings, test_tenant) -> None:
+    tenant, _token = test_tenant
+    _seed_operational_data(test_settings, tenant)
+    slug = tenant.slug
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+
+    with factory() as session:
+        _, backup_path = TenantFlushService(session, settings=test_settings).flush(slug)
+        session.commit()
+    assert backup_path is not None
+
+    with factory() as session:
+        assert _count(session, MessageRow, tenant.id) == 0
+        assert _count(session, PendingReplyRow, tenant.id) == 0
+
+    with factory() as session:
+        logs = TenantFlushService(session, settings=test_settings).restore(slug, backup_path)
+        session.commit()
+
+    assert any("restored messages:" in line for line in logs)
+    assert any("restored pending_replies:" in line for line in logs)
+
+    with factory() as session:
+        assert _count(session, MessageRow, tenant.id) >= 1
+        assert _count(session, PendingReplyRow, tenant.id) >= 1
+        assert _count(session, HookEventRow, tenant.id) >= 1
+        assert _count(session, OrderRow, tenant.id) >= 1
+        assert _count(session, MailDraftRow, tenant.id) >= 1
+        assert _count(session, TestChatSessionRow, tenant.id) >= 1
+        assert _count(session, IngestedFileRow, tenant.id) == 1
+        assert _count(session, MailImapUidRow, tenant.id) == 1
+
+    assert (test_settings.data_root / "attachments" / slug / "1" / "file.pdf").is_file()
+    assert (test_settings.data_root / "quotes" / slug / "QTN-0001.pdf").is_file()
+
+
 def test_flush_unknown_slug_raises(test_settings, test_tenant) -> None:
     engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
@@ -223,6 +279,28 @@ def test_bot_flush_cli_requires_yes_without_tty(test_settings, test_tenant) -> N
     assert "--yes" in result.output
 
 
+def test_bot_restore_cli_with_yes(test_settings, test_tenant) -> None:
+    tenant, _ = test_tenant
+    _seed_operational_data(test_settings, tenant)
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    with factory() as session:
+        _, backup_path = TenantFlushService(session, settings=test_settings).flush(tenant.slug)
+        session.commit()
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr("chatbot.__main__.get_settings", lambda: test_settings)
+        result = runner.invoke(
+            app,
+            ["bot-restore", tenant.slug, str(backup_path), "--yes"],
+        )
+    assert result.exit_code == 0, result.output
+    assert "restored messages:" in result.output
+
+    with factory() as session:
+        assert _count(session, MessageRow, tenant.id) >= 1
+
+
 def test_bot_flush_cli_with_yes(test_settings, test_tenant) -> None:
     tenant, _ = test_tenant
     _seed_operational_data(test_settings, tenant)
@@ -230,6 +308,8 @@ def test_bot_flush_cli_with_yes(test_settings, test_tenant) -> None:
         mp.setattr("chatbot.__main__.get_settings", lambda: test_settings)
         result = runner.invoke(app, ["bot-flush", tenant.slug, "--yes"])
     assert result.exit_code == 0, result.output
+    assert "backup saved:" in result.output
+    assert "bot-restore" in result.output
     assert "Done." in result.output
 
     engine = create_db_engine(test_settings, for_tests=True)

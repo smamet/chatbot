@@ -386,4 +386,95 @@
       window.location.assign(row.dataset.href);
     });
   });
+
+  function initDocUploadDropzone() {
+    const form = document.getElementById("doc-upload-form");
+    if (!form) return;
+
+    const dropzone = form.querySelector(".validation-attachments-dropzone");
+    const input = form.querySelector(".validation-attachments-input");
+    const browse = form.querySelector(".validation-attachments-browse");
+    const errorEl = form.querySelector(".doc-upload-error");
+    if (!dropzone || !input) return;
+
+    function showError(message) {
+      if (!errorEl) return;
+      if (message) {
+        errorEl.textContent = message;
+        errorEl.hidden = false;
+      } else {
+        errorEl.textContent = "";
+        errorEl.hidden = true;
+      }
+    }
+
+    async function uploadFiles(fileList) {
+      if (!fileList || !fileList.length) return;
+      showError("");
+      setPageLoading(true);
+      const formData = new FormData();
+      for (const file of fileList) {
+        formData.append("files", file);
+      }
+      try {
+        const response = await fetch(form.action, {
+          method: "POST",
+          body: formData,
+          credentials: "same-origin",
+          redirect: "manual",
+        });
+        if (response.status === 303) {
+          const location = response.headers.get("Location");
+          window.location.href = location || `${form.action}?tab=documents`;
+          return;
+        }
+        const detail = await response.text();
+        showError(detail.slice(0, 200) || "Upload failed");
+      } catch (_err) {
+        showError("Upload failed");
+      } finally {
+        setPageLoading(false);
+      }
+    }
+
+    dropzone.addEventListener("click", (event) => {
+      if (event.target.closest(".validation-attachments-browse")) return;
+      input.click();
+    });
+
+    browse?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      input.click();
+    });
+
+    dropzone.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        input.click();
+      }
+    });
+
+    input.addEventListener("change", () => {
+      uploadFiles(input.files);
+      input.value = "";
+    });
+
+    dropzone.addEventListener("dragover", (event) => {
+      event.preventDefault();
+      dropzone.classList.add("is-dragover");
+    });
+
+    dropzone.addEventListener("dragleave", () => {
+      dropzone.classList.remove("is-dragover");
+    });
+
+    dropzone.addEventListener("drop", (event) => {
+      event.preventDefault();
+      dropzone.classList.remove("is-dragover");
+      uploadFiles(event.dataTransfer?.files);
+    });
+  }
+
+  initDocUploadDropzone();
 })();

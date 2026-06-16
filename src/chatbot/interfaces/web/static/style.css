@@ -765,6 +765,26 @@ textarea {
   margin-top: var(--space-md);
 }
 
+.doc-upload-card .validation-attachments-dropzone {
+  margin-bottom: var(--space-sm);
+}
+
+.doc-upload-card .doc-upload-error {
+  margin: var(--space-sm) 0 0;
+}
+
+.doc-sync-form {
+  margin-top: var(--space-md);
+}
+
+.doc-sync-intro {
+  margin: 0 0 var(--space-sm);
+}
+
+.doc-sync-actions {
+  margin-top: var(--space-sm);
+}
+
 .validation-attachments-dropzone {
   border: 2px dashed var(--color-border);
   border-radius: var(--radius-md);

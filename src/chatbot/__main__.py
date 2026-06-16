@@ -298,6 +298,10 @@ def bot_flush_cmd(
         bool,
         typer.Option("--yes", "-y", help="Skip confirmation (required without a TTY)"),
     ] = False,
+    no_backup: Annotated[
+        bool,
+        typer.Option("--no-backup", help="Do not save a backup before flushing"),
+    ] = False,
 ) -> None:
     """Clear all chats and operational logs for a bot; keep RAG, connectors, and config."""
     import sys
@@ -320,7 +324,50 @@ def bot_flush_cmd(
     with factory() as session:
         svc = TenantFlushService(session, settings=settings)
         try:
-            logs = svc.flush(slug)
+            logs, backup_path = svc.flush(slug, backup=not no_backup)
+        except TenantFlushError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
+        session.commit()
+        for line in logs:
+            typer.echo(line)
+    if backup_path is not None:
+        typer.echo(f"Restore with: chatbot bot-restore {slug} {backup_path} --yes")
+    typer.echo("Done.")
+
+
+@app.command("bot-restore")
+def bot_restore_cmd(
+    slug: Annotated[str, typer.Argument(help="Tenant slug")],
+    backup: Annotated[Path, typer.Argument(help="Backup directory from bot-flush")],
+    yes: Annotated[
+        bool,
+        typer.Option("--yes", "-y", help="Skip confirmation (required without a TTY)"),
+    ] = False,
+) -> None:
+    """Restore operational data from a bot-flush backup."""
+    import sys
+
+    if not yes:
+        if not sys.stdin.isatty():
+            typer.echo(
+                "No TTY: pass --yes / -y to confirm, e.g.\n"
+                f"  chatbot bot-restore {slug} {backup} --yes",
+                err=True,
+            )
+            raise typer.Exit(1)
+        typed = typer.prompt(f"Type the slug to confirm restore of '{slug}'")
+        if typed.strip() != slug:
+            typer.echo("Slug did not match; aborted.", err=True)
+            raise typer.Exit(1)
+
+    settings = get_settings()
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+    with factory() as session:
+        svc = TenantFlushService(session, settings=settings)
+        try:
+            logs = svc.restore(slug, backup)
         except TenantFlushError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(1) from exc
