@@ -1232,15 +1232,37 @@
 <div class="card" style="margin-bottom:1rem">
   <h2 class="card-title">API usage (last {{ usage_days }} days)</h2>
   <p>
-    <strong>{{ usage_summary.total_tokens }}</strong> total tokens
-    ({{ usage_summary.prompt_tokens }} in / {{ usage_summary.output_tokens }} out),
-    {{ usage_summary.call_count }} API calls
+    <strong class="tabular-nums">{{ format_count(usage_summary.total_tokens) }}</strong> total tokens
+    (<span class="tabular-nums">{{ format_count(usage_summary.prompt_tokens) }}</span> in /
+    <span class="tabular-nums">{{ format_count(usage_summary.output_tokens) }}</span> out),
+    <span class="tabular-nums">{{ format_count(usage_summary.call_count) }}</span> API calls
   </p>
+  {% if is_admin %}
+  <p>Internal estimate: <strong>{{ format_usd(cost_estimate.total_usd) }}</strong>
+    {% if client_cost_estimate %} · Client billable: <strong>{{ format_usd(client_cost_estimate.total_usd) }}</strong>{% endif %}
+  </p>
+  <p class="monitoring-disclaimer">Internal cost uses Google list prices. <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener">Pricing reference</a>.</p>
+  {% else %}
+  <p>Estimated cost: <strong>{{ format_usd(cost_estimate.total_usd) }}</strong></p>
+  <p class="monitoring-disclaimer">Estimated billable amount for this period. Not an invoice.</p>
+  {% endif %}
+</div>
+
+<div class="monitoring-charts">
+  <div class="card">
+    <h2 class="card-title">Daily tokens</h2>
+    <div class="monitoring-chart-wrap"><canvas id="bot-token-chart"></canvas></div>
+  </div>
+  <div class="card">
+    <h2 class="card-title">Daily disk</h2>
+    <div class="monitoring-chart-wrap"><canvas id="bot-disk-chart"></canvas></div>
+    <p class="monitoring-disclaimer">Disk history from nightly snapshots. Current live total below.</p>
+  </div>
 </div>
 
 <div class="card" style="margin-bottom:1rem">
-  <h2 class="card-title">Disk usage</h2>
-  <p><strong>{{ format_bytes(disk_usage.total_bytes) }}</strong> across {{ disk_usage.total_files }} files</p>
+  <h2 class="card-title">Disk usage (live)</h2>
+  <p><strong>{{ format_bytes(disk_usage.total_bytes) }}</strong> across <span class="tabular-nums">{{ format_count(disk_usage.total_files) }}</span> files</p>
   <div class="table-wrap">
     <table class="data-table">
       <thead><tr><th>Category</th><th>Size</th><th>Files</th></tr></thead>
@@ -1248,8 +1270,8 @@
       {% for cat in disk_usage.categories %}
       <tr>
         <td>{{ cat.label }}</td>
-        <td>{{ format_bytes(cat.bytes) }}</td>
-        <td>{{ cat.file_count }}</td>
+        <td class="tabular-nums">{{ format_bytes(cat.bytes) }}</td>
+        <td class="tabular-nums">{{ format_count(cat.file_count) }}</td>
       </tr>
       {% endfor %}
       </tbody>
@@ -1257,30 +1279,56 @@
   </div>
 </div>
 
+{% if is_admin %}
+<div class="card" style="margin-bottom:1rem">
+  <h2 class="card-title">Client billing rates ($/M tokens)</h2>
+  <p class="monitoring-disclaimer">Client admins see costs calculated with these rates only. Leave blank to use platform defaults (in {{ client_billing_defaults.input }} / out {{ client_billing_defaults.output }}).</p>
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/monitoring/client-billing">
+    <div class="form-inline-settings">
+      <label>Input $/M<input type="text" name="client_billing_input" value="{{ tenant.client_billing_input_per_million_usd or '' }}" placeholder="{{ client_billing_defaults.input }}"></label>
+      <label>Output $/M<input type="text" name="client_billing_output" value="{{ tenant.client_billing_output_per_million_usd or '' }}" placeholder="{{ client_billing_defaults.output }}"></label>
+    </div>
+    <div class="form-actions form-actions--compact">
+      <button type="submit" class="btn-primary">Save client rates</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
 <div class="card">
   <h2 class="card-title">Daily API usage</h2>
   <div class="table-wrap">
     <table class="data-table">
       <thead>
-        <tr><th>Date</th><th>Operation</th><th>Model</th><th>In</th><th>Out</th><th>Total</th><th>Calls</th></tr>
+        <tr><th>Date</th><th>Operation</th><th>Model</th><th>In</th><th>Out</th><th>Total</th><th>Calls</th><th>Est. cost</th></tr>
       </thead>
       <tbody>
-      {% for row in usage_daily %}
+      {% for row in usage_rows %}
       <tr>
-        <td>{{ row.usage_date }}</td>
-        <td><code>{{ row.operation }}</code></td>
-        <td><code>{{ row.model or '—' }}</code></td>
-        <td>{{ row.prompt_tokens }}</td>
-        <td>{{ row.output_tokens }}</td>
-        <td>{{ row.total_tokens }}</td>
-        <td>{{ row.call_count }}</td>
+        <td>{{ row.entry.usage_date }}</td>
+        <td><code>{{ row.entry.operation }}</code></td>
+        <td><code>{{ row.entry.model or '—' }}</code></td>
+        <td class="tabular-nums">{{ format_count(row.entry.prompt_tokens) }}</td>
+        <td class="tabular-nums">{{ format_count(row.entry.output_tokens) }}</td>
+        <td class="tabular-nums">{{ format_count(row.entry.total_tokens) }}</td>
+        <td class="tabular-nums">{{ format_count(row.entry.call_count) }}</td>
+        <td class="tabular-nums">{{ format_usd(row.cost_usd) }}{% if is_admin and row.unknown_model %} <span class="badge">unknown model</span>{% endif %}</td>
       </tr>
       {% else %}
-      <tr><td colspan="7" class="empty-state">No API usage recorded yet</td></tr>
+      <tr><td colspan="8" class="empty-state">No API usage recorded yet</td></tr>
       {% endfor %}
       </tbody>
     </table>
   </div>
 </div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="/static/monitoring.js"></script>
+<script>
+(function () {
+  MonitoringCharts.initTokenChart("bot-token-chart", {{ usage_chart_json | safe }});
+  MonitoringCharts.initDiskChart("bot-disk-chart", {{ disk_chart_json | safe }});
+})();
+</script>
 {% endif %}
 {% endblock %}

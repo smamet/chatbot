@@ -2239,8 +2239,8 @@ def test_admin_monitoring_global_page(dashboard_env) -> None:
         UsageRecorderService(SqlAlchemyApiUsageRepository(session)).record(
             tenant_id,
             "chat",
-            "gemini-2.0-flash",
-            LlmUsage(prompt_tokens=10, candidates_tokens=5, total_tokens=15),
+            "gemini-2.5-flash",
+            LlmUsage(prompt_tokens=1_500_000, candidates_tokens=0, total_tokens=1_500_000),
         )
         session.commit()
 
@@ -2248,7 +2248,21 @@ def test_admin_monitoring_global_page(dashboard_env) -> None:
     assert r.status_code == 200
     assert "Monitoring" in r.text
     assert slug in r.text
-    assert "10" in r.text
+    assert "1,500,000" in r.text
+    assert "platform-token-chart" in r.text
+    assert '"prompt_tokens"' in r.text
+    assert "Internal cost" in r.text
+
+
+def test_admin_bot_monitoring_shows_charts_and_client_billing_form(dashboard_env) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=monitoring")
+    assert r.status_code == 200
+    assert "bot-token-chart" in r.text
+    assert "Client billing rates" in r.text
+    assert "ai.google.dev" in r.text
+    assert "Internal estimate" in r.text
 
 
 def test_client_admin_can_open_bot_monitoring_tab(dashboard_env) -> None:
@@ -2258,6 +2272,10 @@ def test_client_admin_can_open_bot_monitoring_tab(dashboard_env) -> None:
     assert r.status_code == 200
     assert "API usage" in r.text
     assert "Disk usage" in r.text
+    assert "Estimated cost" in r.text
+    assert "Internal estimate" not in r.text
+    assert "ai.google.dev" not in r.text
+    assert "Client billing rates" not in r.text
 
 
 def test_client_operator_cannot_open_monitoring_tab(dashboard_env) -> None:

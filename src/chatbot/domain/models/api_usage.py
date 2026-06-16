@@ -30,3 +30,16 @@ class ApiUsageDayEntry:
     output_tokens: int
     total_tokens: int
     call_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class TokenDayPoint:
+    usage_date: date
+    prompt_tokens: int
+    output_tokens: int
+
+
+@dataclass(frozen=True, slots=True)
+class DiskDayPoint:
+    snapshot_date: date
+    total_bytes: int

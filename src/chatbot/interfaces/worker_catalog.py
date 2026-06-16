@@ -4,6 +4,10 @@ import argparse
 import logging
 import time
 
+from chatbot.adapters.persistence.disk_usage_repository import SqlAlchemyDiskUsageRepository
+from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from chatbot.application.disk_snapshot_service import DiskSnapshotService
+from chatbot.application.disk_usage_service import DiskUsageService
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.application.erpnext_catalog_sync_service import run_due_catalog_syncs
 from chatbot.config.settings import get_settings
@@ -13,11 +17,19 @@ logger = logging.getLogger(__name__)
 
 
 def run_once(settings, factory) -> list[str]:
+    logs: list[str] = []
     with factory() as session:
-        logs = run_due_catalog_syncs(session, settings=settings)
+        logs.extend(run_due_catalog_syncs(session, settings=settings))
+        disk_svc = DiskSnapshotService(
+            settings=settings,
+            disk_repo=SqlAlchemyDiskUsageRepository(session),
+            tenant_repo=SqlAlchemyTenantRepository(session),
+            disk_usage=DiskUsageService(settings),
+        )
+        logs.extend(disk_svc.record_all_if_due())
         if logs:
             session.commit()
-        return logs
+    return logs
 
 
 def main() -> None:

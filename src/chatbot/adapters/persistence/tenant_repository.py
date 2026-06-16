@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -34,6 +35,8 @@ def _row_to_tenant(row: TenantRow) -> Tenant:
         active=bool(row.active),
         created_at=row.created_at.replace(tzinfo=UTC) if row.created_at.tzinfo is None else row.created_at,
         updated_at=row.updated_at.replace(tzinfo=UTC) if row.updated_at.tzinfo is None else row.updated_at,
+        client_billing_input_per_million_usd=row.client_billing_input_per_million_usd,
+        client_billing_output_per_million_usd=row.client_billing_output_per_million_usd,
     )
 
 
@@ -99,6 +102,9 @@ class SqlAlchemyTenantRepository:
         token_hash: str | None = None,
         gemini_api_key: str | None = None,
         update_gemini_api_key: bool = False,
+        client_billing_input_per_million_usd: Decimal | None = None,
+        client_billing_output_per_million_usd: Decimal | None = None,
+        update_client_billing: bool = False,
     ) -> Tenant | None:
         row = self._session.get(TenantRow, tenant_id)
         if row is None:
@@ -117,6 +123,9 @@ class SqlAlchemyTenantRepository:
             row.token_hash = token_hash
         if update_gemini_api_key:
             row.gemini_api_key_enc = encrypt_text(gemini_api_key) if gemini_api_key else None
+        if update_client_billing:
+            row.client_billing_input_per_million_usd = client_billing_input_per_million_usd
+            row.client_billing_output_per_million_usd = client_billing_output_per_million_usd
         row.updated_at = datetime.now(UTC)
         self._session.flush()
         self._session.refresh(row)

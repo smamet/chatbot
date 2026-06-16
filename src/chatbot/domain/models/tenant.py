@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
+from decimal import Decimal
 
 
 @dataclass(frozen=True)
@@ -94,6 +95,8 @@ class Tenant:
     active: bool
     created_at: datetime
     updated_at: datetime
+    client_billing_input_per_million_usd: Decimal | None = None
+    client_billing_output_per_million_usd: Decimal | None = None
 
     @property
     def hooks_enabled(self) -> bool:

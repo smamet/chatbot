@@ -70,15 +70,27 @@ body {
 }
 
 .brand {
-  font-weight: 700;
-  font-size: 1.125rem;
-  color: var(--color-topbar-text);
+  display: inline-flex;
+  align-items: center;
   text-decoration: none;
-  letter-spacing: -0.02em;
+  line-height: 0;
+  padding: 5px 10px;
+
+  box-sizing: border-box;
+}
+
+.brand-logo {
+  display: block;
+  height: 26px;
+  width: auto;
 }
 
 .brand:hover {
-  color: #fff;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.brand:hover .brand-logo {
+  opacity: 0.92;
 }
 
 .nav-links {
@@ -1213,6 +1225,32 @@ table th {
   background: #f8fafc;
 }
 
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+.monitoring-charts {
+  display: grid;
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.monitoring-chart-wrap {
+  position: relative;
+  height: 220px;
+}
+
+.monitoring-chart-wrap canvas {
+  width: 100% !important;
+  height: 100% !important;
+}
+
+.monitoring-disclaimer {
+  font-size: 0.875rem;
+  color: var(--color-text-muted);
+  margin-top: 0.5rem;
+}
+
 .data-table tbody tr:hover,
 table tbody tr:hover {
   background: #f8fafc;
@@ -2033,12 +2071,11 @@ pre.log,
   border: 1px solid var(--color-border);
 }
 
-.login-card h1 {
-  margin: 0 0 var(--space-lg);
-  font-size: 1.5rem;
-  font-weight: 700;
-  letter-spacing: -0.03em;
-  text-align: center;
+.login-logo {
+  display: block;
+  height: 48px;
+  width: auto;
+  margin: 0 auto var(--space-lg);
 }
 
 .login-card button[type="submit"] {

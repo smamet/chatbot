@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     catalog_poll_seconds: int = Field(default=300, validation_alias="CATALOG_POLL_SECONDS")
 
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
-    chat_model: str = Field(default="gemini-2.0-flash", validation_alias="CHAT_MODEL")
+    chat_model: str = Field(default="gemini-2.5-flash", validation_alias="CHAT_MODEL")
     embedding_model: str = Field(default="gemini-embedding-001", validation_alias="EMBEDDING_MODEL")
     embed_retry_max: int = Field(default=5, validation_alias="EMBED_RETRY_MAX")
     embed_retry_base_429_seconds: float = Field(
@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     attachment_max_total_bytes: int = Field(
         default=26_214_400, validation_alias="ATTACHMENT_MAX_TOTAL_BYTES"
     )
-    rewrite_model: str = Field(default="gemini-2.0-flash", validation_alias="REWRITE_MODEL")
+    rewrite_model: str = Field(default="gemini-2.5-flash", validation_alias="REWRITE_MODEL")
 
     database_url: str = Field(
         default="mysql+pymysql://chatbot:chatbot@127.0.0.1:3306/chatbot",
@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     lancedb_cleanup_older_than_days: int = Field(
         default=1, validation_alias="LANCEDB_CLEANUP_OLDER_THAN_DAYS"
     )
+
+    gemini_pricing_json: str = Field(default="", validation_alias="GEMINI_PRICING_JSON")
+    client_billing_input_per_million_usd: float = Field(
+        default=1.0, validation_alias="CLIENT_BILLING_INPUT_PER_MILLION_USD"
+    )
+    client_billing_output_per_million_usd: float = Field(
+        default=3.0, validation_alias="CLIENT_BILLING_OUTPUT_PER_MILLION_USD"
+    )
+    disk_snapshot_enabled: bool = Field(default=True, validation_alias="DISK_SNAPSHOT_ENABLED")
 
     order_modification_window_hours: int = Field(
         default=6, validation_alias="ORDER_MODIFICATION_WINDOW_HOURS"

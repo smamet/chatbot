@@ -5,6 +5,7 @@ import re
 import secrets
 import shutil
 import unicodedata
+from decimal import Decimal
 
 from chatbot.config.settings import Settings
 from chatbot.domain.constants import DEFAULT_HOOK_INSTRUCTIONS
@@ -98,6 +99,20 @@ class TenantService:
         if tenant is None:
             return None
         return tenant, token
+
+    def update_client_billing(
+        self,
+        tenant_id: int,
+        *,
+        input_per_million_usd: Decimal | None,
+        output_per_million_usd: Decimal | None,
+    ) -> Tenant | None:
+        return self._repo.update(
+            tenant_id,
+            client_billing_input_per_million_usd=input_per_million_usd,
+            client_billing_output_per_million_usd=output_per_million_usd,
+            update_client_billing=True,
+        )
 
     def delete_tenant(self, tenant_id: int, *, settings: Settings) -> bool:
         tenant = self._repo.find_by_id(tenant_id)

@@ -6,7 +6,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.orm import ApiUsageDailyRow
-from chatbot.domain.models.api_usage import ApiUsageDayEntry, ApiUsageSummary
+from chatbot.domain.models.api_usage import ApiUsageDayEntry, ApiUsageSummary, TokenDayPoint
 
 
 class SqlAlchemyApiUsageRepository:
@@ -103,6 +103,49 @@ class SqlAlchemyApiUsageRepository:
             )
             for tenant_id, prompt, output, total, calls in rows
         }
+
+    def tenant_token_series_since(self, tenant_id: int, since: date) -> list[TokenDayPoint]:
+        rows = self._session.execute(
+            select(
+                ApiUsageDailyRow.usage_date,
+                func.coalesce(func.sum(ApiUsageDailyRow.prompt_tokens), 0),
+                func.coalesce(func.sum(ApiUsageDailyRow.output_tokens), 0),
+            )
+            .where(
+                ApiUsageDailyRow.tenant_id == tenant_id,
+                ApiUsageDailyRow.usage_date >= since,
+            )
+            .group_by(ApiUsageDailyRow.usage_date)
+            .order_by(ApiUsageDailyRow.usage_date)
+        ).all()
+        return [
+            TokenDayPoint(
+                usage_date=row[0],
+                prompt_tokens=int(row[1]),
+                output_tokens=int(row[2]),
+            )
+            for row in rows
+        ]
+
+    def platform_token_series_since(self, since: date) -> list[TokenDayPoint]:
+        rows = self._session.execute(
+            select(
+                ApiUsageDailyRow.usage_date,
+                func.coalesce(func.sum(ApiUsageDailyRow.prompt_tokens), 0),
+                func.coalesce(func.sum(ApiUsageDailyRow.output_tokens), 0),
+            )
+            .where(ApiUsageDailyRow.usage_date >= since)
+            .group_by(ApiUsageDailyRow.usage_date)
+            .order_by(ApiUsageDailyRow.usage_date)
+        ).all()
+        return [
+            TokenDayPoint(
+                usage_date=row[0],
+                prompt_tokens=int(row[1]),
+                output_tokens=int(row[2]),
+            )
+            for row in rows
+        ]
 
 
 def _row_to_entry(row: ApiUsageDailyRow) -> ApiUsageDayEntry:

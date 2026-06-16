@@ -7,6 +7,7 @@ import uuid
 from urllib.parse import quote as url_quote
 import threading
 from datetime import UTC
+from decimal import Decimal
 from pathlib import Path
 from queue import Empty, Queue
 
@@ -47,6 +48,8 @@ from chatbot.application.erpnext_catalog_sync_service import (
 )
 from chatbot.application.quote_test_service import create_erpnext_quotation_for_test
 from chatbot.application.hook_prompt_composer import compose_hook_instructions
+from chatbot.application.monitoring_dashboard_service import MonitoringDashboardService
+from chatbot.application.monitoring_format import format_count, format_usd
 from chatbot.application.disk_usage_service import DiskUsageService, format_bytes
 from chatbot.application.draft_edit_service import DraftEditError, save_pending_reply_draft
 from chatbot.application.outbound_orchestrator import erpnext_integration_for_tenant, queue_after_chat
@@ -1225,16 +1228,44 @@ def bot_detail(
     elif tab == "monitoring":
         if not user_service.can_edit(user):
             raise HTTPException(status_code=403)
-        usage_days = 30
-        since = usage_since_date(usage_days)
-        recorder = UsageRecorderService(SqlAlchemyApiUsageRepository(session))
-        disk_svc = DiskUsageService(settings)
-        ctx["usage_days"] = usage_days
-        ctx["usage_summary"] = recorder.tenant_summary_since(tenant.id, since)
-        ctx["usage_daily"] = recorder.tenant_daily_since(tenant.id, since)
-        ctx["disk_usage"] = disk_svc.tenant_usage(tenant.slug)
+        is_admin = user.role == UserRole.ADMIN
+        mon = MonitoringDashboardService(session, settings)
+        ctx.update(mon.bot_context(tenant, days=30, is_admin=is_admin))
         ctx["format_bytes"] = format_bytes
+        ctx["format_count"] = format_count
+        ctx["format_usd"] = format_usd
+        ctx["is_admin"] = is_admin
+        ctx["client_billing_defaults"] = {
+            "input": settings.client_billing_input_per_million_usd,
+            "output": settings.client_billing_output_per_million_usd,
+        }
     return templates.TemplateResponse(request, "bots/detail.html", ctx)
+
+
+@router.post("/bots/{slug}/monitoring/client-billing")
+def bot_save_client_billing(
+    slug: str,
+    client_billing_input: str = Form(""),
+    client_billing_output: str = Form(""),
+    user: User = Depends(require_admin),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+
+    def _parse_rate(raw: str) -> Decimal | None:
+        text = raw.strip()
+        if not text:
+            return None
+        return Decimal(text)
+
+    tenant_service.update_client_billing(
+        tenant.id,
+        input_per_million_usd=_parse_rate(client_billing_input),
+        output_per_million_usd=_parse_rate(client_billing_output),
+    )
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=monitoring", status_code=303)
 
 
 @router.post("/bots/{slug}/settings")
@@ -3044,34 +3075,24 @@ def monitoring_global(
 ):
     if user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403)
-    usage_days = 7
-    since = usage_since_date(usage_days)
-    recorder = UsageRecorderService(SqlAlchemyApiUsageRepository(session))
-    disk_svc = DiskUsageService(settings)
+    usage_days = 30
     tenants = tenant_service.list_tenants()
-    usage_by_tenant = recorder.all_tenant_summaries_since(since)
-    rows = []
-    for tenant in tenants:
-        usage = usage_by_tenant.get(
-            tenant.id,
-            recorder.tenant_summary_since(tenant.id, since),
-        )
-        rows.append(
-            {
-                "tenant": tenant,
-                "disk": disk_svc.tenant_usage(tenant.slug),
-                "usage": usage,
-            }
-        )
+    mon = MonitoringDashboardService(session, settings)
+    payload = mon.global_context(tenants, days=usage_days)
     return templates.TemplateResponse(
         request,
         "monitoring/list.html",
         {
             "user": user,
-            "rows": rows,
-            "host_disk": disk_svc.host_usage(),
+            "rows": payload["rows"],
+            "host_disk": payload["host_disk"],
             "usage_days": usage_days,
             "format_bytes": format_bytes,
+            "format_count": format_count,
+            "format_usd": format_usd,
+            "usage_chart_json": payload["usage_chart_json"],
+            "disk_charts_json": payload["disk_charts_json"],
+            "platform_internal_cost_usd": payload["platform_internal_cost_usd"],
             "title": "Monitoring",
         },
     )

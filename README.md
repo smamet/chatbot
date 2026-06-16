@@ -19,6 +19,7 @@ cp .env.example .env
 |-----|---------|
 | http://localhost:8000/healthz | Health check |
 | http://localhost:8000/auth/login | Dashboard (session login) |
+| http://localhost:8000/dashboard/monitoring | API usage & disk monitoring (admin) |
 | http://localhost:80/… | Same via Caddy (optional) |
 | `POST /c/{slug}/chat` | Chat API (`Authorization: Bearer <tenant_token>`) |
 
@@ -26,8 +27,8 @@ cp .env.example .env
 
 | Role | Who | Access |
 |------|-----|--------|
-| `admin` | Platform admin | Everything |
-| `client_admin` | Bot manager | Assigned bots — config, connectors, validation |
+| `admin` | Platform admin | Everything — global monitoring, internal cost estimates, per-bot client billing rates |
+| `client_admin` | Bot manager | Assigned bots — config, connectors, validation, **monitoring** (tokens, disk, **client billable cost only**) |
 | `client_operator` | Validation operator | Assigned bots — validation inbox/detail/history only |
 
 Create an operator: `./sail chatbot user-create op@example.com -p '…' --role client_operator`, then an admin assigns bot access under **Users**. On login, a single-bot operator lands on the validation inbox; multiple bots show a picker where **Open** goes straight to validation.
@@ -65,6 +66,7 @@ mkdir -p ./data/catalog
 | Variable | Purpose |
 |----------|---------|
 | `GEMINI_API_KEY` | LLM + embeddings (fallback if tenant has no override) |
+| `CHAT_MODEL` / `REWRITE_MODEL` | Default Gemini chat model (`gemini-2.5-flash`) |
 | `ADMIN_TOKEN` | `/admin/*` API + Streamlit legacy admin pages |
 | `APP_SECRET_KEY` | Fernet — encrypts connector configs in DB |
 | `SESSION_SECRET` | Dashboard session cookies |
@@ -77,7 +79,7 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 **Automation worker** processes `hook_events` (orders, etc.). Compose starts `worker-automation` automatically; locally: `python -m chatbot.interfaces.worker_automation`.
 
-**Mail worker** polls IMAP inboxes (`worker-mail`). **Catalog worker** syncs ERPNext item snapshots into RAG when enabled per bot (`worker-catalog`). Locally: `python -m chatbot.interfaces.worker_mail` / `python -m chatbot.interfaces.worker_catalog --once`.
+**Mail worker** polls IMAP inboxes (`worker-mail`). **Catalog worker** syncs ERPNext item snapshots into RAG when enabled per bot (`worker-catalog`) and records **daily disk usage snapshots** (per tenant + host) once per UTC day. Locally: `python -m chatbot.interfaces.worker_mail` / `python -m chatbot.interfaces.worker_catalog --once`.
 
 **Email testing (dev)** — GreenMail (inbound IMAP) + Mailpit (outbound SMTP UI):
 
@@ -89,12 +91,14 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 | URL | Purpose |
 |-----|---------|
 | http://127.0.0.1:8025 | Mailpit — view outbound emails after Validation approve |
-
-**Validation (email):** inbox on the bot **Validation** tab; open a pending reply to edit the draft, attach files (drag-and-drop), and approve. Attachments are stored under `data/attachments/{slug}/{reply_id}/` and removed on approve/reject. Quote PDFs from ERPNext are attached automatically when applicable.
 | http://127.0.0.1:8081 | GreenMail REST API |
 | Dashboard → Test email | Inject simulated client mail into bot inbox |
 
+**Validation (email):** inbox on the bot **Validation** tab; open a pending reply to edit the draft, attach files (drag-and-drop), and approve. Attachments are stored under `data/attachments/{slug}/{reply_id}/` and removed on approve/reject. Quote PDFs from ERPNext are attached automatically when applicable.
+
 See [docs/dev/greenmail.md](docs/dev/greenmail.md) for connector presets (IN: GreenMail, OUT: Mailpit).
+
+**Monitoring:** admins open **Monitoring** in the top nav for a platform-wide view; bot managers open a bot → **Monitoring** tab. Shows last 30 days of Gemini token usage (in/out), live disk breakdown, trend charts, and **estimated USD cost**. Internal estimates use published Google list prices (`gemini-2.5-flash`: $0.30 / $2.50 per 1M input/output tokens). Client admins see billable amounts only, using platform defaults (`CLIENT_BILLING_*` in `.env`) or per-bot rates set by an admin on the monitoring tab. Override list prices without a deploy via `GEMINI_PRICING_JSON`. Estimates are not invoices — see [Google pricing](https://ai.google.dev/gemini-api/docs/pricing). After upgrading, run `./sail migrate` (migrations `014`–`016`) and `./sail restart worker-catalog` so disk history charts populate.
 
 **Channel credentials** (WhatsApp, Messenger, Instagram) belong in the **dashboard → bot → Connectors**, not in `.env`. Webhook URLs are per bot: `https://<host>/webhooks/whatsapp/{slug}`, etc.
 
@@ -193,10 +197,34 @@ Each active item becomes one markdown file under `data/catalog/{slug}/{item_code
 
 Optional env: `CATALOG_POLL_SECONDS` — catalog worker poll interval (not the per-bot sync interval, which is in integration config).
 
+**Monitoring env (optional):**
+
+| Variable | Purpose |
+|----------|---------|
+| `GEMINI_PRICING_JSON` | JSON override of per-model $/1M token rates (merged over built-in defaults) |
+| `CLIENT_BILLING_INPUT_PER_MILLION_USD` | Flat client billable input rate (default 1.0) |
+| `CLIENT_BILLING_OUTPUT_PER_MILLION_USD` | Flat client billable output rate (default 3.0) |
+| `DISK_SNAPSHOT_ENABLED` | Nightly disk snapshots via catalog worker (default true) |
+
 ```bash
 # One-off sync for all due tenants (inside container):
 python -m chatbot.interfaces.worker_catalog --once
 ```
+
+---
+
+## Monitoring & usage billing
+
+Gemini API calls (chat, rewrite, embed) are metered into `api_usage_daily`. Disk usage is scanned on demand and snapshotted nightly into `disk_usage_daily` by `worker-catalog`.
+
+| View | Who | What |
+|------|-----|------|
+| `/dashboard/monitoring` | `admin` | All bots — token chart, disk trends, internal + client cost per bot |
+| `?tab=monitoring` on bot detail | `admin`, `client_admin` | Per-bot charts, usage table, live disk; admins can set client billing $/M |
+
+**Cost tiers:** admins see **internal** estimates from Google list prices (per model; default chat model `gemini-2.5-flash`). **Client billable** uses a single flat input/output $/M rate — platform default in `.env` or per-bot override on the admin monitoring form (`tenants.client_billing_*`, not in bot config JSON).
+
+Disk history charts need at least one worker snapshot; restart `worker-catalog` after deploy if charts are empty.
 
 ---
 

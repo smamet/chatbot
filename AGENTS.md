@@ -9,6 +9,7 @@
 - **Hooks**: LLM appends global marker `===HOOK===` + JSON → `hook_events` → `worker-automation` dispatches **automation modules** (`core.orders` → local DB; `erpnext.quote` → validation queue + ERPNext on approve). Module list per bot in `config_json.automation_modules`. Run `./sail migrate` after pull for `013_validation_audit` (validation audit + `client_operator` role rename).
 - **ERPNext catalog → RAG**: `worker-catalog` polls tenants with active ERPNext + `sync_catalog_to_rag`; fetches paginated Item + Bin (stock aggregate) + Item Price (`catalog_price_list`, default Standard Selling), writes `data/catalog/{slug}/*.md`, then `reconcile_catalog_rag()` → `IngestSyncService.ingest_paths_batched()` on that folder only (never `data/docs/`). Price line: Item Price → standard_rate → `not available`. Config in integration schema (`sync_catalog_to_rag`, `catalog_sync_interval_minutes`, `catalog_include_stock`, `catalog_price_list`); runtime metadata in encrypted config (`catalog_last_sync_at`, `catalog_last_item_count`, `catalog_last_error`) — merge-safe, not in schema fields. Manual sync: dashboard **Sync catalog now** or `./sail chatbot catalog-rag sync {slug}`. Resume partial RAG index: `./sail chatbot catalog-rag rebuild {slug}` (uses `catalog_rag_index_plan()` for missing/changed files). Embedding retries (429/503) live in `GeminiEmbedder` only — shared by UI, workers, CLI, document sync.
 - **Connectors**: per-tenant channel creds in `connectors.config_enc` (Fernet via `APP_SECRET_KEY`).
+- **Monitoring**: Gemini calls wrapped with `MeteredLlmClient` / `MeteredEmbedder` → daily rollups in `api_usage_daily` (`UsageRecorderService`). Live disk scan via `DiskUsageService`; nightly history in `disk_usage_daily` (`DiskSnapshotService`, triggered from `worker-catalog` once per UTC day). Dashboard: admin `/dashboard/monitoring` + per-bot `?tab=monitoring`. Cost estimates from local list prices (`gemini_pricing.py`, default model `gemini-2.5-flash` at $0.30/$2.50 per 1M in/out) — Google has no per-model pricing API. Two-tier billing: **internal** (per-model Google rates, admin only) vs **client billable** (flat $/M from `CLIENT_BILLING_*` env + optional per-tenant override on `tenants.client_billing_*`, admin-only — not in `config_json`). Run `./sail migrate` after pull for `014_api_usage_daily`, `015_disk_usage_daily`, `016_tenant_client_billing`.
 
 ## Docker (Sail)
 
@@ -34,8 +35,8 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `work
 
 | Role | Scope | Dashboard |
 |------|-------|-----------|
-| `admin` | All bots | Users, hooks, create/delete bots, all tabs |
-| `client_admin` | Assigned bots (`user_bot_access`) | Config, connectors, integrations, documents, validation |
+| `admin` | All bots | Users, hooks, monitoring (global + all bots), create/delete bots, all tabs |
+| `client_admin` | Assigned bots (`user_bot_access`) | Config, connectors, integrations, documents, validation, **monitoring** (assigned bots — tokens/disk charts; **client billable cost only**) |
 | `client_operator` | Assigned bots | **Validation only** — inbox, detail, history; full operator actions (edit, approve/reject, attachments) |
 
 - **Login home** (`client_operator`): one assigned bot → validation inbox; two or more → bot picker (**Open** → validation); none → empty list.
@@ -92,6 +93,16 @@ Clears messages, `hook_events`, validation queue (`pending_replies` + edits + au
 - Limits: `ATTACHMENT_MAX_BYTES` (default 10 MiB), `ATTACHMENT_MAX_TOTAL_BYTES` (default 25 MiB).
 - API: `POST/DELETE /dashboard/bots/{slug}/validation/{reply_id}/attachments` (email + pending only).
 
+### Monitoring (API usage, disk, estimated cost)
+
+- **Global (admin):** `/dashboard/monitoring` — platform token chart (30 days), disk charts (sum of tenants + host), per-bot table with internal + client billable columns.
+- **Per-bot:** `?tab=monitoring` (`can_edit` required). Token in/out totals, daily charts (Chart.js), live disk breakdown, daily usage table with est. cost. Admins also see internal estimate + Google pricing link + **Client billing rates** form (`POST /dashboard/bots/{slug}/monitoring/client-billing`).
+- **Metering:** `MeteredLlmClient` / `MeteredEmbedder` at Gemini choke points; `recorder=None` for CLI paths that should not bill. Recorder errors are swallowed so chat/sync never fails on usage DB issues.
+- **Tables:** `api_usage_daily` (per tenant/date/operation/model); `disk_usage_daily` (`tenant_id` NULL = host snapshot).
+- **Disk snapshots:** `DiskSnapshotService.record_all_if_due()` in `worker_catalog.run_once()` after catalog sync — runs even when no ERPNext tenants; idempotent upsert for today (UTC). Env `DISK_SNAPSHOT_ENABLED` (default on). Restart `worker-catalog` after deploy.
+- **Cost:** `UsageCostService` + `gemini_pricing.py`. Override list prices via `GEMINI_PRICING_JSON` (JSON map of model → `{input, output}` per 1M USD). Client view uses flat `CLIENT_BILLING_INPUT_PER_MILLION_USD` / `CLIENT_BILLING_OUTPUT_PER_MILLION_USD` or per-tenant nullable columns on `tenants` (admin sets on monitoring tab).
+- **Display:** `format_count()` / `format_usd()` Jinja filters; large token counts use thousands separators.
+
 ### Run locally (no Docker)
 
 ```bash
@@ -130,7 +141,7 @@ pytest
 # ./sail test
 ```
 
-Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`, `test_erpnext_catalog_sync_service.py`, `test_erpnext_client.py`, `test_gemini_embedder.py`, `test_cli_catalog_rag.py`, `test_tenant_flush_service.py`.
+Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.py`, `test_hooks_flow.py`, `test_hook_extractor.py`, `test_mail_worker.py`, `test_imap_client.py`, `test_erpnext_catalog_sync_service.py`, `test_erpnext_client.py`, `test_gemini_embedder.py`, `test_cli_catalog_rag.py`, `test_tenant_flush_service.py`, `test_usage_cost_service.py`, `test_monitoring_format.py`, `test_disk_snapshot_service.py`.
 
 ## Environment (`.env`)
 
@@ -138,7 +149,11 @@ Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.p
 
 **Storage:** `DATA_ROOT`, `LANCEDB_ROOT`; `DATABASE_URL` (SQLite local, MySQL in Docker).
 
-**Workers:** `HOOK_POLL_SECONDS`, `MAIL_POLL_SECONDS`, `CATALOG_POLL_SECONDS` (catalog worker poll; default 300).
+**Workers:** `HOOK_POLL_SECONDS`, `MAIL_POLL_SECONDS`, `CATALOG_POLL_SECONDS` (catalog worker poll; default 300). Catalog worker also runs daily disk snapshots when due.
+
+**Models (defaults):** `CHAT_MODEL`, `REWRITE_MODEL` (default `gemini-2.5-flash`), `EMBEDDING_MODEL` (default `gemini-embedding-001`).
+
+**Monitoring / billing estimates:** `GEMINI_PRICING_JSON` (optional JSON override of per-model list prices), `CLIENT_BILLING_INPUT_PER_MILLION_USD` / `CLIENT_BILLING_OUTPUT_PER_MILLION_USD` (flat client-facing $/M; default 1.0 / 3.0), `DISK_SNAPSHOT_ENABLED` (default true).
 
 **Embedding retries:** `EMBED_RETRY_MAX` (default 5), `EMBED_RETRY_BASE_429_SECONDS` (30), `EMBED_RETRY_BASE_503_SECONDS` (5).
 
@@ -157,3 +172,5 @@ Key tests: `test_tenant_isolation.py`, `test_api_chat.py`, `test_dashboard_web.p
 - Run full-catalog RAG reconcile on `data/docs/` when syncing ERPNext items (use `data/catalog/{slug}/` only).
 - Assume RAG stock/price is real-time — it reflects the last catalog sync snapshot.
 - Use `bot-flush` when you need a clean operational slate — it does not rebuild or clear RAG (`ingested_files`, LanceDB, `data/docs/`, `data/catalog/`).
+- Store client billable rates in `config_json` — use `tenants.client_billing_*` columns (admin-only); `client_admin` can edit bot config.
+- Treat monitoring cost figures as list-price estimates — not Google invoices; refresh rates via `GEMINI_PRICING_JSON` when Google changes pricing.

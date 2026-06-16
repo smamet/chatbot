@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
 
-from sqlalchemy import Boolean, Date, DateTime, ForeignKey, Index, Integer, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -22,6 +23,12 @@ class TenantRow(Base):
     gemini_api_key_enc: Mapped[str | None] = mapped_column(Text(), nullable=True)
     config_json: Mapped[str] = mapped_column(Text(), default="{}")
     active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    client_billing_input_per_million_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
+    client_billing_output_per_million_usd: Mapped[Decimal | None] = mapped_column(
+        Numeric(10, 4), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -363,3 +370,16 @@ class ApiUsageDailyRow(Base):
     output_tokens: Mapped[int] = mapped_column(Integer, default=0)
     total_tokens: Mapped[int] = mapped_column(Integer, default=0)
     call_count: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class DiskUsageDailyRow(Base):
+    __tablename__ = "disk_usage_daily"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "snapshot_date", name="uq_disk_usage_daily"),
+        Index("ix_disk_usage_daily_tenant_date", "tenant_id", "snapshot_date"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int | None] = mapped_column(ForeignKey("tenants.id"), nullable=True, index=True)
+    snapshot_date: Mapped[date] = mapped_column(Date(), nullable=False)
+    total_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
