@@ -82,6 +82,21 @@ class SqlAlchemyApiUsageRepository:
         ).all()
         return [_row_to_entry(r) for r in rows]
 
+    def all_tenant_daily_since(self, since: date) -> dict[int, list[ApiUsageDayEntry]]:
+        rows = self._session.scalars(
+            select(ApiUsageDailyRow)
+            .where(ApiUsageDailyRow.usage_date >= since)
+            .order_by(
+                ApiUsageDailyRow.tenant_id,
+                ApiUsageDailyRow.usage_date.desc(),
+                ApiUsageDailyRow.operation,
+            )
+        ).all()
+        by_tenant: dict[int, list[ApiUsageDayEntry]] = {}
+        for row in rows:
+            by_tenant.setdefault(int(row.tenant_id), []).append(_row_to_entry(row))
+        return by_tenant
+
     def all_tenant_summaries_since(self, since: date) -> dict[int, ApiUsageSummary]:
         rows = self._session.execute(
             select(

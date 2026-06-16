@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from datetime import date
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -22,10 +21,6 @@ from chatbot.config.settings import Settings
 from chatbot.domain.models.tenant import Tenant
 
 
-def _until() -> date:
-    return today_utc()
-
-
 class MonitoringDashboardService:
     def __init__(self, session: Session, settings: Settings) -> None:
         self._session = session
@@ -38,7 +33,7 @@ class MonitoringDashboardService:
 
     def bot_context(self, tenant: Tenant, *, days: int, is_admin: bool) -> dict:
         since = usage_since_date(days)
-        until = _until()
+        until = today_utc()
         usage_summary = self._recorder.tenant_summary_since(tenant.id, since)
         usage_daily = self._recorder.tenant_daily_since(tenant.id, since)
         disk_usage = self._disk_usage.tenant_usage(tenant.slug)
@@ -90,8 +85,9 @@ class MonitoringDashboardService:
 
     def global_context(self, tenants: list[Tenant], *, days: int) -> dict:
         since = usage_since_date(days)
-        until = _until()
+        until = today_utc()
         usage_by_tenant = self._recorder.all_tenant_summaries_since(since)
+        daily_by_tenant = self._recorder.all_tenant_daily_since(since)
         disk_svc = self._disk_usage
 
         token_points = fill_token_series(
@@ -119,7 +115,7 @@ class MonitoringDashboardService:
                 tenant.id,
                 self._recorder.tenant_summary_since(tenant.id, since),
             )
-            daily = self._recorder.tenant_daily_since(tenant.id, since)
+            daily = daily_by_tenant.get(tenant.id, [])
             internal = self._cost.estimate_cost(
                 daily,
                 profile="internal",

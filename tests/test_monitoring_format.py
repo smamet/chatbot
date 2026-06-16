@@ -35,6 +35,16 @@ def test_multi_disk_chart_payload() -> None:
     assert payload["series"][0]["total_bytes"] == [100, 200]
 
 
+def test_multi_disk_chart_payload_rejects_length_mismatch() -> None:
+    points_a = [DiskDayPoint(snapshot_date=date(2026, 6, 1), total_bytes=100)]
+    points_b = [
+        DiskDayPoint(snapshot_date=date(2026, 6, 1), total_bytes=1000),
+        DiskDayPoint(snapshot_date=date(2026, 6, 2), total_bytes=1100),
+    ]
+    with pytest.raises(ValueError, match="series length mismatch"):
+        multi_disk_chart_payload(("Bots", points_a), ("Host", points_b))
+
+
 def test_disk_pie_chart_payload() -> None:
     payload = disk_pie_chart_payload(used_bytes=60, free_bytes=40)
     assert payload == {"used_bytes": 60, "free_bytes": 40}

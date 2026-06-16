@@ -60,6 +60,9 @@ def disk_chart_payload(points: list[DiskDayPoint], *, label: str) -> dict:
 def multi_disk_chart_payload(*series: tuple[str, list[DiskDayPoint]]) -> dict:
     if not series:
         return {"labels": [], "series": []}
+    expected_len = len(series[0][1])
+    if not all(len(points) == expected_len for _, points in series):
+        raise ValueError("series length mismatch")
     labels = [p.snapshot_date.isoformat() for p in series[0][1]]
     return {
         "labels": labels,

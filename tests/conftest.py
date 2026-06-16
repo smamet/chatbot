@@ -15,6 +15,8 @@ from chatbot.domain.models.tenant import Tenant, TenantConfig
 class TestSettings(Settings):
     """App settings for tests: explicit kwargs only (never OS env for DATABASE_URL, etc.)."""
 
+    __test__ = False
+
     model_config = SettingsConfigDict(env_file=None, extra="ignore", populate_by_name=True)
 
     @classmethod

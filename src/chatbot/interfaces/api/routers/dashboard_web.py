@@ -7,7 +7,7 @@ import uuid
 from urllib.parse import quote as url_quote
 import threading
 from datetime import UTC
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from queue import Empty, Queue
 
@@ -1257,7 +1257,16 @@ def bot_save_client_billing(
         text = raw.strip()
         if not text:
             return None
-        return Decimal(text)
+        try:
+            value = Decimal(text)
+        except InvalidOperation:
+            raise HTTPException(status_code=422, detail="Invalid billing rate") from None
+        if not value.is_finite() or value < 0:
+            raise HTTPException(
+                status_code=422,
+                detail="Billing rate must be a non-negative number",
+            )
+        return value
 
     tenant_service.update_client_billing(
         tenant.id,

@@ -54,6 +54,9 @@ class UsageRecorderService:
     def all_tenant_summaries_since(self, since) -> dict[int, ApiUsageSummary]:
         return self._repo.all_tenant_summaries_since(since)
 
+    def all_tenant_daily_since(self, since) -> dict[int, list[ApiUsageDayEntry]]:
+        return self._repo.all_tenant_daily_since(since)
+
     def tenant_token_series_since(self, tenant_id: int, since):
         return self._repo.tenant_token_series_since(tenant_id, since)
 

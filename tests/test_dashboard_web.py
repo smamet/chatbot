@@ -2265,7 +2265,24 @@ def test_admin_bot_monitoring_shows_charts_and_client_billing_form(dashboard_env
     assert "Internal estimate" in r.text
 
 
-def test_client_admin_can_open_bot_monitoring_tab(dashboard_env) -> None:
+def test_admin_client_billing_rejects_invalid_rate(dashboard_env) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/monitoring/client-billing",
+        data={"client_billing_input": "not-a-number", "client_billing_output": "1.5"},
+    )
+    assert r.status_code == 422
+
+
+def test_admin_client_billing_rejects_negative_rate(dashboard_env) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/monitoring/client-billing",
+        data={"client_billing_input": "-1", "client_billing_output": "1.5"},
+    )
+    assert r.status_code == 422
     client, _admin, editor, slug, _tenant_id, _data, _factory = dashboard_env
     _login(client, editor.email, "edit-pass")
     r = client.get(f"/dashboard/bots/{slug}?tab=monitoring")

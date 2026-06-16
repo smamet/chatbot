@@ -21,6 +21,8 @@ def test_chat_session_label(session_id: str) -> str:
 
 
 class TestChatSessionRepository:
+    __test__ = False
+
     def __init__(self, session: Session, tenant_id: int) -> None:
         self._session = session
         self._tenant_id = tenant_id

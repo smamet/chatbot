@@ -17,15 +17,18 @@ class LanceVectorStore:
         self._db_path.mkdir(parents=True, exist_ok=True)
         self._db = lancedb.connect(str(self._db_path))
 
+    def _table_exists(self) -> bool:
+        return self._TABLE in self._db.list_tables().tables
+
     def delete_by_source_path(self, source_path: str) -> None:
-        if self._TABLE not in self._db.table_names():
+        if not self._table_exists():
             return
         tbl = self._db.open_table(self._TABLE)
         safe = source_path.replace("'", "''")
         tbl.delete(f"source_path == '{safe}'")
 
     def clear_all(self) -> None:
-        if self._TABLE in self._db.table_names():
+        if self._table_exists():
             self._db.drop_table(self._TABLE)
 
     def upsert(self, records: list[VectorRecord]) -> None:
@@ -40,13 +43,13 @@ class LanceVectorStore:
             }
             for r in records
         ]
-        if self._TABLE not in self._db.table_names():
+        if not self._table_exists():
             self._db.create_table(self._TABLE, data=rows)
         else:
             self._db.open_table(self._TABLE).add(rows)
 
     def search(self, query_vector: list[float], *, top_k: int) -> list[RetrievedChunk]:
-        if self._TABLE not in self._db.table_names():
+        if not self._table_exists():
             return []
         tbl = self._db.open_table(self._TABLE)
         if tbl.count_rows() == 0:
@@ -68,7 +71,7 @@ class LanceVectorStore:
         return out
 
     def optimize(self, *, cleanup_older_than: timedelta | None = None) -> str | None:
-        if self._TABLE not in self._db.table_names():
+        if not self._table_exists():
             return None
         tbl = self._db.open_table(self._TABLE)
         if tbl.count_rows() == 0:

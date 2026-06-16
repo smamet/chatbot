@@ -328,6 +328,8 @@ class MailImapUidRow(Base):
 
 
 class TestChatSessionRow(Base):
+    __test__ = False
+
     __tablename__ = "test_chat_sessions"
     __table_args__ = (
         UniqueConstraint("tenant_id", "session_id", name="uq_test_chat_sessions_tenant_session"),

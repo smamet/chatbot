@@ -80,3 +80,17 @@ def test_all_tenant_summaries_since(usage_session: Session) -> None:
     summaries = recorder.all_tenant_summaries_since(date(2000, 1, 1))
     assert summaries[10].total_tokens == 6
     assert summaries[11].total_tokens == 3
+
+
+def test_all_tenant_daily_since(usage_session: Session) -> None:
+    repo = SqlAlchemyApiUsageRepository(usage_session)
+    recorder = UsageRecorderService(repo)
+    recorder.record(10, "chat", "m", LlmUsage(prompt_tokens=5, candidates_tokens=1, total_tokens=6))
+    recorder.record(11, "chat", "m", LlmUsage(prompt_tokens=1, candidates_tokens=2, total_tokens=3))
+    usage_session.commit()
+
+    daily = recorder.all_tenant_daily_since(date(2000, 1, 1))
+    assert len(daily[10]) == 1
+    assert daily[10][0].total_tokens == 6
+    assert daily[11][0].total_tokens == 3
+    assert daily.get(99, []) == []
