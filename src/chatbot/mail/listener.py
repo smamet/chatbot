@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
+
 from sqlalchemy.orm import Session, sessionmaker
 
 from chatbot.adapters.mail.imap_client import IncomingMail, imap_client
@@ -11,6 +13,7 @@ from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepos
 from chatbot.application.channel_outbound import get_outbound_connector
 from chatbot.application.chat_service_factory import build_chat_service_for_worker
 from chatbot.application.connector_service import ConnectorService
+from chatbot.application.mail_connector_runtime import prepare_email_connector_config
 from chatbot.application.outbound_orchestrator import queue_after_chat
 from chatbot.config.settings import Settings
 from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorType
@@ -122,7 +125,13 @@ def _process_tenant_inbox(
         return _uid_known(uid_repo, draft_repo, uid)
 
     processed = 0
-    with imap_client(in_connector.config, timeout=_IMAP_TIMEOUT) as imap:
+    mail_config = prepare_email_connector_config(
+        in_connector,
+        session=session,
+        direction=ConnectorDirection.IN,
+        settings=settings,
+    )
+    with imap_client(mail_config, timeout=_IMAP_TIMEOUT) as imap:
         for mail in imap.fetch_pending(skip_uid, since_date=since_date):
             try:
                 if _process_one_mail(

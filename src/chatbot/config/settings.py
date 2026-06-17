@@ -86,6 +86,13 @@ class Settings(BaseSettings):
 
     public_base_url: str = Field(default="", validation_alias="PUBLIC_BASE_URL")
 
+    microsoft_mail_client_id: str = Field(default="", validation_alias="MICROSOFT_MAIL_CLIENT_ID")
+    microsoft_mail_client_secret: str = Field(
+        default="", validation_alias="MICROSOFT_MAIL_CLIENT_SECRET"
+    )
+    google_mail_client_id: str = Field(default="", validation_alias="GOOGLE_MAIL_CLIENT_ID")
+    google_mail_client_secret: str = Field(default="", validation_alias="GOOGLE_MAIL_CLIENT_SECRET")
+
     whatsapp_verify_token: str = Field(default="", validation_alias="WHATSAPP_VERIFY_TOKEN")
     whatsapp_app_secret: str = Field(default="", validation_alias="WHATSAPP_APP_SECRET")
     whatsapp_access_token: str = Field(default="", validation_alias="WHATSAPP_ACCESS_TOKEN")

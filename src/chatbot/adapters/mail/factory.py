@@ -23,12 +23,14 @@ def build_email_sender(config: dict) -> EmailSender:
             port = int(port_raw)
         except ValueError as exc:
             raise EmailSendError("Invalid smtp_port") from exc
+        access_token = str(config.get("_resolved_access_token", "")).strip() or None
         return SmtpEmailSender(
             host=host,
             port=port,
             username=str(config.get("smtp_username", "")).strip(),
             password=str(config.get("smtp_password", "")).strip(),
             use_tls=_parse_use_tls(config.get("smtp_use_tls"), default=True),
+            access_token=access_token,
         )
     if provider == EmailOutboundProvider.MAILJET.value:
         return MailjetEmailSender(

@@ -377,6 +377,31 @@ def bot_restore_cmd(
     typer.echo("Done.")
 
 
+@app.command("mail-connection-migrate")
+def mail_connection_migrate_cmd(
+    slug: Annotated[str, typer.Argument(help="Tenant slug")],
+) -> None:
+    """Migrate per-connector OAuth email configs to shared mail connections."""
+    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from chatbot.application.mail_connection_migrate_service import MailConnectionMigrateService
+
+    settings = get_settings()
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+    with factory() as session:
+        tenant = SqlAlchemyTenantRepository(session).find_by_slug(slug)
+        if tenant is None:
+            typer.echo(f"Unknown tenant slug: {slug}", err=True)
+            raise typer.Exit(1)
+        result = MailConnectionMigrateService(session).migrate_tenant(tenant.id)
+        session.commit()
+        typer.echo(result.message)
+        typer.echo(
+            f"connections_created={result.connections_created} "
+            f"connectors_updated={result.connectors_updated}"
+        )
+
+
 @app.command("serve")
 def serve_cmd(
     host: Annotated[str, typer.Option("--host", "-h")] = "0.0.0.0",

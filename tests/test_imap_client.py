@@ -170,6 +170,25 @@ def test_imap_client_mark_seen_uses_parenthesized_flags(mock_close, mock_connect
     client._conn.uid.assert_called_once_with("store", "1", "+FLAGS", "(\\Seen)")
 
 
+@patch("chatbot.adapters.mail.imap_client.imaplib.IMAP4_SSL")
+def test_imap_client_xoauth2_connect(mock_imap_ssl) -> None:
+    mock_conn = MagicMock()
+    mock_conn.authenticate.return_value = ("OK", [b"Success"])
+    mock_conn.select.return_value = ("OK", [b"1"])
+    mock_imap_ssl.return_value = mock_conn
+    client = ImapMailClient(
+        {
+            "imap_host": "imap.gmail.com",
+            "imap_port": "993",
+            "username": "user@example.com",
+            "_resolved_access_token": "tok",
+        }
+    )
+    client.connect()
+    mock_conn.authenticate.assert_called_once()
+    mock_conn.login.assert_not_called()
+
+
 @patch("chatbot.adapters.mail.imap_client.ImapMailClient")
 def test_imap_client_context_manager(mock_cls) -> None:
     instance = MagicMock()

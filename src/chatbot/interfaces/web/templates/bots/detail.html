@@ -254,6 +254,229 @@
   </div>
 
 {% elif tab == 'connectors' %}
+  {% if connector_oauth_error %}
+  <div class="card card--alert">
+    <p class="text-danger">{{ connector_oauth_error }}</p>
+  </div>
+  {% endif %}
+
+  {% if can_edit %}
+  <div class="card" id="mail-connections-panel">
+    <h2 class="card-title">Mail connections</h2>
+    <p class="text-muted">One OAuth connection per mailbox (Microsoft 365 or Gmail). Connect once — IMAP and SMTP scopes together — then attach the same connection to inbound and outbound email connectors.</p>
+    {% if platform_microsoft_mail_oauth or platform_google_mail_oauth %}
+    <p class="field-hint">Platform OAuth credentials are configured in <code>.env</code>. Enter label + mailbox email, then <strong>Save &amp; connect</strong>. Register redirect URI in Entra/Google: <code>{{ mail_oauth_callback_url }}</code></p>
+    {% else %}
+    <p class="field-hint">Set platform OAuth in <code>.env</code> (<code>MICROSOFT_MAIL_CLIENT_*</code> / <code>GOOGLE_MAIL_CLIENT_*</code>) or enter client ID and secret below. Then click <strong>Save &amp; connect</strong> to sign in as the mailbox owner.</p>
+    {% endif %}
+    <script type="application/json" id="mail-connections-data">{{ mail_connections_json|safe }}</script>
+    {% if mail_connections %}
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Label</th><th>Provider</th><th>Mailbox</th><th>OAuth</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+        {% for mc in mail_connections %}
+        <tr data-connection-id="{{ mc.id }}">
+          <td>{{ mc.label }}</td>
+          <td><code>{{ mc.provider }}</code></td>
+          <td>{{ mc.mailbox_email }}</td>
+          <td>{% if mc.oauth_connected %}<span class="badge on">connected</span>{% else %}<span class="badge off">not connected</span>{% endif %}</td>
+          <td>{% if mc.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}</td>
+          <td class="actions">
+            <button type="button" class="btn-secondary btn-sm mail-connection-edit-btn" data-id="{{ mc.id }}">Edit</button>
+            <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/mail-connections/{{ mc.id }}/connect">Connect</a>
+            <button type="button" class="btn-secondary btn-sm mail-connection-test-btn" data-id="{{ mc.id }}" data-test="imap">Test IMAP</button>
+            <button type="button" class="btn-secondary btn-sm mail-connection-test-btn" data-id="{{ mc.id }}" data-test="smtp">Test SMTP</button>
+            <form method="post" action="/dashboard/bots/{{ tenant.slug }}/mail-connections/{{ mc.id }}/delete" class="no-loader">
+              <button type="submit" class="btn-secondary btn-sm">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  <pre class="connector-test-result integration-test-result mail-connection-test-result" hidden></pre>
+    {% else %}
+    <p class="text-muted">No mail connections yet.</p>
+  <pre class="connector-test-result integration-test-result mail-connection-test-result" hidden></pre>
+    {% endif %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/mail-connections" class="form-grid" id="mail-connection-form">
+      <input type="hidden" name="connection_id" id="mail-connection-id" value="">
+      <label>Label
+        <input type="text" name="label" id="mail-connection-label" required placeholder="Support M365">
+      </label>
+      <label>Provider
+        <select name="provider" id="mail-connection-provider">
+          <option value="microsoft_oauth">Microsoft OAuth</option>
+          <option value="google_oauth">Google OAuth</option>
+        </select>
+      </label>
+      <label>Mailbox email
+        <input type="email" name="mailbox_email" id="mail-connection-mailbox" required placeholder="support@example.com">
+      </label>
+      {% if not platform_microsoft_mail_oauth %}
+      <div class="mail-connection-ms-fields form-grid">
+        <label>Microsoft client ID
+          <input type="text" name="microsoft_client_id" id="mail-connection-ms-id">
+        </label>
+        <label>Microsoft client secret
+          <input type="password" name="microsoft_client_secret" id="mail-connection-ms-secret" autocomplete="new-password">
+        </label>
+      </div>
+      {% endif %}
+      {% if not platform_google_mail_oauth %}
+      <div class="mail-connection-google-fields form-grid" hidden style="display:none">
+        <label>Google client ID
+          <input type="text" name="google_client_id" id="mail-connection-google-id">
+        </label>
+        <label>Google client secret
+          <input type="password" name="google_client_secret" id="mail-connection-google-secret" autocomplete="new-password">
+        </label>
+      </div>
+      {% endif %}
+      <div class="checkbox-row">
+        <input type="checkbox" name="active" id="mail-connection-active" checked>
+        <label for="mail-connection-active">Active</label>
+      </div>
+      <div class="form-actions mail-connection-actions">
+        <button type="submit" class="btn-primary" name="connect_after" value="1" data-loading="Redirecting…" id="mail-connection-save-connect">
+          Save &amp; connect
+        </button>
+        <button type="submit" class="btn-secondary" data-loading="Saving…">Save only</button>
+        <a class="btn-secondary" id="mail-connection-connect-link" href="#" hidden>Connect</a>
+        <button type="button" class="btn-secondary" id="mail-connection-reset">New connection</button>
+      </div>
+      <p class="field-hint" id="mail-connection-oauth-hint" hidden>
+        Connection saved. Use <strong>Save &amp; connect</strong> or <strong>Connect</strong> to open the Microsoft/Google sign-in page (mailbox owner must approve).
+      </p>
+    </form>
+    <script>
+      (function () {
+        const mailConnections = JSON.parse(document.getElementById('mail-connections-data').textContent || '[]');
+        const mcForm = document.getElementById('mail-connection-form');
+        const providerSel = document.getElementById('mail-connection-provider');
+        const msFields = document.querySelector('.mail-connection-ms-fields');
+        const googleFields = document.querySelector('.mail-connection-google-fields');
+        const resultEl = document.querySelector('.mail-connection-test-result');
+
+        const platformMicrosoftOAuth = {{ 'true' if platform_microsoft_mail_oauth else 'false' }};
+        const platformGoogleOAuth = {{ 'true' if platform_google_mail_oauth else 'false' }};
+
+        function updateProviderFields() {
+          const isMs = providerSel.value === 'microsoft_oauth';
+          if (msFields) {
+            const showMs = isMs && !platformMicrosoftOAuth;
+            msFields.hidden = !showMs;
+            msFields.style.display = showMs ? '' : 'none';
+            msFields.querySelectorAll('input').forEach((el) => { el.disabled = !showMs; });
+          }
+          if (googleFields) {
+            const showGoogle = !isMs && !platformGoogleOAuth;
+            googleFields.hidden = !showGoogle;
+            googleFields.style.display = showGoogle ? '' : 'none';
+            googleFields.querySelectorAll('input').forEach((el) => { el.disabled = !showGoogle; });
+          }
+          updateConnectLink();
+        }
+
+        function updateConnectLink() {
+          const connectLink = document.getElementById('mail-connection-connect-link');
+          const hint = document.getElementById('mail-connection-oauth-hint');
+          const saveConnectBtn = document.getElementById('mail-connection-save-connect');
+          const id = document.getElementById('mail-connection-id').value.trim();
+          const slug = '{{ tenant.slug }}';
+          const isMs = providerSel.value === 'microsoft_oauth';
+          if (saveConnectBtn) {
+            saveConnectBtn.textContent = isMs ? 'Save & connect Microsoft' : 'Save & connect Google';
+          }
+          if (!connectLink) return;
+          if (id) {
+            connectLink.hidden = false;
+            connectLink.href = `/dashboard/bots/${slug}/mail-connections/${id}/connect`;
+            connectLink.textContent = isMs ? 'Connect Microsoft' : 'Connect Google';
+            if (hint) hint.hidden = false;
+          } else {
+            connectLink.hidden = true;
+            if (hint) hint.hidden = true;
+          }
+        }
+        providerSel?.addEventListener('change', updateProviderFields);
+        updateProviderFields();
+        updateConnectLink();
+
+        function loadMailConnection(id) {
+          const mc = mailConnections.find((row) => String(row.id) === String(id));
+          if (!mc) return;
+          document.getElementById('mail-connection-id').value = mc.id;
+          document.getElementById('mail-connection-label').value = mc.label || '';
+          providerSel.value = mc.provider || 'microsoft_oauth';
+          document.getElementById('mail-connection-mailbox').value = mc.mailbox_email || '';
+          document.getElementById('mail-connection-active').checked = mc.active !== false;
+          updateProviderFields();
+          const cfg = mc.config || {};
+          if (document.getElementById('mail-connection-ms-id')) {
+            document.getElementById('mail-connection-ms-id').value = cfg.microsoft_client_id || '';
+          }
+          if (document.getElementById('mail-connection-google-id')) {
+            document.getElementById('mail-connection-google-id').value = cfg.google_client_id || '';
+          }
+          if (document.getElementById('mail-connection-ms-secret')) {
+            document.getElementById('mail-connection-ms-secret').value = '';
+          }
+          if (document.getElementById('mail-connection-google-secret')) {
+            document.getElementById('mail-connection-google-secret').value = '';
+          }
+          updateConnectLink();
+          mcForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        document.getElementById('mail-connection-id')?.addEventListener('input', updateConnectLink);
+
+        document.getElementById('mail-connection-reset')?.addEventListener('click', () => {
+          document.getElementById('mail-connection-id').value = '';
+          mcForm.reset();
+          document.getElementById('mail-connection-active').checked = true;
+          updateProviderFields();
+          updateConnectLink();
+        });
+
+        document.querySelectorAll('.mail-connection-edit-btn').forEach((btn) => {
+          btn.addEventListener('click', () => loadMailConnection(btn.dataset.id));
+        });
+
+        document.querySelectorAll('.mail-connection-test-btn').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            if (!resultEl) return;
+            const slug = '{{ tenant.slug }}';
+            const fd = new FormData();
+            fd.append('test', btn.dataset.test || 'imap');
+            btn.disabled = true;
+            resultEl.hidden = false;
+            resultEl.className = 'connector-test-result integration-test-result mail-connection-test-result';
+            resultEl.textContent = 'Testing…';
+            try {
+              const res = await fetch(`/dashboard/bots/${slug}/mail-connections/${btn.dataset.id}/test`, {
+                method: 'POST',
+                body: fd,
+                credentials: 'same-origin',
+              });
+              const data = await res.json();
+              resultEl.classList.add(data.ok ? 'ok' : 'err');
+              resultEl.textContent = data.error && !data.ok ? `${data.message}\n${data.error}` : (data.message || 'Done');
+            } catch (err) {
+              resultEl.classList.add('err');
+              resultEl.textContent = String(err);
+            } finally {
+              btn.disabled = false;
+            }
+          });
+        });
+      })();
+    </script>
+  </div>
+  {% endif %}
+
   <div class="table-wrap">
     <table class="data-table">
       <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Provider</th><th>Mode</th><th>Status</th><th>Since</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
@@ -372,17 +595,31 @@
       <div id="connector-fields" class="form-grid connector-fields"></div>
       <script type="application/json" id="connector-schemas-data">{{ connector_schemas_json|safe }}</script>
       <script type="application/json" id="connector-configs-data">{{ connector_configs_json|safe }}</script>
+      <script type="application/json" id="connector-mail-connections-data">{{ mail_connections_json|safe }}</script>
       <div class="form-actions">
         {% if dev_mode and can_edit %}
         <button type="button" class="btn-secondary" id="greenmail-autofill" hidden>Fill GreenMail (dev)</button>
         {% endif %}
         <button type="submit" class="btn-primary" data-loading="Saving…">Save connector</button>
       </div>
+      <div id="connector-oauth-panel" class="connector-oauth-panel" hidden>
+        <p class="field-hint text-danger">OAuth is configured on <strong>Mail connections</strong> above. Select a connection below, save, then use Connect on the connection card.</p>
+      </div>
+      <details id="connector-test-panel" class="integration-test connector-test" hidden>
+        <summary>Test connection</summary>
+        <div class="integration-test__body">
+          <button type="button" class="btn-secondary btn-sm" id="connector-test-btn" data-slug="{{ tenant.slug }}">Test connection</button>
+          <pre class="connector-test-result integration-test-result" hidden></pre>
+        </div>
+      </details>
     </form>
     <script>
       (function () {
         const schemas = JSON.parse(document.getElementById('connector-schemas-data').textContent);
         const saved = JSON.parse(document.getElementById('connector-configs-data').textContent);
+        const mailConnections = JSON.parse(
+          document.getElementById('connector-mail-connections-data')?.textContent || '[]'
+        );
         const form = document.getElementById('connector-form');
         const connActive = document.getElementById('conn-active');
         const botSlug = form.dataset.botSlug || '';
@@ -422,12 +659,14 @@
           smtp_use_tls: false,
         };
         const greenmailBtn = document.getElementById('greenmail-autofill');
+        let selectedAuthType = null;
 
         function getDirection() {
           return dirInput.value === 'out' ? 'out' : 'in';
         }
 
         function setDirection(value) {
+          selectedAuthType = null;
           dirInput.value = value;
           dirTabs.forEach((tab) => {
             const active = tab.dataset.direction === value;
@@ -439,6 +678,7 @@
         }
 
         function loadConnector(ctype, direction, mode) {
+          selectedAuthType = null;
           typeSel.value = ctype;
           setDirection(direction);
           if (direction === 'out' && mode) {
@@ -468,8 +708,44 @@
           return 'smtp';
         }
 
-        function fieldVisible(field, direction, provider) {
+        function currentAuthType() {
+          const existing = container.querySelector('select[name="auth_type"]');
+          if (existing) return existing.value;
+          const rec = recordFor(typeSel.value, getDirection());
+          return selectedAuthType || rec.config?.auth_type || 'password';
+        }
+
+        function usesMailConnection(authType) {
+          return authType === 'microsoft_oauth' || authType === 'google_oauth';
+        }
+
+        function authFieldVisible(fieldKey, authType) {
+          const microsoftKeys = ['microsoft_client_id', 'microsoft_client_secret'];
+          const googleKeys = ['google_client_id', 'google_client_secret'];
+          const imapKeys = ['imap_host', 'imap_port', 'username', 'password'];
+          const smtpKeys = ['smtp_host', 'smtp_port', 'smtp_username', 'smtp_password', 'smtp_use_tls'];
+          if (fieldKey === 'mail_connection_id') return usesMailConnection(authType);
+          if (usesMailConnection(authType)) {
+            if (
+              microsoftKeys.includes(fieldKey)
+              || googleKeys.includes(fieldKey)
+              || imapKeys.includes(fieldKey)
+              || smtpKeys.includes(fieldKey)
+            ) {
+              return false;
+            }
+          } else if (fieldKey === 'mail_connection_id') {
+            return false;
+          }
+          if (microsoftKeys.includes(fieldKey)) return authType === 'microsoft_oauth';
+          if (googleKeys.includes(fieldKey)) return authType === 'google_oauth';
+          if (fieldKey === 'password' || fieldKey === 'smtp_password') return authType === 'password';
+          return true;
+        }
+
+        function fieldVisible(field, direction, provider, authType) {
           if (!field.directions.includes(direction)) return false;
+          if (typeSel.value === 'email' && !authFieldVisible(field.key, authType)) return false;
           if (field.providers && field.key !== 'outbound_provider') {
             return field.providers.includes(provider);
           }
@@ -503,9 +779,15 @@
 
           const allFields = schemas[ctype] || [];
           const provider = ctype === 'email' && outbound ? currentProvider() : 'smtp';
+          const authType =
+            container.querySelector('select[name="auth_type"]')?.value
+            || selectedAuthType
+            || recordFor(ctype, direction).config?.auth_type
+            || 'password';
+          selectedAuthType = authType;
 
           container.replaceChildren();
-          const fields = allFields.filter((field) => fieldVisible(field, direction, provider));
+          const fields = allFields.filter((field) => fieldVisible(field, direction, provider, authType));
 
           for (const field of fields) {
             const label = document.createElement('label');
@@ -538,6 +820,22 @@
                 if (field.key === 'mailgun_region' && opt.value === 'us') {
                   option.selected = true;
                 }
+                if (field.key === 'auth_type' && opt.value === authType) {
+                  option.selected = true;
+                }
+                control.appendChild(option);
+              }
+            } else if (field.key === 'mail_connection_id') {
+              control = document.createElement('select');
+              control.name = field.key;
+              const empty = document.createElement('option');
+              empty.value = '';
+              empty.textContent = '— Select connection —';
+              control.appendChild(empty);
+              for (const mc of mailConnections) {
+                const option = document.createElement('option');
+                option.value = String(mc.id);
+                option.textContent = `${mc.label} (${mc.mailbox_email})`;
                 control.appendChild(option);
               }
             } else {
@@ -556,6 +854,12 @@
             if (field.key === 'outbound_provider') {
               control.addEventListener('change', renderFields);
             }
+            if (field.key === 'auth_type') {
+              control.addEventListener('change', () => {
+                selectedAuthType = control.value;
+                renderFields();
+              });
+            }
             if (field.input_type !== 'checkbox') {
               label.appendChild(control);
               const hint = document.createElement('small');
@@ -566,7 +870,35 @@
             container.appendChild(label);
           }
           applySavedValues(ctype, direction);
+          if (ctype === 'email') {
+            setFieldValue('auth_type', authType);
+          }
           updateGreenmailButton();
+          updateConnectorOAuthUi();
+        }
+
+        function savedAuthType(ctype, direction) {
+          const rec = recordFor(ctype, direction);
+          return rec.config?.auth_type || 'password';
+        }
+
+        function connectorSavedMatchesForm() {
+          const ctype = typeSel.value;
+          const direction = getDirection();
+          const key = recordKey(ctype, direction);
+          if (!Object.prototype.hasOwnProperty.call(saved, key)) return false;
+          return savedAuthType(ctype, direction) === currentAuthType();
+        }
+
+        function updateConnectorOAuthUi() {
+          const panel = document.getElementById('connector-oauth-panel');
+          const testPanel = document.getElementById('connector-test-panel');
+          if (!panel) return;
+          const ctype = typeSel.value;
+          const authType = ctype === 'email' ? currentAuthType() : 'password';
+          const isOauth = usesMailConnection(authType);
+          panel.hidden = ctype !== 'email' || !isOauth;
+          if (testPanel) testPanel.hidden = ctype !== 'email';
         }
 
         function setFieldValue(name, value) {
@@ -618,12 +950,14 @@
           tab.addEventListener('click', () => setDirection(tab.dataset.direction));
         });
         typeSel.addEventListener('change', () => {
+          selectedAuthType = null;
           updateFlowDiagram(typeSel.value, getDirection());
           renderFields();
         });
         updateFlowDiagram(typeSel.value, getDirection());
         renderFields();
         updateGreenmailButton();
+        window.updateConnectorTestButtons = updateConnectorOAuthUi;
       })();
     </script>
   </div>

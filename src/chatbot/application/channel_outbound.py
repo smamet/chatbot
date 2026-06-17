@@ -3,6 +3,8 @@ from __future__ import annotations
 from chatbot.adapters.channels import instagram_meta, messenger_meta, whatsapp_meta
 from chatbot.adapters.mail.body_format import email_draft_html_from_markdown
 from chatbot.application.email_outbound import send_email_reply
+from chatbot.application.mail_connector_runtime import prepare_email_connector_config
+from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.application.connector_service import ConnectorService
 from chatbot.config.settings import Settings
@@ -151,11 +153,21 @@ def approve_pending_reply(
     settings: Settings,
     attachments: list[OutboundAttachment] | None = None,
 ) -> PendingReply | None:
+    outbound_config = config
+    if reply.channel == ConnectorType.EMAIL.value:
+        connector = SqlAlchemyConnectorRepository(session).find_by_id(reply.connector_id)
+        if connector is not None:
+            outbound_config = prepare_email_connector_config(
+                connector,
+                session=session,
+                direction=ConnectorDirection.OUT,
+                settings=settings,
+            )
     dispatch_channel_reply(
         channel=reply.channel,
         recipient_id=reply.recipient_id,
         text=reply.draft_text,
-        config=config,
+        config=outbound_config,
         settings=settings,
         attachments=attachments,
         body_html=reply.draft_html,

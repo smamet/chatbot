@@ -174,6 +174,26 @@ class ConnectorRow(Base):
     )
 
 
+class MailConnectionRow(Base):
+    __tablename__ = "mail_connections"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    label: Mapped[str] = mapped_column(String(128), default="")
+    provider: Mapped[str] = mapped_column(String(32))
+    mailbox_email: Mapped[str] = mapped_column(String(255), default="")
+    config_enc: Mapped[str] = mapped_column(Text(), default="")
+    active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=lambda: datetime.now(UTC),
+        onupdate=lambda: datetime.now(UTC),
+    )
+
+
 class IntegrationRow(Base):
     __tablename__ = "integrations"
     __table_args__ = (Index("ix_integrations_tenant_type", "tenant_id", "type"),)

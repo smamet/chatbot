@@ -4,6 +4,7 @@ import smtplib
 from email.message import EmailMessage as StdEmailMessage
 
 from chatbot.adapters.mail.types import EmailMessage
+from chatbot.adapters.mail.xoauth2 import build_xoauth2_string
 
 
 class EmailSendError(RuntimeError):
@@ -27,12 +28,36 @@ class SmtpEmailSender:
         username: str,
         password: str,
         use_tls: bool = True,
+        access_token: str | None = None,
     ) -> None:
         self._host = host
         self._port = port
         self._username = username
         self._password = password
         self._use_tls = use_tls
+        self._access_token = (access_token or "").strip() or None
+
+    def _authenticate(self, smtp: smtplib.SMTP) -> None:
+        if self._access_token:
+            if not self._username:
+                raise EmailSendError("SMTP username is required for OAuth")
+            smtp.auth(
+                "XOAUTH2",
+                lambda: build_xoauth2_string(self._username, self._access_token),
+            )
+            return
+        if self._username:
+            smtp.login(self._username, self._password)
+
+    def verify_connection(self) -> None:
+        try:
+            with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
+                if self._use_tls:
+                    smtp.starttls()
+                self._authenticate(smtp)
+                smtp.noop()
+        except smtplib.SMTPException as exc:
+            raise EmailSendError(f"SMTP connection failed: {exc}") from exc
 
     def send(self, message: EmailMessage) -> None:
         msg = StdEmailMessage()
@@ -53,8 +78,7 @@ class SmtpEmailSender:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
                 if self._use_tls:
                     smtp.starttls()
-                if self._username:
-                    smtp.login(self._username, self._password)
+                self._authenticate(smtp)
                 smtp.send_message(msg)
         except smtplib.SMTPException as exc:
             raise EmailSendError(f"SMTP send failed: {exc}") from exc

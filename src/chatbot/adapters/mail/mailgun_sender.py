@@ -15,8 +15,21 @@ class MailgunEmailSender:
     def __init__(self, *, api_key: str, domain: str, region: str = "us") -> None:
         self._api_key = api_key
         self._domain = domain
-        base = _MAILGUN_BASE.get(region, _MAILGUN_BASE["us"])
-        self._url = f"{base}/{domain}/messages"
+        region_key = region if region in _MAILGUN_BASE else "us"
+        base = _MAILGUN_BASE[region_key]
+        self._domain_url = f"{base}/domains/{domain}"
+        self._messages_url = f"{base}/{domain}/messages"
+
+    def verify_connection(self) -> None:
+        try:
+            with httpx.Client(timeout=30.0) as client:
+                response = client.get(
+                    self._domain_url,
+                    auth=("api", self._api_key),
+                )
+                response.raise_for_status()
+        except httpx.HTTPError as exc:
+            raise EmailSendError(f"Mailgun connection failed: {exc}") from exc
 
     def send(self, message: EmailMessage) -> None:
         data = {
@@ -30,7 +43,7 @@ class MailgunEmailSender:
         try:
             with httpx.Client(timeout=30.0) as client:
                 response = client.post(
-                    self._url,
+                    self._messages_url,
                     data=data,
                     auth=("api", self._api_key),
                 )

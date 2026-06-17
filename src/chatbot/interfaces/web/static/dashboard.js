@@ -496,4 +496,38 @@
   }
 
   initDocUploadDropzone();
+
+  const connectorTestBtn = document.getElementById("connector-test-btn");
+  if (connectorTestBtn) {
+    connectorTestBtn.addEventListener("click", async () => {
+      const form = document.getElementById("connector-form");
+      const resultEl = document.querySelector(".connector-test-result");
+      if (!form || !resultEl) return;
+      const slug = connectorTestBtn.dataset.slug;
+      const fd = new FormData(form);
+      connectorTestBtn.disabled = true;
+      resultEl.hidden = false;
+      resultEl.className = "connector-test-result integration-test-result";
+      resultEl.textContent = "Testing…";
+      try {
+        const res = await fetch(`/dashboard/bots/${slug}/connectors/test`, {
+          method: "POST",
+          body: fd,
+          credentials: "same-origin",
+        });
+        const data = await res.json();
+        resultEl.classList.add(data.ok ? "ok" : "err");
+        if (data.error && !data.ok) {
+          resultEl.textContent = `${data.message}\n${data.error}`;
+        } else {
+          resultEl.textContent = data.message || "Done";
+        }
+      } catch (err) {
+        resultEl.classList.add("err");
+        resultEl.textContent = String(err);
+      } finally {
+        connectorTestBtn.disabled = false;
+      }
+    });
+  }
 })();

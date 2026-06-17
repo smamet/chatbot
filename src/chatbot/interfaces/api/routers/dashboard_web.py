@@ -4,8 +4,8 @@ import asyncio
 import json
 import logging
 import uuid
-from urllib.parse import quote as url_quote
 import threading
+from urllib.parse import quote as url_quote
 from datetime import UTC
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -83,6 +83,35 @@ from chatbot.automation.modules.registry import all_modules
 from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.domain.models.message import ChatMessage
 from chatbot.application.connector_service import ConnectorService
+from chatbot.adapters.google.oauth import (
+    build_authorize_url as google_build_authorize_url,
+    exchange_code as google_exchange_code,
+)
+from chatbot.adapters.microsoft.oauth import (
+    build_authorize_url as microsoft_build_authorize_url,
+    exchange_code as microsoft_exchange_code,
+)
+from chatbot.adapters.oauth_state import (
+    sign_connector_oauth_state,
+    sign_mail_connection_oauth_state,
+    verify_connector_oauth_state,
+    verify_mail_connection_oauth_state,
+)
+from chatbot.application.connector_test_service import run_connector_connection_test, run_mail_connection_test
+from chatbot.application.mail_connection_service import (
+    MailConnectionService,
+    connector_auth_type_for_connection,
+    connection_client_credentials,
+    strip_connector_oauth_fields,
+)
+from chatbot.application.mail_oauth_service import (
+    MailOAuthError,
+    apply_oauth_tokens_to_config,
+    is_oauth_connected,
+    platform_google_mail_oauth_configured,
+    platform_microsoft_mail_oauth_configured,
+    resolve_mail_oauth_credentials,
+)
 from chatbot.adapters.quickbooks.oauth import (
     build_authorize_url,
     exchange_code,
@@ -95,6 +124,7 @@ from chatbot.application.email_test_service import (
     inject_test_email,
     poll_tenant_now,
 )
+from chatbot.domain.models.mail_connection import MailConnectionProvider
 from chatbot.application.integration_test_service import run_integration_test
 from chatbot.application.integration_service import IntegrationService
 from chatbot.application.sync_service import IngestSyncService
@@ -108,9 +138,11 @@ from chatbot.config.settings import Settings
 from chatbot.domain.constants import DEFAULT_HOOK_INSTRUCTIONS
 from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
 from chatbot.domain.models.connector_schema import (
+    EmailAuthType,
     EmailOutboundProvider,
     connector_schemas_for_template,
     fields_for,
+    oauth_managed_connector_keys,
     secret_connector_keys,
 )
 from chatbot.domain.models.hook import HookStatus
@@ -215,6 +247,98 @@ def _quickbooks_redirect_uri(request: Request, settings: Settings, slug: str) ->
         f"{_public_base_url(request, settings)}"
         f"/dashboard/bots/{slug}/integrations/quickbooks/callback"
     )
+
+
+def _mail_oauth_redirect_uri(request: Request, settings: Settings, slug: str, provider: str) -> str:
+    return (
+        f"{_public_base_url(request, settings)}"
+        f"/dashboard/bots/{slug}/connectors/{provider}/callback"
+    )
+
+
+def _platform_mail_oauth_redirect_uri(request: Request, settings: Settings) -> str:
+    return f"{_public_base_url(request, settings)}/dashboard/mail-oauth/callback"
+
+
+def _slug_from_mail_oauth_state(state: str, settings: Settings) -> str:
+    if not state.strip():
+        return ""
+    try:
+        state_data = verify_mail_connection_oauth_state(state, secret=_oauth_signing_secret(settings))
+    except ValueError:
+        return ""
+    return str(state_data.get("slug", "")).strip()
+
+
+def _normalize_email_connector_config(cfg: dict, *, session: Session, tenant_id: int) -> dict:
+    raw = cfg.get("mail_connection_id")
+    if raw is None or str(raw).strip() == "":
+        return cfg
+    try:
+        connection_id = int(raw)
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail="Invalid mail connection") from exc
+    connection = MailConnectionService(session).get_for_tenant(connection_id, tenant_id)
+    if connection is None:
+        raise HTTPException(status_code=400, detail="Mail connection not found")
+    normalized = strip_connector_oauth_fields(dict(cfg))
+    normalized["mail_connection_id"] = connection_id
+    normalized["auth_type"] = connector_auth_type_for_connection(connection.provider)
+    return normalized
+
+
+def _oauth_signing_secret(settings: Settings) -> str:
+    secret = settings.session_secret.strip() or settings.app_secret_key.strip()
+    if not secret:
+        raise HTTPException(status_code=503, detail="SESSION_SECRET is required for OAuth")
+    return secret
+
+
+async def _connector_config_from_request(
+    form,
+    *,
+    tenant_id: int,
+    session: Session,
+    connector_type: str,
+    direction: str,
+) -> tuple[ConnectorType, ConnectorDirection, ConnectorMode, dict, str | None]:
+    try:
+        ctype = ConnectorType(connector_type)
+        cdir = ConnectorDirection(direction)
+        cmode = (
+            ConnectorMode.DIRECT
+            if cdir == ConnectorDirection.IN
+            else ConnectorMode(str(form.get("mode", "direct")))
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid connector") from exc
+    outbound_provider: str | None = None
+    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.OUT:
+        outbound_provider = (
+            str(form.get("outbound_provider", EmailOutboundProvider.SMTP.value)).strip()
+            or EmailOutboundProvider.SMTP.value
+        )
+    schema_fields = fields_for(connector_type, direction, outbound_provider=outbound_provider)
+    field_values = {field.key: str(form.get(field.key, "")).strip() for field in schema_fields}
+    for field in schema_fields:
+        if field.input_type == "checkbox":
+            field_values[field.key] = "on" if form.get(field.key) == "on" else ""
+    incoming = _connector_config_from_form(
+        connector_type, direction, field_values, outbound_provider=outbound_provider
+    )
+    svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    existing = svc.find(tenant_id, direction=cdir, type=ctype)
+    cfg = _merge_connector_config(existing.config if existing else None, incoming)
+    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.IN:
+        if not str(cfg.get("process_since", "")).strip():
+            cfg["process_since"] = process_since_now_iso()
+    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.OUT:
+        cfg["outbound_provider"] = outbound_provider or EmailOutboundProvider.SMTP.value
+    if ctype == ConnectorType.EMAIL and not str(cfg.get("auth_type", "")).strip():
+        cfg["auth_type"] = EmailAuthType.PASSWORD.value
+    if ctype == ConnectorType.EMAIL:
+        cfg = _normalize_email_connector_config(cfg, session=session, tenant_id=tenant_id)
+    return ctype, cdir, cmode, cfg, outbound_provider
 
 
 def _integration_endpoint(integration: Integration) -> str:
@@ -475,7 +599,7 @@ def _integration_configs_for_client(integrations: list[Integration]) -> dict[str
 
 def _merge_connector_config(existing: dict | None, incoming: dict) -> dict:
     secrets = secret_connector_keys()
-    preserve_if_empty = secrets | frozenset({"process_since"})
+    preserve_if_empty = secrets | oauth_managed_connector_keys() | frozenset({"process_since"})
     base = dict(existing or {})
     for key, value in incoming.items():
         if key in preserve_if_empty and not str(value).strip():
@@ -505,6 +629,8 @@ def _connector_configs_for_client(connectors: list[Connector]) -> dict[str, dict
             "active": connector.active,
             "mode": connector.mode.value,
             "config": cfg,
+            "oauth_connected": is_oauth_connected(connector.config)
+            or bool(str(connector.config.get("mail_connection_id", "")).strip()),
         }
     return out
 
@@ -1062,6 +1188,8 @@ def bot_detail(
     if user_service.is_validation_only(user) and tab != "validation":
         return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
     connectors = ConnectorService(SqlAlchemyConnectorRepository(session)).list_for_tenant(tenant.id)
+    mail_conn_svc = MailConnectionService(session)
+    mail_connections = mail_conn_svc.list_client_views(tenant.id)
     integrations = IntegrationService(SqlAlchemyIntegrationRepository(session)).list_for_tenant(
         tenant.id
     )
@@ -1088,6 +1216,25 @@ def bot_detail(
         "connector_schemas": connector_schemas_for_template(),
         "connector_schemas_json": json.dumps(connector_schemas_for_template()),
         "connector_configs_json": json.dumps(_connector_configs_for_client(connectors)),
+        "mail_connections": mail_connections,
+        "mail_connections_json": json.dumps(
+            [
+                {
+                    "id": mc.id,
+                    "label": mc.label,
+                    "provider": mc.provider,
+                    "mailbox_email": mc.mailbox_email,
+                    "active": mc.active,
+                    "oauth_connected": mc.oauth_connected,
+                    "config": mc.config,
+                }
+                for mc in mail_connections
+            ]
+        ),
+        "connector_oauth_error": request.query_params.get("connector_oauth_error", "").strip(),
+        "platform_microsoft_mail_oauth": platform_microsoft_mail_oauth_configured(settings),
+        "platform_google_mail_oauth": platform_google_mail_oauth_configured(settings),
+        "mail_oauth_callback_url": f"{_public_base_url(request, settings)}/dashboard/mail-oauth/callback",
         "integration_types": IntegrationType,
         "integration_schemas": integration_schemas_for_template(),
         "integration_meta": integration_meta_for_template(),
@@ -1603,43 +1750,15 @@ async def save_connector(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    try:
-        ctype = ConnectorType(connector_type)
-        cdir = ConnectorDirection(direction)
-        cmode = (
-            ConnectorMode.DIRECT
-            if cdir == ConnectorDirection.IN
-            else ConnectorMode(mode)
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="Invalid connector") from exc
     form = await request.form()
-    outbound_provider: str | None = None
-    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.OUT:
-        outbound_provider = (
-            str(form.get("outbound_provider", EmailOutboundProvider.SMTP.value)).strip()
-            or EmailOutboundProvider.SMTP.value
-        )
-    schema_fields = fields_for(
-        connector_type, direction, outbound_provider=outbound_provider
-    )
-    field_values = {
-        field.key: str(form.get(field.key, "")).strip() for field in schema_fields
-    }
-    for field in schema_fields:
-        if field.input_type == "checkbox":
-            field_values[field.key] = "on" if form.get(field.key) == "on" else ""
-    incoming = _connector_config_from_form(
-        connector_type, direction, field_values, outbound_provider=outbound_provider
+    ctype, cdir, cmode, cfg, _outbound_provider = await _connector_config_from_request(
+        form,
+        tenant_id=tenant.id,
+        session=session,
+        connector_type=connector_type,
+        direction=direction,
     )
     svc = ConnectorService(SqlAlchemyConnectorRepository(session))
-    existing = svc.find(tenant.id, direction=cdir, type=ctype)
-    cfg = _merge_connector_config(existing.config if existing else None, incoming)
-    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.IN:
-        if not str(cfg.get("process_since", "")).strip():
-            cfg["process_since"] = process_since_now_iso()
-    if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.OUT:
-        cfg["outbound_provider"] = outbound_provider or EmailOutboundProvider.SMTP.value
     svc.upsert(
         tenant_id=tenant.id,
         direction=cdir,
@@ -1650,6 +1769,562 @@ async def save_connector(
     )
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
+
+
+@router.post("/bots/{slug}/connectors/test")
+async def test_connector_connection(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    connector_type = str(form.get("connector_type", "")).strip()
+    direction = str(form.get("direction", "in")).strip()
+    _ctype, _cdir, _cmode, cfg, _outbound_provider = await _connector_config_from_request(
+        form,
+        tenant_id=tenant.id,
+        session=session,
+        connector_type=connector_type,
+        direction=direction,
+    )
+    result = run_connector_connection_test(
+        connector_type, direction, cfg, session=session, tenant_id=tenant.id, settings=settings
+    )
+    return JSONResponse(result.to_dict())
+
+
+def _connector_oauth_error_redirect(slug: str, message: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}?tab=connectors&connector_oauth_error={url_quote(message)}",
+        status_code=303,
+    )
+
+
+def _mail_oauth_connect(
+    request: Request,
+    slug: str,
+    *,
+    provider: str,
+    direction: str,
+    tenant,
+    session: Session,
+    settings: Settings,
+) -> RedirectResponse:
+    try:
+        cdir = ConnectorDirection(direction)
+    except ValueError:
+        return _connector_oauth_error_redirect(slug, "Invalid connector direction.")
+    svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    connector = svc.find(tenant.id, direction=cdir, type=ConnectorType.EMAIL)
+    if connector is None:
+        return _connector_oauth_error_redirect(
+            slug, "Save the email connector first (Save connector), then click Connect."
+        )
+    cfg = connector.config
+    auth_type = str(cfg.get("auth_type", EmailAuthType.PASSWORD.value)).strip()
+    if provider == "microsoft" and auth_type != EmailAuthType.MICROSOFT_OAUTH.value:
+        return _connector_oauth_error_redirect(
+            slug,
+            "Authentication must be Microsoft OAuth in the saved connector. "
+            "Click Save connector after changing Authentication, then Connect again.",
+        )
+    if provider == "google" and auth_type != EmailAuthType.GOOGLE_OAUTH.value:
+        return _connector_oauth_error_redirect(
+            slug,
+            "Authentication must be Google OAuth in the saved connector. "
+            "Click Save connector after changing Authentication, then Connect again.",
+        )
+    if provider == "microsoft":
+        client_id = str(cfg.get("microsoft_client_id", "")).strip()
+        if not client_id or not str(cfg.get("microsoft_client_secret", "")).strip():
+            return _connector_oauth_error_redirect(
+                slug, "Microsoft client ID and secret are required in the saved connector."
+            )
+    else:
+        client_id = str(cfg.get("google_client_id", "")).strip()
+        if not client_id or not str(cfg.get("google_client_secret", "")).strip():
+            return _connector_oauth_error_redirect(
+                slug, "Google client ID and secret are required in the saved connector."
+            )
+    oauth_secret = _oauth_signing_secret(settings)
+    state = sign_connector_oauth_state(
+        slug=slug,
+        direction=cdir.value,
+        provider=provider,
+        secret=oauth_secret,
+    )
+    redirect_uri = _mail_oauth_redirect_uri(request, settings, slug, provider)
+    if provider == "microsoft":
+        url = microsoft_build_authorize_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            direction=cdir.value,
+        )
+    else:
+        url = google_build_authorize_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            direction=cdir.value,
+        )
+    return RedirectResponse(url=url, status_code=303)
+
+
+def _mail_oauth_callback(
+    request: Request,
+    slug: str,
+    *,
+    provider: str,
+    code: str,
+    state: str,
+    tenant,
+    session: Session,
+    settings: Settings,
+) -> RedirectResponse:
+    oauth_secret = _oauth_signing_secret(settings)
+    try:
+        state_data = verify_connector_oauth_state(state, secret=oauth_secret)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state") from exc
+    if state_data["slug"] != slug or state_data["provider"] != provider:
+        raise HTTPException(status_code=400, detail="OAuth state mismatch")
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+    try:
+        cdir = ConnectorDirection(state_data["direction"])
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid direction in OAuth state") from exc
+    svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    connector = svc.find(tenant.id, direction=cdir, type=ConnectorType.EMAIL)
+    if connector is None:
+        raise HTTPException(status_code=400, detail="Email connector not configured")
+    cfg = dict(connector.config)
+    redirect_uri = _mail_oauth_redirect_uri(request, settings, slug, provider)
+    if provider == "microsoft":
+        tokens = microsoft_exchange_code(
+            code=code.strip(),
+            client_id=str(cfg.get("microsoft_client_id", "")).strip(),
+            client_secret=str(cfg.get("microsoft_client_secret", "")).strip(),
+            redirect_uri=redirect_uri,
+        )
+    else:
+        tokens = google_exchange_code(
+            code=code.strip(),
+            client_id=str(cfg.get("google_client_id", "")).strip(),
+            client_secret=str(cfg.get("google_client_secret", "")).strip(),
+            redirect_uri=redirect_uri,
+        )
+    cfg = apply_oauth_tokens_to_config(cfg, tokens)
+    svc.upsert(
+        tenant_id=tenant.id,
+        direction=cdir,
+        type=ConnectorType.EMAIL,
+        mode=connector.mode,
+        config=cfg,
+        active=connector.active,
+    )
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
+
+
+def _mail_connection_oauth_error_redirect(slug: str, message: str) -> RedirectResponse:
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}?tab=connectors&connector_oauth_error={url_quote(message)}",
+        status_code=303,
+    )
+
+
+def _mail_connection_config_from_form(form) -> dict:
+    provider = str(form.get("provider", "")).strip()
+    incoming: dict = {}
+    if provider == MailConnectionProvider.MICROSOFT_OAUTH.value:
+        for key in ("microsoft_client_id", "microsoft_client_secret"):
+            val = str(form.get(key, "")).strip()
+            if val:
+                incoming[key] = val
+    elif provider == MailConnectionProvider.GOOGLE_OAUTH.value:
+        for key in ("google_client_id", "google_client_secret"):
+            val = str(form.get(key, "")).strip()
+            if val:
+                incoming[key] = val
+    return incoming
+
+
+@router.post("/bots/{slug}/mail-connections")
+async def save_mail_connection(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    raw_id = str(form.get("connection_id", "")).strip()
+    connection_id = int(raw_id) if raw_id else None
+    label = str(form.get("label", "")).strip()
+    provider = str(form.get("provider", "")).strip()
+    mailbox_email = str(form.get("mailbox_email", "")).strip()
+    active = str(form.get("active", "on")) == "on"
+    config_incoming = _mail_connection_config_from_form(form)
+    svc = MailConnectionService(session)
+    try:
+        connection = svc.upsert(
+            tenant_id=tenant.id,
+            connection_id=connection_id,
+            label=label,
+            provider=provider,
+            mailbox_email=mailbox_email,
+            config_incoming=config_incoming,
+            active=active,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session.commit()
+    if str(form.get("connect_after", "")).strip() == "1":
+        return RedirectResponse(
+            url=f"/dashboard/bots/{slug}/mail-connections/{connection.id}/connect",
+            status_code=303,
+        )
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
+
+
+@router.post("/bots/{slug}/mail-connections/{connection_id}/delete")
+async def delete_mail_connection(
+    slug: str,
+    connection_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    svc = MailConnectionService(session)
+    try:
+        svc.delete(tenant.id, connection_id)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
+
+
+@router.post("/bots/{slug}/mail-connections/{connection_id}/test")
+async def test_mail_connection(
+    request: Request,
+    slug: str,
+    connection_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    test = str(form.get("test", "imap")).strip().lower()
+    connection = MailConnectionService(session).get_for_tenant(connection_id, tenant.id)
+    if connection is None:
+        raise HTTPException(status_code=404, detail="Mail connection not found")
+    result = run_mail_connection_test(connection, test=test, session=session, settings=settings)
+    return JSONResponse(result.to_dict())
+
+
+@router.get("/bots/{slug}/mail-connections/{connection_id}/connect")
+def mail_connection_connect(
+    request: Request,
+    slug: str,
+    connection_id: int,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    connection = MailConnectionService(session).get_for_tenant(connection_id, tenant.id)
+    if connection is None:
+        return _mail_connection_oauth_error_redirect(slug, "Mail connection not found.")
+    try:
+        client_id, _client_secret = resolve_mail_oauth_credentials(connection, settings)
+    except MailOAuthError:
+        return _mail_connection_oauth_error_redirect(
+            slug,
+            "OAuth client ID and secret are required. Set platform credentials in .env "
+            "or save them on the mail connection.",
+        )
+    provider = connection.provider.value
+    oauth_secret = _oauth_signing_secret(settings)
+    oauth_provider = "microsoft" if provider == MailConnectionProvider.MICROSOFT_OAUTH.value else "google"
+    state = sign_mail_connection_oauth_state(
+        slug=slug,
+        connection_id=connection_id,
+        provider=oauth_provider,
+        secret=oauth_secret,
+    )
+    redirect_uri = _platform_mail_oauth_redirect_uri(request, settings)
+    if oauth_provider == "microsoft":
+        url = microsoft_build_authorize_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            for_connection=True,
+        )
+    else:
+        url = google_build_authorize_url(
+            client_id=client_id,
+            redirect_uri=redirect_uri,
+            state=state,
+            direction="in",
+        )
+    return RedirectResponse(url=url, status_code=303)
+
+
+def _process_mail_connection_oauth_callback(
+    request: Request,
+    *,
+    code: str,
+    state: str,
+    error: str,
+    error_description: str,
+    error_subcode: str,
+    settings: Settings,
+    session: Session,
+    user: User,
+    user_service: UserService,
+    tenant_service: TenantService,
+    legacy_path_connection_id: int | None = None,
+) -> RedirectResponse:
+    oauth_secret = _oauth_signing_secret(settings)
+    if error.strip():
+        slug = _slug_from_mail_oauth_state(state, settings)
+        if error == "access_denied" or error_subcode == "unauthorized_client":
+            message = (
+                "Your Microsoft admin has not approved this app. "
+                "Ask your IT admin to grant admin consent for this application, then try Connect again."
+            )
+        else:
+            detail = error_description.strip() or error.strip()
+            message = f"OAuth authorization failed: {detail}"
+        if slug:
+            return _mail_connection_oauth_error_redirect(slug, message)
+        return RedirectResponse(
+            url=f"/dashboard?connector_oauth_error={url_quote(message)}",
+            status_code=303,
+        )
+
+    try:
+        state_data = verify_mail_connection_oauth_state(state, secret=oauth_secret)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid OAuth state") from exc
+
+    slug = str(state_data["slug"])
+    connection_id = int(state_data["connection_id"])
+    if legacy_path_connection_id is not None and legacy_path_connection_id != connection_id:
+        logger.warning(
+            "Mail OAuth legacy callback path connection_id=%s does not match state connection_id=%s",
+            legacy_path_connection_id,
+            connection_id,
+        )
+
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    reject_validation_only(user, user_service)
+
+    if not code.strip():
+        raise HTTPException(status_code=400, detail="Missing authorization code")
+
+    provider = str(state_data["provider"])
+    svc = MailConnectionService(session)
+    connection = svc.get_for_tenant(connection_id, tenant.id)
+    if connection is None:
+        raise HTTPException(status_code=400, detail="Mail connection not found")
+
+    client_id, client_secret = connection_client_credentials(connection, settings)
+    redirect_uri = _platform_mail_oauth_redirect_uri(request, settings)
+    if provider == "microsoft":
+        tokens = microsoft_exchange_code(
+            code=code.strip(),
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+        )
+    else:
+        tokens = google_exchange_code(
+            code=code.strip(),
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+        )
+    svc.apply_oauth_tokens(connection, tokens)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
+
+
+@router.get("/mail-oauth/callback")
+def platform_mail_oauth_callback(
+    request: Request,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+    error_subcode: str = "",
+    user: User = Depends(require_user),
+    user_service: UserService = Depends(get_user_service),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    return _process_mail_connection_oauth_callback(
+        request,
+        code=code,
+        state=state,
+        error=error,
+        error_description=error_description,
+        error_subcode=error_subcode,
+        settings=settings,
+        session=session,
+        user=user,
+        user_service=user_service,
+        tenant_service=tenant_service,
+    )
+
+
+@router.get("/bots/{slug}/mail-connections/{connection_id}/callback")
+def mail_connection_callback_legacy(
+    request: Request,
+    slug: str,
+    connection_id: int,
+    code: str = "",
+    state: str = "",
+    error: str = "",
+    error_description: str = "",
+    error_subcode: str = "",
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    _tenant_or_404(tenant_service, slug)
+    return _process_mail_connection_oauth_callback(
+        request,
+        code=code,
+        state=state,
+        error=error,
+        error_description=error_description,
+        error_subcode=error_subcode,
+        settings=settings,
+        session=session,
+        user=user,
+        user_service=user_service,
+        tenant_service=tenant_service,
+        legacy_path_connection_id=connection_id,
+    )
+
+
+@router.get("/bots/{slug}/connectors/microsoft/connect")
+def microsoft_mail_connect(
+    request: Request,
+    slug: str,
+    direction: str = "in",
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    return _connector_oauth_error_redirect(
+        slug,
+        "Per-connector OAuth is deprecated. Create a Mail connection above, connect once, "
+        "then select it on your email IN/OUT connectors.",
+    )
+
+
+@router.get("/bots/{slug}/connectors/microsoft/callback")
+def microsoft_mail_callback(
+    request: Request,
+    slug: str,
+    code: str = "",
+    state: str = "",
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    reject_validation_only(user, user_service)
+    return _mail_oauth_callback(
+        request,
+        slug,
+        provider="microsoft",
+        code=code,
+        state=state,
+        tenant=tenant,
+        session=session,
+        settings=settings,
+    )
+
+
+@router.get("/bots/{slug}/connectors/google/connect")
+def google_mail_connect(
+    request: Request,
+    slug: str,
+    direction: str = "in",
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    return _connector_oauth_error_redirect(
+        slug,
+        "Per-connector OAuth is deprecated. Create a Mail connection above, connect once, "
+        "then select it on your email IN/OUT connectors.",
+    )
+
+
+@router.get("/bots/{slug}/connectors/google/callback")
+def google_mail_callback(
+    request: Request,
+    slug: str,
+    code: str = "",
+    state: str = "",
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    reject_validation_only(user, user_service)
+    return _mail_oauth_callback(
+        request,
+        slug,
+        provider="google",
+        code=code,
+        state=state,
+        tenant=tenant,
+        session=session,
+        settings=settings,
+    )
 
 
 @router.post("/bots/{slug}/integrations")

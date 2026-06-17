@@ -10,6 +10,8 @@ from datetime import UTC, datetime
 from email.header import decode_header
 from typing import Callable, Iterator
 
+from chatbot.adapters.mail.xoauth2 import build_xoauth2_string
+
 
 class ImapError(RuntimeError):
     pass
@@ -87,6 +89,7 @@ _SEEN_FLAGS = "(\\Seen)"
 
 class ImapMailClient:
     def __init__(self, config: dict, *, timeout: int = 30) -> None:
+        self._config = config
         self._host = str(config.get("imap_host", "")).strip()
         self._port = int(str(config.get("imap_port", "993")).strip() or "993")
         self._username = str(config.get("username", "")).strip()
@@ -103,7 +106,12 @@ class ImapMailClient:
                 self._conn = imaplib.IMAP4_SSL(self._host, self._port, timeout=self._timeout)
             else:
                 self._conn = imaplib.IMAP4(self._host, self._port, timeout=self._timeout)
-            typ, _ = self._conn.login(self._username, self._password)
+            access_token = str(self._config.get("_resolved_access_token", "")).strip()
+            if access_token:
+                auth_bytes = build_xoauth2_string(self._username, access_token)
+                typ, _ = self._conn.authenticate("XOAUTH2", lambda _: auth_bytes)
+            else:
+                typ, _ = self._conn.login(self._username, self._password)
             if typ != "OK":
                 raise ImapError("IMAP login failed")
             typ, _ = self._conn.select("INBOX")

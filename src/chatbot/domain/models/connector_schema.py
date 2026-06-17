@@ -12,6 +12,20 @@ class EmailOutboundProvider(StrEnum):
     MAILGUN = "mailgun"
 
 
+class EmailAuthType(StrEnum):
+    PASSWORD = "password"
+    MICROSOFT_OAUTH = "microsoft_oauth"
+    GOOGLE_OAUTH = "google_oauth"
+
+
+def _email_auth_type_options() -> tuple[tuple[str, str], ...]:
+    return (
+        (EmailAuthType.PASSWORD.value, "Password"),
+        (EmailAuthType.MICROSOFT_OAUTH.value, "Microsoft OAuth"),
+        (EmailAuthType.GOOGLE_OAUTH.value, "Google OAuth"),
+    )
+
+
 @dataclass(frozen=True)
 class ConnectorField:
     key: str
@@ -129,6 +143,52 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
         ),
     ],
     ConnectorType.EMAIL.value: [
+        ConnectorField(
+            key="mail_connection_id",
+            label="Mail connection",
+            help="Reusable OAuth mailbox connection (Microsoft 365 or Gmail). Create one above, then select it here.",
+            input_type="select",
+            directions=(ConnectorDirection.IN.value, ConnectorDirection.OUT.value),
+        ),
+        ConnectorField(
+            key="auth_type",
+            label="Authentication",
+            help=(
+                "Use Microsoft or Google OAuth for M365 / Gmail mailboxes. "
+                "Password auth works for self-hosted or dev mail servers."
+            ),
+            input_type="select",
+            directions=(ConnectorDirection.IN.value, ConnectorDirection.OUT.value),
+            options=_email_auth_type_options(),
+        ),
+        ConnectorField(
+            key="microsoft_client_id",
+            label="Microsoft client ID",
+            help="Entra application (client) ID for this connector.",
+            directions=(ConnectorDirection.IN.value, ConnectorDirection.OUT.value),
+        ),
+        ConnectorField(
+            key="microsoft_client_secret",
+            label="Microsoft client secret",
+            help="Entra client secret. Leave blank on update to keep current value.",
+            input_type="password",
+            secret=True,
+            directions=(ConnectorDirection.IN.value, ConnectorDirection.OUT.value),
+        ),
+        ConnectorField(
+            key="google_client_id",
+            label="Google client ID",
+            help="Google Cloud OAuth client ID for this connector.",
+            directions=(ConnectorDirection.IN.value, ConnectorDirection.OUT.value),
+        ),
+        ConnectorField(
+            key="google_client_secret",
+            label="Google client secret",
+            help="Google Cloud client secret. Leave blank on update to keep current value.",
+            input_type="password",
+            secret=True,
+            directions=(ConnectorDirection.IN.value, ConnectorDirection.OUT.value),
+        ),
         ConnectorField(
             key="imap_host",
             label="IMAP host",
@@ -279,6 +339,22 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
 }
 
 
+def resolve_email_auth_type(config: dict) -> str:
+    raw = str(config.get("auth_type", EmailAuthType.PASSWORD.value)).strip().lower()
+    try:
+        return EmailAuthType(raw).value
+    except ValueError:
+        return EmailAuthType.PASSWORD.value
+
+
+def is_oauth_auth_type(auth_type: str) -> bool:
+    return auth_type in (EmailAuthType.MICROSOFT_OAUTH.value, EmailAuthType.GOOGLE_OAUTH.value)
+
+
+def oauth_managed_connector_keys() -> frozenset[str]:
+    return frozenset({"oauth_refresh_token", "oauth_access_token", "oauth_token_expires_at"})
+
+
 def resolve_email_outbound_provider(config: dict) -> str:
     raw = str(config.get("outbound_provider", EmailOutboundProvider.SMTP.value)).strip().lower()
     try:
@@ -305,12 +381,13 @@ def fields_for(
 
 
 def secret_connector_keys() -> frozenset[str]:
-    return frozenset(
+    keys = {
         field.key
         for fields in CONNECTOR_SCHEMAS.values()
         for field in fields
         if field.secret
-    )
+    }
+    return frozenset(keys | {"oauth_refresh_token", "oauth_access_token"})
 
 
 def connector_schemas_for_template() -> dict[str, list[dict]]:

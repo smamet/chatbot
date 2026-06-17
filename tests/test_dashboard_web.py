@@ -1140,6 +1140,328 @@ def test_email_in_connector_sets_process_since_on_save(dashboard_env) -> None:
     assert "process_since" in r.text
 
 
+@patch("chatbot.application.connector_test_service.ImapMailClient")
+def test_connector_test_endpoint_imap(mock_imap_cls, dashboard_env) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    instance = MagicMock()
+    mock_imap_cls.return_value = instance
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/connectors/test",
+        data={
+            "connector_type": "email",
+            "direction": "in",
+            "auth_type": "password",
+            "imap_host": "imap.example.com",
+            "imap_port": "993",
+            "username": "bot@example.com",
+            "password": "secret",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    instance.connect.assert_called_once()
+
+
+def test_microsoft_connect_deprecated(dashboard_env) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.get(
+        f"/dashboard/bots/{slug}/connectors/microsoft/connect?direction=in",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    loc = r.headers.get("location", "")
+    assert "connector_oauth_error" in loc
+    assert "deprecated" in loc.lower() or "Mail connection" in loc
+
+
+@patch("chatbot.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
+def test_microsoft_oauth_callback_persists_refresh_token(
+    mock_exchange, dashboard_env, monkeypatch
+) -> None:
+    from chatbot.adapters.microsoft.oauth import OAuthTokens
+    from chatbot.adapters.oauth_state import sign_connector_oauth_state
+    from chatbot.application.connector_service import ConnectorService
+
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "email",
+            "direction": "in",
+            "auth_type": "microsoft_oauth",
+            "microsoft_client_id": "cid",
+            "microsoft_client_secret": "sec",
+            "imap_host": "outlook.office365.com",
+            "imap_port": "993",
+            "username": "bot@example.com",
+        },
+        follow_redirects=False,
+    )
+    mock_exchange.return_value = OAuthTokens(
+        access_token="at",
+        refresh_token="refresh-tok",
+        expires_at=9999999999,
+    )
+    state = sign_connector_oauth_state(
+        slug=slug,
+        direction="in",
+        provider="microsoft",
+        secret="test-session-secret",
+    )
+    r = client.get(
+        f"/dashboard/bots/{slug}/connectors/microsoft/callback?code=abc&state={state}",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with factory() as session:
+        conn = ConnectorService(SqlAlchemyConnectorRepository(session)).find(
+            tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.EMAIL,
+        )
+        assert conn is not None
+        assert conn.config.get("oauth_refresh_token") == "refresh-tok"
+
+
+@patch("chatbot.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
+def test_mail_connection_oauth_callback_persists_refresh_token(
+    mock_exchange, dashboard_env, monkeypatch
+) -> None:
+    from chatbot.adapters.microsoft.oauth import OAuthTokens
+    from chatbot.adapters.oauth_state import sign_mail_connection_oauth_state
+    from chatbot.application.mail_connection_service import MailConnectionService
+
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/mail-connections",
+        data={
+            "label": "Support",
+            "provider": "microsoft_oauth",
+            "mailbox_email": "bot@example.com",
+            "microsoft_client_id": "cid",
+            "microsoft_client_secret": "sec",
+        },
+        follow_redirects=False,
+    )
+    with factory() as session:
+        connections = MailConnectionService(session).list_for_tenant(tenant_id)
+        assert len(connections) == 1
+        connection_id = connections[0].id
+    mock_exchange.return_value = OAuthTokens(
+        access_token="at",
+        refresh_token="refresh-tok",
+        expires_at=9999999999,
+    )
+    state = sign_mail_connection_oauth_state(
+        slug=slug,
+        connection_id=connection_id,
+        provider="microsoft",
+        secret="test-session-secret",
+    )
+    r = client.get(
+        f"/dashboard/mail-oauth/callback?code=abc&state={state}",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    mock_exchange.assert_called_once()
+    assert mock_exchange.call_args.kwargs["redirect_uri"].endswith(
+        "/dashboard/mail-oauth/callback"
+    )
+    with factory() as session:
+        conn = MailConnectionService(session).get_for_tenant(connection_id, tenant_id)
+        assert conn is not None
+        assert conn.config.get("oauth_refresh_token") == "refresh-tok"
+
+
+@patch("chatbot.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
+def test_mail_connection_oauth_legacy_callback_persists_refresh_token(
+    mock_exchange, dashboard_env
+) -> None:
+    from chatbot.adapters.microsoft.oauth import OAuthTokens
+    from chatbot.adapters.oauth_state import sign_mail_connection_oauth_state
+    from chatbot.application.mail_connection_service import MailConnectionService
+
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/mail-connections",
+        data={
+            "label": "Support",
+            "provider": "microsoft_oauth",
+            "mailbox_email": "bot@example.com",
+            "microsoft_client_id": "cid",
+            "microsoft_client_secret": "sec",
+        },
+        follow_redirects=False,
+    )
+    with factory() as session:
+        connections = MailConnectionService(session).list_for_tenant(tenant_id)
+        connection_id = connections[0].id
+    mock_exchange.return_value = OAuthTokens(
+        access_token="at",
+        refresh_token="legacy-refresh",
+        expires_at=9999999999,
+    )
+    state = sign_mail_connection_oauth_state(
+        slug=slug,
+        connection_id=connection_id,
+        provider="microsoft",
+        secret="test-session-secret",
+    )
+    r = client.get(
+        f"/dashboard/bots/{slug}/mail-connections/{connection_id}/callback?code=abc&state={state}",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with factory() as session:
+        conn = MailConnectionService(session).get_for_tenant(connection_id, tenant_id)
+        assert conn is not None
+        assert conn.config.get("oauth_refresh_token") == "legacy-refresh"
+
+
+def test_mail_connection_oauth_admin_consent_error_redirects(dashboard_env) -> None:
+    from chatbot.adapters.oauth_state import sign_mail_connection_oauth_state
+    from chatbot.application.mail_connection_service import MailConnectionService
+
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/mail-connections",
+        data={
+            "label": "Support",
+            "provider": "microsoft_oauth",
+            "mailbox_email": "bot@example.com",
+            "microsoft_client_id": "cid",
+            "microsoft_client_secret": "sec",
+        },
+        follow_redirects=False,
+    )
+    with factory() as session:
+        connection_id = MailConnectionService(session).list_for_tenant(tenant_id)[0].id
+    state = sign_mail_connection_oauth_state(
+        slug=slug,
+        connection_id=connection_id,
+        provider="microsoft",
+        secret="test-session-secret",
+    )
+    r = client.get(
+        f"/dashboard/mail-oauth/callback?error=access_denied&error_subcode=unauthorized_client&state={state}",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    loc = r.headers.get("location", "")
+    assert f"/dashboard/bots/{slug}" in loc
+    assert "connector_oauth_error" in loc
+    assert "admin" in loc.lower()
+
+
+@patch("chatbot.interfaces.api.routers.dashboard_web.microsoft_build_authorize_url")
+def test_mail_connection_connect_uses_platform_env_credentials(
+    mock_authorize, dashboard_env, monkeypatch
+) -> None:
+    from chatbot.application.mail_connection_service import MailConnectionService
+
+    monkeypatch.setenv("MICROSOFT_MAIL_CLIENT_ID", "platform-cid")
+    monkeypatch.setenv("MICROSOFT_MAIL_CLIENT_SECRET", "platform-sec")
+    reset_settings_cache_for_tests()
+
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/mail-connections",
+        data={
+            "label": "Platform",
+            "provider": "microsoft_oauth",
+            "mailbox_email": "bot@example.com",
+        },
+        follow_redirects=False,
+    )
+    with factory() as session:
+        connection_id = MailConnectionService(session).list_for_tenant(tenant_id)[0].id
+    mock_authorize.return_value = "https://login.microsoftonline.com/authorize"
+    r = client.get(
+        f"/dashboard/bots/{slug}/mail-connections/{connection_id}/connect",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    mock_authorize.assert_called_once()
+    assert mock_authorize.call_args.kwargs["client_id"] == "platform-cid"
+    assert mock_authorize.call_args.kwargs["redirect_uri"].endswith(
+        "/dashboard/mail-oauth/callback"
+    )
+
+
+def test_mail_connection_save_and_connect_redirects(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/mail-connections",
+        data={
+            "label": "M365",
+            "provider": "microsoft_oauth",
+            "mailbox_email": "bot@example.com",
+            "microsoft_client_id": "cid",
+            "microsoft_client_secret": "sec",
+            "connect_after": "1",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert "/mail-connections/" in r.headers.get("location", "")
+    assert r.headers["location"].endswith("/connect")
+
+
+def test_mail_connection_crud_and_connector_reference(dashboard_env) -> None:
+    from chatbot.application.mail_connection_service import MailConnectionService
+
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/mail-connections",
+        data={
+            "label": "Gmail",
+            "provider": "google_oauth",
+            "mailbox_email": "bot@example.com",
+            "google_client_id": "gid",
+            "google_client_secret": "gsec",
+        },
+        follow_redirects=False,
+    )
+    with factory() as session:
+        connections = MailConnectionService(session).list_for_tenant(tenant_id)
+        assert len(connections) == 1
+        connection_id = connections[0].id
+    client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "email",
+            "direction": "in",
+            "auth_type": "google_oauth",
+            "mail_connection_id": str(connection_id),
+            "process_since": "2025-01-01T00:00",
+        },
+        follow_redirects=False,
+    )
+    with factory() as session:
+        from chatbot.application.connector_service import ConnectorService
+
+        conn = ConnectorService(SqlAlchemyConnectorRepository(session)).find(
+            tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.EMAIL,
+        )
+        assert conn is not None
+        assert conn.config.get("mail_connection_id") == connection_id
+        assert "google_client_id" not in conn.config
+        assert conn.config.get("auth_type") == "google_oauth"
+
+
 def _save_erpnext_integration(client: TestClient, slug: str, **extra: str) -> None:
     data = {
         "integration_type": "erpnext",
