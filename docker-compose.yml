@@ -1,3 +1,5 @@
+# App data lives under ./data on the host (docs, catalog, LanceDB, attachments, backups).
+# Caddy is optional: ./sail up -d --profile caddy (use host nginx/Caddy otherwise).
 services:
   db:
     image: mysql:8.4
@@ -31,7 +33,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:-changeme-session}
       HOOK_POLL_SECONDS: ${HOOK_POLL_SECONDS:-5}
     volumes:
-      - app_data:/app/data
+      - ./data:/app/data
     ports:
       - "8000:8000"
     depends_on:
@@ -49,7 +51,7 @@ services:
       HOOK_POLL_SECONDS: ${HOOK_POLL_SECONDS:-5}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
-      - app_data:/app/data
+      - ./data:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -68,7 +70,7 @@ services:
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-60}
     volumes:
-      - app_data:/app/data
+      - ./data:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -89,7 +91,7 @@ services:
       LANCEDB_ROOT: /app/data/lancedb
       CATALOG_POLL_SECONDS: ${CATALOG_POLL_SECONDS:-300}
     volumes:
-      - app_data:/app/data
+      - ./data:/app/data
     depends_on:
       db:
         condition: service_healthy
@@ -97,6 +99,7 @@ services:
         condition: service_started
 
   caddy:
+    profiles: [caddy]
     image: caddy:2-alpine
     ports:
       - "80:80"
@@ -108,4 +111,3 @@ services:
 
 volumes:
   mysql_data:
-  app_data:

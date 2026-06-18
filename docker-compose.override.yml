@@ -7,21 +7,15 @@ services:
     volumes:
       - ./src:/app/src
       - ./migrations:/app/migrations
-      - ./data/docs:/app/data/docs
-      - ./data/catalog:/app/data/catalog
     command: sh -c "alembic upgrade head && uvicorn chatbot.interfaces.api.main:app --host 0.0.0.0 --port 8000 --reload"
 
   worker-automation:
     volumes:
       - ./src:/app/src
-      - ./data/docs:/app/data/docs
-      - ./data/catalog:/app/data/catalog
 
   worker-mail:
     volumes:
       - ./src:/app/src
-      - ./data/docs:/app/data/docs
-      - ./data/catalog:/app/data/catalog
     environment:
       MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-30}
     depends_on:
@@ -32,8 +26,6 @@ services:
   worker-catalog:
     volumes:
       - ./src:/app/src
-      - ./data/docs:/app/data/docs
-      - ./data/catalog:/app/data/catalog
     environment:
       CATALOG_POLL_SECONDS: ${CATALOG_POLL_SECONDS:-60}
 

@@ -23,9 +23,9 @@
 ./sail shell
 ```
 
-Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `worker-catalog`, `caddy`. Root `.env` is loaded via `env_file`; `DATABASE_URL` is overridden to MySQL inside containers.
+Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `worker-catalog`; optional `caddy` (`./sail up -d --profile caddy`). App data bind-mounts `./data` → `/app/data` by default (docs, catalog, LanceDB, attachments). Root `.env` is loaded via `env_file`; `DATABASE_URL` is overridden to MySQL inside containers.
 
-**Dev:** `docker-compose.override.yml` bind-mounts `./src` — edit Python without `./sail build`. It also bind-mounts `./data/docs` and `./data/catalog` over the `app_data` volume for those paths (LanceDB stays in the volume). API runs with `--reload`. Rebuild only after dependency/Dockerfile changes. Restart workers after code changes: `./sail restart worker-automation` / `./sail restart worker-mail` / `./sail restart worker-catalog`.
+**Dev:** `docker-compose.override.yml` bind-mounts `./src` — edit Python without `./sail build`. API runs with `--reload`. Rebuild only after dependency/Dockerfile changes. Restart workers after code changes: `./sail restart worker-automation` / `./sail restart worker-mail` / `./sail restart worker-catalog`.
 
 **Email dev (GreenMail + Mailpit):** `./sail up -d --profile dev` starts GreenMail (IMAP 3143, inject SMTP 3025) and Mailpit (outbound SMTP 1025, UI http://127.0.0.1:8025). IN connector → GreenMail; OUT connector → Mailpit. Test email inject uses GreenMail SMTP (not OUT). See [docs/dev/greenmail.md](docs/dev/greenmail.md). Dashboard **Test email** tab requires `DEV_MODE=true`.
 
@@ -132,7 +132,7 @@ docker compose down -v
 ./sail up -d
 ```
 
-(`-v` drops `mysql_data`; `app_data` LanceDB/docs persist unless you remove that volume too.)
+(`-v` drops `mysql_data`; `./data` on the host is unchanged unless you delete it.)
 
 ### Tests
 

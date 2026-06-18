@@ -36,7 +36,8 @@ Create an operator: `./sail chatbot user-create op@example.com -p '…' --role c
 **Sail commands**
 
 ```bash
-./sail up -d          # start db, api, workers, caddy
+./sail up -d          # start db, api, workers (data in ./data on host)
+./sail up -d --profile caddy   # optional TLS reverse proxy (skip if host nginx/Caddy)
 ./sail down           # stop stack
 ./sail logs           # follow logs
 ./sail shell          # bash in API container
@@ -50,16 +51,20 @@ Create an operator: `./sail chatbot user-create op@example.com -p '…' --role c
 
 Run any Compose command: `./sail ps`, `./sail restart api`, etc.
 
-**No rebuild for code edits:** `docker-compose.override.yml` mounts `./src` into the API and workers; uvicorn runs with `--reload`. It also bind-mounts `./data/docs` and `./data/catalog` so uploaded docs and ERPNext catalog snapshots are visible on the host. Rebuild only when `pyproject.toml` or the Dockerfile change: `./sail build api`.
+**No rebuild for code edits:** `docker-compose.override.yml` mounts `./src` into the API and workers; uvicorn runs with `--reload`. Rebuild only when `pyproject.toml` or the Dockerfile change: `./sail build api`.
 
-**First-time export from Docker volume** (if you already have data in `app_data` and want it locally before bind-mounts take effect):
+**Data on disk:** Compose bind-mounts `./data` (docs, catalog, LanceDB, attachments, backups). Create it once: `mkdir -p data`.
+
+**Migrate from old Docker `app_data` volume** (one-time, if upgrading an existing server):
 
 ```bash
 mkdir -p ./data
-docker compose cp api:/app/data/docs ./data/docs
-mkdir -p ./data/catalog
-./sail restart api worker-automation worker-mail worker-catalog
+docker compose run --rm -v chatbot_app_data:/from:ro -v "$(pwd)/data":/to alpine \
+  sh -c "cp -a /from/. /to/"
+./sail up -d
 ```
+
+(Volume name may be `chatbot_app_data` or `<project>_app_data` — check with `docker volume ls`.)
 
 **First-time secrets in `.env`**
 

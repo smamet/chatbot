@@ -34,7 +34,8 @@ sail_help() {
   cat <<'EOF'
 Chatbot Sail — Docker Compose shortcuts
 
-  ./sail up [-d] [--profile dev]   Start stack (--profile dev includes GreenMail)
+  ./sail up [-d] [--profile dev] [--profile caddy]
+                              Start stack (dev: GreenMail/Mailpit; caddy: TLS reverse proxy)
   ./sail down                 Stop and remove containers
   ./sail stop | restart       Stop / restart services
   ./sail build [--no-cache]     Rebuild images
@@ -54,6 +55,7 @@ Chatbot Sail — Docker Compose shortcuts
   Examples:
     ./sail up -d
     ./sail up -d --profile dev
+    ./sail up -d --profile caddy
     ./sail chatbot user-create admin@example.com -p 'your-password' --role admin
     ./sail chatbot tenant-create "My Bot" --slug my-bot
     ./sail chatbot sync my-bot /app/data/docs --fresh
