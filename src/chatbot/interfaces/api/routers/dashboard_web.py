@@ -11,6 +11,8 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from queue import Empty, Queue
 
+import httpx
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
@@ -99,6 +101,7 @@ from chatbot.adapters.oauth_state import (
 )
 from chatbot.application.connector_test_service import run_connector_connection_test, run_mail_connection_test
 from chatbot.application.mail_connection_service import (
+    MailConnectionError,
     MailConnectionService,
     connector_auth_type_for_connection,
     connection_client_credentials,
@@ -1941,6 +1944,20 @@ def _mail_connection_oauth_error_redirect(slug: str, message: str) -> RedirectRe
     )
 
 
+def _oauth_token_exchange_error_message(exc: Exception) -> str:
+    if isinstance(exc, httpx.HTTPStatusError):
+        try:
+            body = exc.response.json()
+            if isinstance(body, dict):
+                detail = str(body.get("error_description") or body.get("error") or "").strip()
+                if detail:
+                    return f"OAuth token exchange failed: {detail}"
+        except Exception:
+            pass
+        return f"OAuth token exchange failed (HTTP {exc.response.status_code})."
+    return f"OAuth failed: {exc}"
+
+
 def _mail_connection_config_from_form(form) -> dict:
     provider = str(form.get("provider", "")).strip()
     incoming: dict = {}
@@ -2152,22 +2169,31 @@ def _process_mail_connection_oauth_callback(
 
     client_id, client_secret = connection_client_credentials(connection, settings)
     redirect_uri = _platform_mail_oauth_redirect_uri(request, settings)
-    if provider == "microsoft":
-        tokens = microsoft_exchange_code(
-            code=code.strip(),
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
+    try:
+        if provider == "microsoft":
+            tokens = microsoft_exchange_code(
+                code=code.strip(),
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+            )
+        else:
+            tokens = google_exchange_code(
+                code=code.strip(),
+                client_id=client_id,
+                client_secret=client_secret,
+                redirect_uri=redirect_uri,
+            )
+        svc.apply_oauth_tokens(connection, tokens)
+        session.commit()
+    except (MailOAuthError, MailConnectionError, httpx.HTTPError, ValueError) as exc:
+        logger.exception(
+            "Mail OAuth callback failed slug=%s connection_id=%s redirect_uri=%s",
+            slug,
+            connection_id,
+            redirect_uri,
         )
-    else:
-        tokens = google_exchange_code(
-            code=code.strip(),
-            client_id=client_id,
-            client_secret=client_secret,
-            redirect_uri=redirect_uri,
-        )
-    svc.apply_oauth_tokens(connection, tokens)
-    session.commit()
+        return _mail_connection_oauth_error_redirect(slug, _oauth_token_exchange_error_message(exc))
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
 
 
