@@ -106,6 +106,7 @@ from chatbot.adapters.oauth_state import (
     verify_mail_connection_oauth_state,
 )
 from chatbot.application.connector_test_service import run_connector_connection_test, run_mail_connection_test
+from chatbot.application.mail_inbox_preview_service import preview_mail_connection_inbox
 from chatbot.application.mail_connection_service import (
     MailConnectionError,
     MailConnectionService,
@@ -2054,6 +2055,14 @@ async def test_mail_connection(
     connection = MailConnectionService(session).get_for_tenant(connection_id, tenant.id)
     if connection is None:
         raise HTTPException(status_code=404, detail="Mail connection not found")
+    if test == "preview":
+        result = preview_mail_connection_inbox(
+            connection,
+            session=session,
+            tenant_id=tenant.id,
+            settings=settings,
+        )
+        return JSONResponse(result.to_dict())
     result = run_mail_connection_test(connection, test=test, session=session, settings=settings)
     return JSONResponse(result.to_dict())
 

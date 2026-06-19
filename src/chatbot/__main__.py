@@ -377,6 +377,47 @@ def bot_restore_cmd(
     typer.echo("Done.")
 
 
+@app.command("mail-inbox-preview")
+def mail_inbox_preview_cmd(
+    slug: Annotated[str, typer.Argument(help="Tenant slug")],
+    limit: Annotated[int, typer.Option("--limit", "-n", help="Number of messages")] = 5,
+) -> None:
+    """List recent IMAP messages and whether the mail worker would process them."""
+    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from chatbot.application.mail_inbox_preview_service import preview_tenant_inbox
+
+    settings = get_settings()
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+    with factory() as session:
+        tenant = SqlAlchemyTenantRepository(session).find_by_slug(slug)
+        if tenant is None:
+            typer.echo(f"Unknown tenant slug: {slug}", err=True)
+            raise typer.Exit(1)
+        result = preview_tenant_inbox(session, tenant_id=tenant.id, settings=settings, limit=limit)
+    if not result.ok:
+        typer.echo(result.message, err=True)
+        if result.error:
+            typer.echo(result.error, err=True)
+        raise typer.Exit(1)
+    typer.echo(result.message)
+    if result.mailbox:
+        typer.echo(f"Mailbox: {result.mailbox}")
+    if result.process_since_display and result.process_since_display != "—":
+        typer.echo(f"Process since (server display): {result.process_since_display}")
+    if not result.messages:
+        typer.echo("(INBOX empty or no parseable messages)")
+    for index, msg in enumerate(result.messages, start=1):
+        typer.echo(
+            f"{index}. UID {msg.uid} | {msg.received_at or 'no date'} | from {msg.from_addr}"
+        )
+        typer.echo(f"   Subject: {msg.subject}")
+        if msg.eligible:
+            typer.echo("   ELIGIBLE")
+        else:
+            typer.echo(f"   SKIP: {msg.skip_reason}")
+
+
 @app.command("mail-connection-migrate")
 def mail_connection_migrate_cmd(
     slug: Annotated[str, typer.Argument(help="Tenant slug")],

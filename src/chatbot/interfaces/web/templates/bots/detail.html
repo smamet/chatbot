@@ -286,6 +286,7 @@
             <button type="button" class="btn-secondary btn-sm mail-connection-edit-btn" data-id="{{ mc.id }}">Edit</button>
             <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/mail-connections/{{ mc.id }}/connect">Connect</a>
             <button type="button" class="btn-secondary btn-sm mail-connection-test-btn" data-id="{{ mc.id }}" data-test="imap">Test IMAP</button>
+            <button type="button" class="btn-secondary btn-sm mail-connection-test-btn" data-id="{{ mc.id }}" data-test="preview">Preview inbox</button>
             <button type="button" class="btn-secondary btn-sm mail-connection-test-btn" data-id="{{ mc.id }}" data-test="smtp">Test SMTP</button>
             <form method="post" action="/dashboard/bots/{{ tenant.slug }}/mail-connections/{{ mc.id }}/delete" class="no-loader">
               <button type="submit" class="btn-secondary btn-sm">Delete</button>
@@ -463,7 +464,33 @@
               });
               const data = await res.json();
               resultEl.classList.add(data.ok ? 'ok' : 'err');
-              resultEl.textContent = data.error && !data.ok ? `${data.message}\n${data.error}` : (data.message || 'Done');
+              if (data.messages && Array.isArray(data.messages)) {
+                const lines = [
+                  data.message || 'Inbox preview',
+                  data.mailbox ? `Mailbox: ${data.mailbox}` : '',
+                  data.process_since_display
+                    ? `Process since (server display): ${data.process_since_display}`
+                    : '',
+                  '',
+                ].filter(Boolean);
+                if (!data.messages.length) {
+                  lines.push('(INBOX empty or no parseable messages)');
+                }
+                data.messages.forEach((msg, index) => {
+                  lines.push(
+                    `${index + 1}. UID ${msg.uid} | ${msg.received_at || 'no date'} | from ${msg.from_addr}`
+                  );
+                  lines.push(`   Subject: ${msg.subject}`);
+                  lines.push(
+                    `   ${msg.eligible ? 'ELIGIBLE' : `SKIP: ${msg.skip_reason}`}`
+                  );
+                });
+                resultEl.textContent = lines.join('\n');
+              } else {
+                resultEl.textContent = data.error && !data.ok
+                  ? `${data.message}\n${data.error}`
+                  : (data.message || 'Done');
+              }
             } catch (err) {
               resultEl.classList.add('err');
               resultEl.textContent = String(err);

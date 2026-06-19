@@ -27,6 +27,16 @@ class IncomingMail:
     received_at: datetime | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class InboxPreviewMessage:
+    uid: str
+    from_addr: str
+    to_addr: str
+    subject: str
+    body_preview: str
+    received_at: datetime | None = None
+
+
 def _decode_header_value(value: str | None) -> str:
     if not value:
         return ""
@@ -166,6 +176,40 @@ class ImapMailClient:
             received_at=received_at,
         )
 
+    def _parse_fetched_preview(self, uid: str, msg_data) -> InboxPreviewMessage | None:
+        if not msg_data or not msg_data[0]:
+            return None
+        raw = msg_data[0][1]
+        if not isinstance(raw, (bytes, bytearray)):
+            return None
+        msg = email.message_from_bytes(raw)
+        from_addr = _extract_email_address(_decode_header_value(msg.get("From")))
+        if not from_addr:
+            return None
+        to_addr = _extract_email_address(_decode_header_value(msg.get("To")))
+        subject = _decode_header_value(msg.get("Subject")) or "(no subject)"
+        body = _body_text_from_message(msg)
+        preview = body[:200] if body else "(no text/plain or text/html body)"
+        received_at: datetime | None = None
+        date_header = msg.get("Date")
+        if date_header:
+            try:
+                received_at = email.utils.parsedate_to_datetime(date_header)
+                if received_at.tzinfo is None:
+                    received_at = received_at.replace(tzinfo=UTC)
+                else:
+                    received_at = received_at.astimezone(UTC)
+            except (TypeError, ValueError, OverflowError):
+                received_at = None
+        return InboxPreviewMessage(
+            uid=uid,
+            from_addr=from_addr,
+            to_addr=to_addr,
+            subject=subject,
+            body_preview=preview,
+            received_at=received_at,
+        )
+
     def _fetch_uid(self, uid: str) -> IncomingMail | None:
         if self._conn is None:
             raise ImapError("Not connected")
@@ -217,6 +261,32 @@ class ImapMailClient:
         typ, _ = self._conn.uid("store", uid, "+FLAGS", _SEEN_FLAGS)
         if typ != "OK":
             raise ImapError(f"Failed to mark UID {uid} as seen")
+
+    def list_recent_messages(self, *, limit: int = 5) -> list[InboxPreviewMessage]:
+        """Return the newest messages in INBOX (up to limit), without marking read."""
+        if self._conn is None:
+            raise ImapError("Not connected")
+        if limit < 1:
+            return []
+        typ, data = self._conn.uid("search", None, "ALL")
+        if typ != "OK" or not data or not data[0]:
+            return []
+        uid_values = [int(uid_b) for uid_b in data[0].split()]
+        if not uid_values:
+            return []
+        uid_values.sort()
+        mails: list[InboxPreviewMessage] = []
+        for uid_int in reversed(uid_values):
+            uid = str(uid_int)
+            typ, msg_data = self._conn.uid("fetch", uid, _FETCH_PEEK)
+            if typ != "OK":
+                continue
+            mail = self._parse_fetched_preview(uid, msg_data)
+            if mail is not None:
+                mails.append(mail)
+            if len(mails) >= limit:
+                break
+        return mails
 
 
 @contextmanager
