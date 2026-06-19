@@ -37,17 +37,24 @@ class SmtpEmailSender:
         self._use_tls = use_tls
         self._access_token = (access_token or "").strip() or None
 
+    def _xoauth2_response(self, _challenge: bytes = b"") -> bytes:
+        if not self._username or not self._access_token:
+            raise EmailSendError("SMTP username and OAuth access token are required")
+        return build_xoauth2_string(self._username, self._access_token).encode("utf-8")
+
     def _authenticate(self, smtp: smtplib.SMTP) -> None:
         if self._access_token:
             if not self._username:
                 raise EmailSendError("SMTP username is required for OAuth")
-            smtp.auth(
-                "XOAUTH2",
-                lambda challenge=b"": build_xoauth2_string(self._username, self._access_token),
-            )
+            smtp.auth("XOAUTH2", self._xoauth2_response)
             return
         if self._username:
             smtp.login(self._username, self._password)
+
+    def _envelope_from(self, message: EmailMessage) -> str:
+        if self._access_token and self._username:
+            return self._username
+        return message.from_addr
 
     def verify_connection(self) -> None:
         try:
@@ -61,7 +68,8 @@ class SmtpEmailSender:
 
     def send(self, message: EmailMessage) -> None:
         msg = StdEmailMessage()
-        msg["From"] = message.from_addr
+        envelope_from = self._envelope_from(message)
+        msg["From"] = envelope_from
         msg["To"] = message.to_addr
         msg["Subject"] = message.subject
         msg.set_content(message.body_text)
@@ -79,6 +87,6 @@ class SmtpEmailSender:
                 if self._use_tls:
                     smtp.starttls()
                 self._authenticate(smtp)
-                smtp.send_message(msg)
+                smtp.sendmail(envelope_from, [message.to_addr], msg.as_bytes())
         except smtplib.SMTPException as exc:
             raise EmailSendError(f"SMTP send failed: {exc}") from exc

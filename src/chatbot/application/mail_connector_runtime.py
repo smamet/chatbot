@@ -26,6 +26,7 @@ def prepare_email_connector_config(
     session: Session,
     direction: ConnectorDirection,
     settings: Settings | None = None,
+    force_oauth_refresh: bool = False,
 ) -> dict:
     """Resolve OAuth tokens and persist refreshed credentials when needed."""
     resolved_settings = settings or get_settings()
@@ -36,6 +37,7 @@ def prepare_email_connector_config(
             connector,
             direction=direction.value,
             settings=resolved_settings,
+            force_oauth_refresh=force_oauth_refresh,
         )
     if not is_oauth_auth_type(resolve_email_auth_type(config)):
         return config
@@ -43,6 +45,7 @@ def prepare_email_connector_config(
         config,
         direction=direction.value,
         settings=resolved_settings,
+        force_refresh=force_oauth_refresh,
     )
     if updated is None:
         return mail_cfg

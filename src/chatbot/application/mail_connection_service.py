@@ -166,6 +166,7 @@ class MailConnectionService:
         *,
         direction: str,
         refresh: bool = True,
+        force_oauth_refresh: bool = False,
         settings: Settings | None = None,
     ) -> tuple[dict, dict | None]:
         resolved_settings = settings or get_settings()
@@ -176,6 +177,7 @@ class MailConnectionService:
             runtime,
             direction=direction,
             settings=resolved_settings,
+            force_refresh=force_oauth_refresh,
         )
         if updated is None:
             return mail_cfg, None
@@ -194,6 +196,7 @@ class MailConnectionService:
         *,
         direction: str,
         settings: Settings | None = None,
+        force_oauth_refresh: bool = False,
     ) -> dict:
         raw_id = connector.config.get("mail_connection_id")
         try:
@@ -209,6 +212,7 @@ class MailConnectionService:
             connection,
             direction=direction,
             settings=settings,
+            force_oauth_refresh=force_oauth_refresh,
         )
         return {**mail_cfg, **connector_mail_overlay(connector)}
 
@@ -236,13 +240,19 @@ def connection_client_credentials(
     return resolve_mail_oauth_credentials(connection, settings)
 
 
+_CONNECTOR_SEND_OVERLAY_KEYS = frozenset({"from_addr", "default_subject", "outbound_provider"})
+
+
 def connector_mail_overlay(connector: Connector) -> dict[str, Any]:
-    """Connector-owned fields (from_addr, default_subject, …) not on the mail connection."""
-    overlay = strip_connector_oauth_fields(dict(connector.config))
-    overlay.pop("mail_connection_id", None)
-    overlay.pop("auth_type", None)
-    for key in runtime_mail_config_keys():
-        overlay.pop(key, None)
+    """Connector-owned send settings that are not stored on the mail connection."""
+    overlay: dict[str, Any] = {}
+    for key in _CONNECTOR_SEND_OVERLAY_KEYS:
+        value = connector.config.get(key)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        overlay[key] = value
     return overlay
 
 

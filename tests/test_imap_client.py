@@ -49,11 +49,20 @@ def test_smtp_sender_no_tls(mock_smtp_cls) -> None:
         )
     )
     mock_smtp.starttls.assert_not_called()
-    mock_smtp.send_message.assert_called_once()
-    sent = mock_smtp.send_message.call_args[0][0]
+    mock_smtp.sendmail.assert_called_once()
+    envelope_from, recipients, raw = mock_smtp.sendmail.call_args[0]
+    assert envelope_from == "client@example.com"
+    assert recipients == ["bot@test.local"]
+    sent = email.message_from_bytes(raw)
     assert sent.get_content_type() == "multipart/alternative"
     parts = list(sent.walk())
-    payloads = {p.get_content_type(): p.get_content() for p in parts if not p.is_multipart()}
+    payloads: dict[str, str] = {}
+    for part in parts:
+        if part.is_multipart():
+            continue
+        payload = part.get_payload(decode=True)
+        if payload is not None:
+            payloads[part.get_content_type()] = payload.decode("utf-8", errors="replace")
     assert payloads["text/plain"].strip() == "Plain body"
     assert payloads["text/html"].strip() == "<p>HTML body</p>"
 
@@ -75,7 +84,7 @@ def test_smtp_sender_xoauth2(mock_smtp_cls) -> None:
     mock_smtp.auth.assert_called_once()
     _mech, auth_cb = mock_smtp.auth.call_args[0]
     assert _mech == "XOAUTH2"
-    assert auth_cb() == build_xoauth2_string("sales@vdtec.net", "oauth-token")
+    assert auth_cb() == build_xoauth2_string("sales@vdtec.net", "oauth-token").encode("utf-8")
     mock_smtp.login.assert_not_called()
 
 
@@ -99,6 +108,11 @@ def test_smtp_sender_with_tls(mock_smtp_cls) -> None:
     )
     mock_smtp.starttls.assert_called_once()
     mock_smtp.login.assert_called_once_with("user", "pass")
+    mock_smtp.sendmail.assert_called_once_with(
+        "bot@example.com",
+        ["a@b.com"],
+        mock_smtp.sendmail.call_args[0][2],
+    )
 
 
 def test_imap_use_ssl_by_port() -> None:

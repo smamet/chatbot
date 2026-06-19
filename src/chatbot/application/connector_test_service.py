@@ -123,17 +123,25 @@ def _test_outbound(
     return ConnectorTestResult(ok=True, message=f"{provider.capitalize()} connection OK.")
 
 
+def _smtp_access_token(mail_cfg: dict) -> str | None:
+    token = (
+        str(mail_cfg.get("_resolved_access_token", "")).strip()
+        or str(mail_cfg.get("oauth_access_token", "")).strip()
+    )
+    return token or None
+
+
 def _test_outbound_smtp(mail_cfg: dict, *, source_config: dict | None = None) -> ConnectorTestResult:
     host = str(mail_cfg.get("smtp_host", "")).strip()
     if not host:
         raise EmailSendError("Missing smtp_host")
     port_raw = str(mail_cfg.get("smtp_port", "587")).strip() or "587"
     port = int(port_raw)
-    access_token = (
-        str(mail_cfg.get("_resolved_access_token", "")).strip()
-        or str(mail_cfg.get("oauth_access_token", "")).strip()
-        or None
-    )
+    cfg = source_config or mail_cfg
+    auth_type = resolve_email_auth_type(cfg)
+    access_token = _smtp_access_token(mail_cfg)
+    if is_oauth_auth_type(auth_type) and not access_token:
+        raise EmailSendError("OAuth access token is missing — reconnect the mailbox.")
     SmtpEmailSender(
         host=host,
         port=port,
@@ -142,8 +150,7 @@ def _test_outbound_smtp(mail_cfg: dict, *, source_config: dict | None = None) ->
         use_tls=_parse_use_tls(mail_cfg.get("smtp_use_tls"), default=True),
         access_token=access_token,
     ).verify_connection()
-    cfg = source_config or mail_cfg
-    auth_label = "OAuth" if is_oauth_auth_type(resolve_email_auth_type(cfg)) else "password"
+    auth_label = "OAuth" if is_oauth_auth_type(auth_type) else "password"
     return ConnectorTestResult(ok=True, message=f"SMTP connection OK ({auth_label}).")
 
 

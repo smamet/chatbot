@@ -187,6 +187,7 @@ def approve_pending_reply(
                 session=session,
                 direction=ConnectorDirection.OUT,
                 settings=settings,
+                force_oauth_refresh=True,
             )
     dispatch_channel_reply(
         channel=reply.channel,

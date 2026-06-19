@@ -165,6 +165,7 @@ def _refresh_tokens(
                 refresh_token=refresh_token,
                 client_id=client_id,
                 client_secret=client_secret,
+                scopes=microsoft_oauth.scopes_for_connection(),
             )
         else:
             tokens = google_oauth.refresh_access_token(
@@ -188,11 +189,12 @@ def get_oauth_access_token(
     *,
     direction: str,
     settings: Settings | None = None,
+    force_refresh: bool = False,
 ) -> OAuthAccessResult:
     auth_type = resolve_email_auth_type(config)
     if not is_oauth_auth_type(auth_type):
         raise MailOAuthError("Connector is not configured for OAuth")
-    if _token_still_valid(config):
+    if not force_refresh and _token_still_valid(config):
         access = str(config.get("oauth_access_token", "")).strip()
         mail_cfg = dict(config)
         mail_cfg["_resolved_access_token"] = access
@@ -205,12 +207,18 @@ def prepare_oauth_mail_config(
     *,
     direction: str,
     settings: Settings | None = None,
+    force_refresh: bool = False,
 ) -> tuple[dict, dict | None]:
     """Resolve OAuth access token and return config ready for IMAP/SMTP adapters."""
     auth_type = resolve_email_auth_type(config)
     if not is_oauth_auth_type(auth_type):
         return config, None
-    result = get_oauth_access_token(config, direction=direction, settings=settings)
+    result = get_oauth_access_token(
+        config,
+        direction=direction,
+        settings=settings,
+        force_refresh=force_refresh,
+    )
     if result.updated_config is not None:
         return result.updated_config, result.updated_config
     mail_cfg = dict(config)

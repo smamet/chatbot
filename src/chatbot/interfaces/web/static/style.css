@@ -1193,9 +1193,23 @@ textarea {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
-  overflow: hidden;
+  overflow-x: auto;
+  overflow-y: hidden;
   box-shadow: var(--shadow-sm);
   margin-bottom: var(--space-lg);
+}
+
+#mail-connections-panel td.actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+  max-width: none;
+}
+
+#mail-connections-panel td.actions form {
+  display: inline-flex;
+  margin-right: 0;
 }
 
 table,

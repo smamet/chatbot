@@ -77,12 +77,16 @@ def refresh_access_token(
     refresh_token: str,
     client_id: str,
     client_secret: str,
+    scopes: tuple[str, ...] | None = None,
 ) -> OAuthTokens:
+    data: dict[str, str] = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+    }
+    if scopes:
+        data["scope"] = " ".join(scopes)
     return _token_request(
-        {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-        },
+        data,
         client_id=client_id,
         client_secret=client_secret,
         existing_refresh_token=refresh_token,
