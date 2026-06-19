@@ -42,7 +42,7 @@
             <time class="msg-time" datetime="{{ m.created_at.isoformat() }}">{{ m.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
             {% endif %}
           </div>
-          <div class="msg-body{% if m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div>
+          <div class="msg-body{% if m.role.value == 'user' %} msg-body--plain{% elif m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div>
         </div>
       </div>
       {% endfor %}

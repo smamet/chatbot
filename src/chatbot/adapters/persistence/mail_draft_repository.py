@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.orm import MailDraftRow
 from chatbot.domain.models.mail_draft import MailDraft, MailDraftStatus
+from chatbot.domain.models.pending_reply import PendingReply
 
 
 def _row_to_draft(row: MailDraftRow) -> MailDraft:
@@ -37,6 +38,27 @@ class SqlAlchemyMailDraftRepository:
                 MailDraftRow.tenant_id == self._tenant_id,
                 MailDraftRow.from_addr == from_addr.strip().lower(),
                 MailDraftRow.draft_reply == draft_reply,
+            )
+            .order_by(MailDraftRow.id.desc())
+            .limit(1)
+        )
+        return _row_to_draft(row) if row else None
+
+    def find_for_pending_reply(self, reply: PendingReply) -> MailDraft | None:
+        from_addr = (reply.recipient_id or reply.session_id.removeprefix("email:")).strip().lower()
+        draft = self.find_by_reply(from_addr, reply.draft_text)
+        if draft is not None:
+            return draft
+        before = reply.created_at
+        if before.tzinfo is None:
+            before = before.replace(tzinfo=UTC)
+        row = self._session.scalar(
+            select(MailDraftRow)
+            .where(
+                MailDraftRow.tenant_id == self._tenant_id,
+                MailDraftRow.from_addr == from_addr,
+                MailDraftRow.imap_uid != "",
+                MailDraftRow.created_at <= before,
             )
             .order_by(MailDraftRow.id.desc())
             .limit(1)

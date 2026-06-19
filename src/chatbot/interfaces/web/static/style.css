@@ -1657,6 +1657,11 @@ a:hover {
   word-break: break-word;
 }
 
+.msg-body--plain {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .msg-body > :first-child {
   margin-top: 0;
 }

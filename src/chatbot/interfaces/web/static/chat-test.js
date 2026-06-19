@@ -176,7 +176,7 @@
     label.textContent = role;
     div.appendChild(label);
     const body = document.createElement("div");
-    body.className = "msg-body";
+    body.className = role === "user" ? "msg-body msg-body--plain" : "msg-body";
     if (markdown && role === "assistant") {
       body.innerHTML = renderMarkdown(content);
     } else {

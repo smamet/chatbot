@@ -8,6 +8,7 @@ from chatbot.application.pending_reply_inbound import (
     inbound_subject_for_pending_reply,
 )
 from chatbot.application.mail_connector_runtime import prepare_email_connector_config
+from chatbot.application.mail_imap_seen_service import mark_imap_seen_for_pending_reply
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.application.connector_service import ConnectorService
@@ -196,6 +197,12 @@ def approve_pending_reply(
         attachments=attachments,
         body_html=reply.draft_html,
         subject=reply.draft_subject,
+    )
+    mark_imap_seen_for_pending_reply(
+        session,
+        tenant_id=reply.tenant_id,
+        reply=reply,
+        settings=settings,
     )
     return SqlAlchemyPendingReplyRepository(session).update_status(
         reply.id, PendingReplyStatus.APPROVED

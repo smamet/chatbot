@@ -210,7 +210,7 @@ class MailConnectionService:
             direction=direction,
             settings=settings,
         )
-        return mail_cfg
+        return {**mail_cfg, **connector_mail_overlay(connector)}
 
     def _to_client_view(self, connection: MailConnection) -> MailConnectionClientView:
         return MailConnectionClientView(
@@ -234,6 +234,14 @@ def connection_client_credentials(
     settings: Settings,
 ) -> tuple[str, str]:
     return resolve_mail_oauth_credentials(connection, settings)
+
+
+def connector_mail_overlay(connector: Connector) -> dict[str, Any]:
+    """Connector-owned fields (from_addr, default_subject, …) not on the mail connection."""
+    overlay = strip_connector_oauth_fields(dict(connector.config))
+    overlay.pop("mail_connection_id", None)
+    overlay.pop("auth_type", None)
+    return overlay
 
 
 def strip_connector_oauth_fields(config: dict) -> dict:

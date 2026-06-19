@@ -107,6 +107,7 @@ from chatbot.adapters.oauth_state import (
 )
 from chatbot.application.connector_test_service import run_connector_connection_test, run_mail_connection_test
 from chatbot.application.mail_inbox_preview_service import preview_mail_connection_inbox
+from chatbot.application.mail_imap_seen_service import mark_imap_seen_for_pending_reply
 from chatbot.application.mail_connection_service import (
     MailConnectionError,
     MailConnectionService,
@@ -3453,6 +3454,7 @@ def reject_validation_reply(
     user: User = Depends(require_validator),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
 ):
     tenant = _tenant_or_404(tenant_service, slug)
@@ -3464,6 +3466,12 @@ def reject_validation_reply(
     if reply.status != PendingReplyStatus.PENDING:
         raise HTTPException(status_code=400, detail="Reply is not pending")
     cleanup_pending_reply_attachments(reply)
+    mark_imap_seen_for_pending_reply(
+        session,
+        tenant_id=tenant.id,
+        reply=reply,
+        settings=settings,
+    )
     ValidationAuditService(session).resolve_reply(
         reply,
         status=PendingReplyStatus.REJECTED,

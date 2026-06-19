@@ -263,6 +263,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
     assert r.status_code == 200
     assert "foo@bar.com" in r.text
     assert "email:foo@bar.com" not in r.text
+    assert 'class="msg-body msg-body--plain"' in r.text
     assert 'class="msg-body js-md"' in r.text
     assert "**bold** reply" in r.text
     assert "markdown.js" in r.text
@@ -767,6 +768,7 @@ def test_validation_tab_renders_quill_editor_for_email(dashboard_env) -> None:
     assert "/validation/1/save" in detail.text
     assert "Generated" in detail.text
     assert "Received" in detail.text
+    assert 'class="msg-body msg-body--plain"' in detail.text
     assert "Re-resolve products" not in detail.text
 
 

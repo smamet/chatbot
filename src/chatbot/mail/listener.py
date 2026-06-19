@@ -92,7 +92,7 @@ def _process_one_mail(
         draft_repo.mark_failed(draft.id, error="No active email outbound connector")
         return False
 
-    queue_after_chat(
+    status, _pending = queue_after_chat(
         session,
         tenant_id=tenant_id,
         connector=out_conn,
@@ -104,7 +104,8 @@ def _process_one_mail(
     )
     draft_repo.mark_processed(draft.id, draft_reply=result.text)
     uid_repo.record_processed(mail.uid, received_at=mail.received_at)
-    imap_conn.mark_seen(mail.uid)
+    if status == "ok":
+        imap_conn.mark_seen(mail.uid)
     return True
 
 

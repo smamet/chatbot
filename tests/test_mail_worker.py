@@ -97,10 +97,11 @@ def test_run_once_processes_mail(mock_imap_ctx, mock_build_chat, mock_queue, mai
         hook_payload_json=None,
         hook_event_id=None,
     )
+    mock_queue.return_value = ("queued", None)
 
     n = mail_listener.run_once(factory, settings)
     assert n == 1
-    imap.mark_seen.assert_called_once_with("1")
+    imap.mark_seen.assert_not_called()
     mock_queue.assert_called_once()
 
 
@@ -175,9 +176,10 @@ def test_run_once_mail_failure_continues(mock_imap_ctx, mock_build_chat, mock_qu
         return svc
 
     mock_build_chat.side_effect = _chat_side_effect
+    mock_queue.return_value = ("queued", None)
     n = mail_listener.run_once(factory, settings)
     assert n == 1
-    imap.mark_seen.assert_called_once_with("1")
+    imap.mark_seen.assert_not_called()
 
 
 @patch("chatbot.mail.listener.queue_after_chat")
@@ -220,6 +222,34 @@ def test_run_once_skips_mail_before_process_since(
         draft_repo = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id)
         assert uid_repo.exists_by_uid("old-1")
         assert not draft_repo.exists_by_uid("old-1")
+
+
+@patch("chatbot.mail.listener.queue_after_chat")
+@patch("chatbot.mail.listener.build_chat_service_for_worker")
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_direct_mode_marks_seen(mock_imap_ctx, mock_build_chat, mock_queue, mail_env) -> None:
+    factory, settings, tenant_id, _, out_id = mail_env
+    with factory() as session:
+        repo = SqlAlchemyConnectorRepository(session)
+        out = repo.find_by_id(out_id)
+        assert out is not None
+        repo.update(out_id, mode=ConnectorMode.DIRECT)
+        session.commit()
+
+    imap = MagicMock()
+    imap.fetch_pending.return_value = [_mail("1")]
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+    mock_build_chat.return_value.handle_user_message.return_value = SimpleNamespace(
+        text="reply",
+        hook_type=None,
+        hook_payload_json=None,
+        hook_event_id=None,
+    )
+    mock_queue.return_value = ("ok", None)
+
+    n = mail_listener.run_once(factory, settings)
+    assert n == 1
+    imap.mark_seen.assert_called_once_with("1")
 
 
 @patch("chatbot.mail.listener.imap_client")

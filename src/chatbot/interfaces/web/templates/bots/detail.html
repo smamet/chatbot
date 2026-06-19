@@ -1442,7 +1442,7 @@
     <div class="chat-thread history-thread">
     {% for m in history_messages %}
     <div class="msg-turn msg-turn-{{ m.role.value }}">
-      <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
+      <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'user' %} msg-body--plain{% elif m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
       {% if m.context_debug %}
       <p class="msg-context-debug">{{ m.context_debug | context_debug_label }}</p>
       {% endif %}
