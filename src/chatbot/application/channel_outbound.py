@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from chatbot.adapters.channels import instagram_meta, messenger_meta, whatsapp_meta
 from chatbot.adapters.mail.body_format import email_draft_html_from_markdown
-from chatbot.application.email_outbound import send_email_reply
+from chatbot.application.email_outbound import resolve_email_subject, send_email_reply
+from chatbot.application.pending_reply_inbound import (
+    inbound_for_pending_reply,
+    inbound_subject_for_pending_reply,
+)
 from chatbot.application.mail_connector_runtime import prepare_email_connector_config
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
@@ -52,6 +56,23 @@ def queue_pending_reply(
 ) -> PendingReply:
     if draft_html is None and channel == ConnectorType.EMAIL.value:
         draft_html = email_draft_html_from_markdown(draft_text)
+    draft_subject: str | None = None
+    if channel == ConnectorType.EMAIL.value:
+        inbound_subject = inbound_subject_for_pending_reply(
+            session,
+            tenant_id,
+            channel=channel,
+            recipient_id=recipient_id,
+            session_id=session_id,
+            draft_text=draft_text,
+        )
+        conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+        outbound = get_outbound_connector(conn_svc, tenant_id, ConnectorType.EMAIL)
+        outbound_config = outbound.config if outbound else {}
+        draft_subject = resolve_email_subject(
+            connector_config=outbound_config,
+            inbound_subject=inbound_subject or None,
+        )
     return SqlAlchemyPendingReplyRepository(session).create(
         tenant_id=tenant_id,
         connector_id=connector_id,
@@ -60,6 +81,7 @@ def queue_pending_reply(
         recipient_id=recipient_id,
         draft_text=draft_text,
         draft_html=draft_html,
+        draft_subject=draft_subject,
         hook_event_id=hook_event_id,
         fulfillment_kind=fulfillment_kind,
         quote_proposal_json=quote_proposal_json,
@@ -78,6 +100,7 @@ def dispatch_channel_reply(
     settings: Settings,
     attachments: list[OutboundAttachment] | None = None,
     body_html: str | None = None,
+    subject: str | None = None,
 ) -> None:
     if channel == ConnectorType.WHATSAPP.value:
         phone_id = str(config.get("phone_number_id", "")).strip()
@@ -140,6 +163,7 @@ def dispatch_channel_reply(
             config=config,
             to_addr=recipient_id,
             body=text,
+            subject=subject,
             body_html=body_html,
             attachments=attachments,
         )
@@ -171,7 +195,33 @@ def approve_pending_reply(
         settings=settings,
         attachments=attachments,
         body_html=reply.draft_html,
+        subject=reply.draft_subject,
     )
     return SqlAlchemyPendingReplyRepository(session).update_status(
         reply.id, PendingReplyStatus.APPROVED
     )
+
+
+def persist_validation_email_subject(
+    session: Session,
+    *,
+    tenant_id: int,
+    reply: PendingReply,
+    form_subject: str,
+    outbound_config: dict,
+) -> PendingReply:
+    if reply.channel != ConnectorType.EMAIL.value:
+        return reply
+    inbound = inbound_for_pending_reply(session, tenant_id, reply)
+    raw = str(form_subject).strip()
+    subject = resolve_email_subject(
+        draft_subject=raw or None,
+        connector_config=outbound_config,
+        inbound_subject=inbound.get("subject") or None,
+    )
+    if subject == (reply.draft_subject or ""):
+        return reply
+    updated = SqlAlchemyPendingReplyRepository(session).update_draft(
+        reply.id, draft_subject=subject
+    )
+    return updated or reply

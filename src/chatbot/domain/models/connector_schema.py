@@ -247,7 +247,7 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
         ConnectorField(
             key="default_subject",
             label="Default subject",
-            help="Subject line used when approving a queued reply (Validation tab).",
+            help="Default subject for validation replies. Leave empty to auto-use Re: {original subject}.",
             placeholder="Reply from support",
             directions=(ConnectorDirection.OUT.value,),
         ),

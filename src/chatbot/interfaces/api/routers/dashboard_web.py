@@ -38,7 +38,13 @@ from chatbot.application.bot_bundle_service import (
 )
 from chatbot.adapters.erpnext.client import ErpNextClient
 from chatbot.adapters.mail.body_format import email_draft_html_from_markdown
-from chatbot.application.channel_outbound import approve_pending_reply, get_outbound_connector
+from chatbot.application.channel_outbound import (
+    approve_pending_reply,
+    get_outbound_connector,
+    persist_validation_email_subject,
+)
+from chatbot.application.email_outbound import resolve_email_subject
+from chatbot.application.pending_reply_inbound import inbound_for_pending_reply
 from chatbot.application.customer_access_gate import build_channel_session_id, resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
 from chatbot.application.erpnext_catalog_sync_service import (
@@ -388,7 +394,7 @@ def _conversation_history_for_pending_reply(session: Session, tenant_id: int, re
         messages = messages[:-1]
     if messages:
         return messages
-    inbound = _inbound_for_pending_reply(session, tenant_id, reply)
+    inbound = inbound_for_pending_reply(session, tenant_id, reply)
     if inbound.get("text"):
         return [
             ChatMessage(
@@ -401,29 +407,13 @@ def _conversation_history_for_pending_reply(session: Session, tenant_id: int, re
 
 
 def _inbound_for_pending_reply(session: Session, tenant_id: int, reply) -> dict:
-    subject = ""
-    text = ""
-    received_at = None
-    channel = (reply.channel or "").lower()
-    if channel == "email":
-        from_addr = (reply.recipient_id or reply.session_id.removeprefix("email:")).strip().lower()
-        draft = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).find_by_reply(
-            from_addr, reply.draft_text
-        )
-        if draft:
-            return {
-                "subject": draft.subject,
-                "text": draft.body_in,
-                "received_at": draft.created_at,
-            }
-    conv = SqlAlchemyConversationRepository(session, tenant_id)
-    before = reply.created_at
-    if before.tzinfo is None:
-        before = before.replace(tzinfo=UTC)
-    user_meta = conv.last_user_message_with_time_before(reply.session_id, before)
-    if user_meta:
-        text, received_at = user_meta
-    return {"subject": subject, "text": text, "received_at": received_at}
+    return inbound_for_pending_reply(session, tenant_id, reply)
+
+
+def _outbound_email_config(session: Session, tenant_id: int) -> dict:
+    conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    outbound = get_outbound_connector(conn_svc, tenant_id, ConnectorType.EMAIL)
+    return outbound.config if outbound else {}
 
 
 def _erpnext_quotation_edit_url(session: Session, tenant_id: int, quote_name: str | None) -> str | None:
@@ -476,7 +466,7 @@ def _pending_reply_ui_item(
     settings: Settings,
 ) -> dict:
     resolved = resolved_lines_from_json(reply.quote_resolved_json)
-    inbound = _inbound_for_pending_reply(session, tenant_id, reply)
+    inbound = inbound_for_pending_reply(session, tenant_id, reply)
     conversation_history = _conversation_history_for_pending_reply(session, tenant_id, reply)
     quote_pdf_url = (
         quote_pdf_dashboard_url(tenant_slug, reply.quote_external_id, inline=True)
@@ -492,6 +482,16 @@ def _pending_reply_ui_item(
         tenant_slug=tenant_slug,
         reply_id=reply.id,
     )
+    outbound_config = (
+        _outbound_email_config(session, tenant_id)
+        if reply.channel == ConnectorType.EMAIL.value
+        else {}
+    )
+    outbound_subject = resolve_email_subject(
+        draft_subject=reply.draft_subject,
+        connector_config=outbound_config,
+        inbound_subject=inbound.get("subject") or None,
+    )
     return {
         "reply": reply,
         "resolved_lines": resolved,
@@ -500,6 +500,7 @@ def _pending_reply_ui_item(
         "manual_attachment_count": len(manual_attachments),
         "inbound_subject": inbound["subject"],
         "inbound_text": inbound["text"],
+        "outbound_subject": outbound_subject,
         "conversation_history": conversation_history,
         "quote_pdf_url": quote_pdf_url,
         "erpnext_quote_url": _erpnext_quotation_edit_url(
@@ -3210,6 +3211,14 @@ async def approve_validation_reply(
     connector = conn_svc.get(reply.connector_id)
     config = connector.config if connector else {}
     form = await request.form()
+    if reply.channel == ConnectorType.EMAIL.value:
+        reply = persist_validation_email_subject(
+            session,
+            tenant_id=tenant.id,
+            reply=reply,
+            form_subject=str(form.get("draft_subject", "")),
+            outbound_config=_outbound_email_config(session, tenant.id),
+        )
     resolved_json = _merge_resolved_selection(form, reply)
     if (
         reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE
@@ -3265,12 +3274,14 @@ async def save_validation_draft(
         raise HTTPException(status_code=400, detail="Only email drafts can be edited")
     form = await request.form()
     draft_html = str(form.get("draft_html", ""))
+    draft_subject = str(form.get("draft_subject", ""))
     try:
         save_pending_reply_draft(
             session,
             tenant_id=tenant.id,
             reply=reply,
             draft_html=draft_html,
+            draft_subject=draft_subject,
             edited_by=user.email,
         )
     except DraftEditError as exc:

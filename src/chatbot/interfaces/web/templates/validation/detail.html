@@ -91,6 +91,12 @@
     {% endif %}
     {% if reply.channel == 'email' and can_validate %}
     <div class="validation-editor">
+      <label class="validation-subject-label" for="validation-draft-subject-{{ reply.id }}">Subject</label>
+      <input type="text"
+             id="validation-draft-subject-{{ reply.id }}"
+             name="draft_subject"
+             class="validation-draft-subject"
+             value="{{ item.outbound_subject }}">
       <div class="validation-quill" id="validation-quill-{{ reply.id }}"></div>
       <script type="application/json" class="validation-draft-html-source">{{ item.editor_html | tojson }}</script>
       <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/save" class="validation-save-form">

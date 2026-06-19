@@ -225,6 +225,7 @@ class PendingReplyRow(Base):
     recipient_id: Mapped[str] = mapped_column(String(256))
     draft_text: Mapped[str] = mapped_column(Text())
     draft_html: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    draft_subject: Mapped[str | None] = mapped_column(Text(), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="pending")
     hook_event_id: Mapped[int | None] = mapped_column(ForeignKey("hook_events.id"), nullable=True)
     fulfillment_kind: Mapped[str] = mapped_column(String(32), default="reply_only")

@@ -34,5 +34,6 @@ class PendingReply:
     fulfillment_error: str | None = None
     quote_erp_modified: str | None = None
     draft_html: str | None = None
+    draft_subject: str | None = None
     resolved_by: str | None = None
     resolved_at: datetime | None = None

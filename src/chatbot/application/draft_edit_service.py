@@ -89,13 +89,21 @@ def save_pending_reply_draft(
     reply: PendingReply,
     draft_html: str,
     edited_by: str,
+    draft_subject: str | None = None,
 ) -> PendingReply:
     if reply.status != PendingReplyStatus.PENDING:
         raise DraftEditError("Reply is not pending")
 
     sanitized = sanitize_email_html(draft_html)
     before_html = reply.draft_html or ""
-    if sanitized == before_html:
+    subject_changed = False
+    sanitized_subject: str | None = None
+    if draft_subject is not None:
+        sanitized_subject = draft_subject.strip()
+        if sanitized_subject != (reply.draft_subject or "").strip():
+            subject_changed = True
+
+    if sanitized == before_html and not subject_changed:
         return reply
 
     markdown_text = html_to_markdown(sanitized, heading_style="ATX").strip()
@@ -104,25 +112,41 @@ def save_pending_reply_draft(
 
     updated = pending_repo.update_draft(
         reply.id,
-        draft_html=sanitized,
-        draft_text=markdown_text,
+        draft_html=sanitized if sanitized != before_html else None,
+        draft_text=markdown_text if sanitized != before_html else None,
+        draft_subject=sanitized_subject if subject_changed else None,
     )
     if updated is None:
         raise DraftEditError("Failed to update draft")
 
-    SqlAlchemyPendingReplyEditRepository(session).create(
-        tenant_id=tenant_id,
-        pending_reply_id=reply.id,
-        edited_by=edited_by,
-        body_before=before_html,
-        body_after=sanitized,
-        diff=draft_edit_text_diff(before_html, sanitized),
-    )
+    if sanitized != before_html:
+        diff = draft_edit_text_diff(before_html, sanitized)
+        if subject_changed:
+            diff = (
+                f"Subject: {reply.draft_subject or ''!r} -> {sanitized_subject!r}\n" + diff
+            )
+        SqlAlchemyPendingReplyEditRepository(session).create(
+            tenant_id=tenant_id,
+            pending_reply_id=reply.id,
+            edited_by=edited_by,
+            body_before=before_html,
+            body_after=sanitized,
+            diff=diff,
+        )
 
-    conv = SqlAlchemyConversationRepository(session, tenant_id)
-    conv.update_assistant_message_content(
-        reply.session_id,
-        old_content=old_draft_text,
-        new_content=markdown_text,
-    )
+        conv = SqlAlchemyConversationRepository(session, tenant_id)
+        conv.update_assistant_message_content(
+            reply.session_id,
+            old_content=old_draft_text,
+            new_content=markdown_text,
+        )
+    elif subject_changed:
+        SqlAlchemyPendingReplyEditRepository(session).create(
+            tenant_id=tenant_id,
+            pending_reply_id=reply.id,
+            edited_by=edited_by,
+            body_before=before_html,
+            body_after=before_html,
+            diff=f"Subject: {reply.draft_subject or ''!r} -> {sanitized_subject!r}\n",
+        )
     return updated
