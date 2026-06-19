@@ -59,6 +59,27 @@ def test_smtp_sender_no_tls(mock_smtp_cls) -> None:
 
 
 @patch("chatbot.adapters.mail.smtp_sender.smtplib.SMTP")
+def test_smtp_sender_xoauth2(mock_smtp_cls) -> None:
+    from chatbot.adapters.mail.xoauth2 import build_xoauth2_string
+
+    mock_smtp = MagicMock()
+    mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
+    SmtpEmailSender(
+        host="smtp.office365.com",
+        port=587,
+        username="sales@vdtec.net",
+        password="",
+        use_tls=True,
+        access_token="oauth-token",
+    ).verify_connection()
+    mock_smtp.auth.assert_called_once()
+    _mech, auth_cb = mock_smtp.auth.call_args[0]
+    assert _mech == "XOAUTH2"
+    assert auth_cb() == build_xoauth2_string("sales@vdtec.net", "oauth-token")
+    mock_smtp.login.assert_not_called()
+
+
+@patch("chatbot.adapters.mail.smtp_sender.smtplib.SMTP")
 def test_smtp_sender_with_tls(mock_smtp_cls) -> None:
     mock_smtp = MagicMock()
     mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
@@ -172,6 +193,10 @@ def test_imap_client_mark_seen_uses_parenthesized_flags(mock_close, mock_connect
 
 @patch("chatbot.adapters.mail.imap_client.imaplib.IMAP4_SSL")
 def test_imap_client_xoauth2_connect(mock_imap_ssl) -> None:
+    import base64
+
+    from chatbot.adapters.mail.xoauth2 import build_xoauth2_string
+
     mock_conn = MagicMock()
     mock_conn.authenticate.return_value = ("OK", [b"Success"])
     mock_conn.select.return_value = ("OK", [b"1"])
@@ -186,6 +211,10 @@ def test_imap_client_xoauth2_connect(mock_imap_ssl) -> None:
     )
     client.connect()
     mock_conn.authenticate.assert_called_once()
+    _mech, auth_cb = mock_conn.authenticate.call_args[0]
+    assert _mech == "XOAUTH2"
+    assert auth_cb(b"") == build_xoauth2_string("user@example.com", "tok").encode("utf-8")
+    assert base64.b64encode(auth_cb(b"")).decode() != auth_cb(b"").decode()
     mock_conn.login.assert_not_called()
 
 

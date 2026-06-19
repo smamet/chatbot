@@ -108,7 +108,7 @@ class ImapMailClient:
                 self._conn = imaplib.IMAP4(self._host, self._port, timeout=self._timeout)
             access_token = str(self._config.get("_resolved_access_token", "")).strip()
             if access_token:
-                auth_bytes = build_xoauth2_string(self._username, access_token)
+                auth_bytes = build_xoauth2_string(self._username, access_token).encode("utf-8")
                 typ, _ = self._conn.authenticate("XOAUTH2", lambda _: auth_bytes)
             else:
                 typ, _ = self._conn.login(self._username, self._password)

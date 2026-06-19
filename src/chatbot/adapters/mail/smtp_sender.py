@@ -43,7 +43,7 @@ class SmtpEmailSender:
                 raise EmailSendError("SMTP username is required for OAuth")
             smtp.auth(
                 "XOAUTH2",
-                lambda: build_xoauth2_string(self._username, self._access_token),
+                lambda challenge=b"": build_xoauth2_string(self._username, self._access_token),
             )
             return
         if self._username:
