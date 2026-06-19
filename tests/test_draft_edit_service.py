@@ -153,7 +153,7 @@ Sincerely,
 **VDtec Distributors Ltd**  
 Office 101, Ebene Junction, Rue de la Démocratie, Ebene, Mauritius  
 Tel: (+230) 464 1716 | Mobile: (+230) 5 421 1715  
-Email: sales@vdtec.net | Web: www.vdtec.net"""
+Email: support@example.com | Web: www.example.com"""
 
     before_html = sanitize_email_html(email_draft_html_from_markdown(before_md))
 

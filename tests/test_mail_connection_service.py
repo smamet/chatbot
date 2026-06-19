@@ -66,7 +66,7 @@ def test_resolve_for_connector_merges_connector_overlay(test_settings, test_tena
             connection_id=None,
             label="Sales",
             provider="microsoft_oauth",
-            mailbox_email="sales@vdtec.net",
+            mailbox_email="support@example.com",
             config_incoming={"microsoft_client_id": "cid", "oauth_refresh_token": "rt"},
         )
         connector = ConnectorService(SqlAlchemyConnectorRepository(session)).upsert(
@@ -77,7 +77,7 @@ def test_resolve_for_connector_merges_connector_overlay(test_settings, test_tena
             config={
                 "mail_connection_id": conn.id,
                 "auth_type": "microsoft_oauth",
-                "from_addr": "sales@vdtec.net",
+                "from_addr": "support@example.com",
                 "default_subject": "Reply from support",
                 "outbound_provider": "smtp",
             },
@@ -87,13 +87,13 @@ def test_resolve_for_connector_merges_connector_overlay(test_settings, test_tena
         runtime = {
             "auth_type": "microsoft_oauth",
             "smtp_host": "smtp.office365.com",
-            "smtp_username": "sales@vdtec.net",
+            "smtp_username": "support@example.com",
         }
         with patch.object(svc, "resolve_runtime_config", return_value=(runtime, None)):
             resolved = svc.resolve_for_connector(connector, direction="out", settings=test_settings)
-        assert resolved["from_addr"] == "sales@vdtec.net"
+        assert resolved["from_addr"] == "support@example.com"
         assert resolved["default_subject"] == "Reply from support"
-        assert resolved["smtp_username"] == "sales@vdtec.net"
+        assert resolved["smtp_username"] == "support@example.com"
         assert resolved["smtp_host"] == "smtp.office365.com"
 
 
@@ -117,7 +117,7 @@ def test_resolve_for_connector_ignores_stale_runtime_token_on_connector(
             connection_id=None,
             label="Sales",
             provider="microsoft_oauth",
-            mailbox_email="sales@vdtec.net",
+            mailbox_email="support@example.com",
             config_incoming={"microsoft_client_id": "cid", "oauth_refresh_token": "rt"},
         )
         connector = ConnectorService(SqlAlchemyConnectorRepository(session)).upsert(
@@ -128,7 +128,7 @@ def test_resolve_for_connector_ignores_stale_runtime_token_on_connector(
             config={
                 "mail_connection_id": conn.id,
                 "auth_type": "microsoft_oauth",
-                "from_addr": "sales@vdtec.net",
+                "from_addr": "support@example.com",
                 "outbound_provider": "smtp",
                 "_resolved_access_token": "",
             },
@@ -138,7 +138,7 @@ def test_resolve_for_connector_ignores_stale_runtime_token_on_connector(
         runtime = {
             "auth_type": "microsoft_oauth",
             "smtp_host": "smtp.office365.com",
-            "smtp_username": "sales@vdtec.net",
+            "smtp_username": "support@example.com",
             "_resolved_access_token": "fresh-token",
         }
         with patch.object(svc, "resolve_runtime_config", return_value=(runtime, None)):

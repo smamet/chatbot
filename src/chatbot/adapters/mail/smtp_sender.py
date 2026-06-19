@@ -57,12 +57,16 @@ class SmtpEmailSender:
             return self._username
         return message.from_addr
 
+    def _prepare_connection(self, smtp: smtplib.SMTP) -> None:
+        if self._use_tls:
+            smtp.starttls()
+            smtp.ehlo()
+        self._authenticate(smtp)
+
     def verify_connection(self) -> None:
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
-                if self._use_tls:
-                    smtp.starttls()
-                self._authenticate(smtp)
+                self._prepare_connection(smtp)
                 smtp.noop()
         except smtplib.SMTPException as exc:
             raise EmailSendError(f"SMTP connection failed: {exc}") from exc
@@ -85,9 +89,13 @@ class SmtpEmailSender:
         envelope_from = self._smtp_envelope_from(message)
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
-                if self._use_tls:
-                    smtp.starttls()
-                self._authenticate(smtp)
+                self._prepare_connection(smtp)
                 smtp.sendmail(envelope_from, [message.to_addr], msg.as_bytes())
+        except smtplib.SMTPSenderRefused as exc:
+            raise EmailSendError(
+                f"SMTP send refused by server (code {exc.smtp_code}). "
+                "If using Microsoft OAuth, ensure SMTP AUTH is enabled on the mailbox "
+                "and re-connect the Mail connection to obtain SMTP.Send scope."
+            ) from exc
         except smtplib.SMTPException as exc:
             raise EmailSendError(f"SMTP send failed: {exc}") from exc

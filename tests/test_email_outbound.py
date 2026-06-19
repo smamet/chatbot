@@ -150,7 +150,7 @@ def test_build_email_sender_smtp_oauth_access_token_fallback() -> None:
             "outbound_provider": "smtp",
             "smtp_host": "smtp.office365.com",
             "smtp_port": "587",
-            "smtp_username": "sales@vdtec.net",
+            "smtp_username": "support@example.com",
             "oauth_access_token": "stored-token",
         }
     )

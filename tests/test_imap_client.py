@@ -77,7 +77,7 @@ def test_smtp_sender_xoauth2(mock_smtp_cls) -> None:
     SmtpEmailSender(
         host="smtp.office365.com",
         port=587,
-        username="sales@vdtec.net",
+        username="support@example.com",
         password="",
         use_tls=True,
         access_token="oauth-token",
@@ -85,7 +85,7 @@ def test_smtp_sender_xoauth2(mock_smtp_cls) -> None:
     mock_smtp.auth.assert_called_once()
     _mech, auth_cb = mock_smtp.auth.call_args[0]
     assert _mech == "XOAUTH2"
-    assert auth_cb() == build_xoauth2_string("sales@vdtec.net", "oauth-token")
+    assert auth_cb() == build_xoauth2_string("support@example.com", "oauth-token")
     mock_smtp.login.assert_not_called()
 
 
