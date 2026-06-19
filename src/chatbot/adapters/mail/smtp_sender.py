@@ -37,10 +37,10 @@ class SmtpEmailSender:
         self._use_tls = use_tls
         self._access_token = (access_token or "").strip() or None
 
-    def _xoauth2_response(self, _challenge: bytes = b"") -> bytes:
+    def _xoauth2_response(self, _challenge: bytes = b"") -> str:
         if not self._username or not self._access_token:
             raise EmailSendError("SMTP username and OAuth access token are required")
-        return build_xoauth2_string(self._username, self._access_token).encode("utf-8")
+        return build_xoauth2_string(self._username, self._access_token)
 
     def _authenticate(self, smtp: smtplib.SMTP) -> None:
         if self._access_token:
