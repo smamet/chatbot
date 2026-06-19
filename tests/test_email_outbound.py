@@ -144,6 +144,20 @@ def test_build_email_sender_smtp_no_tls() -> None:
     assert sender._use_tls is False
 
 
+def test_build_email_sender_smtp_oauth_access_token_fallback() -> None:
+    sender = build_email_sender(
+        {
+            "outbound_provider": "smtp",
+            "smtp_host": "smtp.office365.com",
+            "smtp_port": "587",
+            "smtp_username": "sales@vdtec.net",
+            "oauth_access_token": "stored-token",
+        }
+    )
+    assert isinstance(sender, SmtpEmailSender)
+    assert sender._access_token == "stored-token"
+
+
 @patch("chatbot.adapters.mail.mailjet_sender.httpx.Client")
 def test_mailjet_sender_posts(mock_client_cls) -> None:
     mock_client = MagicMock()

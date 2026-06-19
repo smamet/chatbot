@@ -97,6 +97,55 @@ def test_resolve_for_connector_merges_connector_overlay(test_settings, test_tena
         assert resolved["smtp_host"] == "smtp.office365.com"
 
 
+def test_resolve_for_connector_ignores_stale_runtime_token_on_connector(
+    test_settings, test_tenant
+) -> None:
+    from unittest.mock import patch
+
+    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from chatbot.adapters.persistence.engine import create_db_engine, session_factory
+    from chatbot.application.connector_service import ConnectorService
+    from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+
+    tenant, _slug = test_tenant
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    with factory() as session:
+        svc = MailConnectionService(session)
+        conn = svc.upsert(
+            tenant_id=tenant.id,
+            connection_id=None,
+            label="Sales",
+            provider="microsoft_oauth",
+            mailbox_email="sales@vdtec.net",
+            config_incoming={"microsoft_client_id": "cid", "oauth_refresh_token": "rt"},
+        )
+        connector = ConnectorService(SqlAlchemyConnectorRepository(session)).upsert(
+            tenant_id=tenant.id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={
+                "mail_connection_id": conn.id,
+                "auth_type": "microsoft_oauth",
+                "from_addr": "sales@vdtec.net",
+                "outbound_provider": "smtp",
+                "_resolved_access_token": "",
+            },
+            active=True,
+        )
+        session.flush()
+        runtime = {
+            "auth_type": "microsoft_oauth",
+            "smtp_host": "smtp.office365.com",
+            "smtp_username": "sales@vdtec.net",
+            "_resolved_access_token": "fresh-token",
+        }
+        with patch.object(svc, "resolve_runtime_config", return_value=(runtime, None)):
+            resolved = svc.resolve_for_connector(connector, direction="out", settings=test_settings)
+        assert resolved["_resolved_access_token"] == "fresh-token"
+
+
 def test_mail_connection_service_upsert_and_delete_guard(test_settings, test_tenant) -> None:
     import pytest
 

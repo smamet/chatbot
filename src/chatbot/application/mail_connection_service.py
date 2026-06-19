@@ -15,7 +15,7 @@ from chatbot.application.mail_oauth_service import (
 )
 from chatbot.config.settings import Settings, get_settings
 from chatbot.domain.models.connector import Connector, ConnectorType
-from chatbot.domain.models.connector_schema import oauth_managed_connector_keys, secret_connector_keys
+from chatbot.domain.models.connector_schema import oauth_managed_connector_keys, runtime_mail_config_keys, secret_connector_keys
 from chatbot.domain.models.mail_connection import MailConnection, MailConnectionProvider
 from chatbot.domain.models.mail_connection_presets import build_runtime_mail_config, provider_auth_type
 
@@ -241,6 +241,8 @@ def connector_mail_overlay(connector: Connector) -> dict[str, Any]:
     overlay = strip_connector_oauth_fields(dict(connector.config))
     overlay.pop("mail_connection_id", None)
     overlay.pop("auth_type", None)
+    for key in runtime_mail_config_keys():
+        overlay.pop(key, None)
     return overlay
 
 
@@ -249,6 +251,7 @@ def strip_connector_oauth_fields(config: dict) -> dict:
     strip_keys = (
         secret_connector_keys()
         | oauth_managed_connector_keys()
+        | runtime_mail_config_keys()
         | frozenset(
             {
                 "imap_host",

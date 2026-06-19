@@ -23,7 +23,11 @@ def build_email_sender(config: dict) -> EmailSender:
             port = int(port_raw)
         except ValueError as exc:
             raise EmailSendError("Invalid smtp_port") from exc
-        access_token = str(config.get("_resolved_access_token", "")).strip() or None
+        access_token = (
+            str(config.get("_resolved_access_token", "")).strip()
+            or str(config.get("oauth_access_token", "")).strip()
+            or None
+        )
         return SmtpEmailSender(
             host=host,
             port=port,

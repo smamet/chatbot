@@ -129,7 +129,11 @@ def _test_outbound_smtp(mail_cfg: dict, *, source_config: dict | None = None) ->
         raise EmailSendError("Missing smtp_host")
     port_raw = str(mail_cfg.get("smtp_port", "587")).strip() or "587"
     port = int(port_raw)
-    access_token = str(mail_cfg.get("_resolved_access_token", "")).strip() or None
+    access_token = (
+        str(mail_cfg.get("_resolved_access_token", "")).strip()
+        or str(mail_cfg.get("oauth_access_token", "")).strip()
+        or None
+    )
     SmtpEmailSender(
         host=host,
         port=port,

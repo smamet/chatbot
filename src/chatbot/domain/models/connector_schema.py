@@ -355,6 +355,10 @@ def oauth_managed_connector_keys() -> frozenset[str]:
     return frozenset({"oauth_refresh_token", "oauth_access_token", "oauth_token_expires_at"})
 
 
+def runtime_mail_config_keys() -> frozenset[str]:
+    """Ephemeral keys set during OAuth resolution; never persist on connectors."""
+    return frozenset({"_resolved_access_token"})
+
 def resolve_email_outbound_provider(config: dict) -> str:
     raw = str(config.get("outbound_provider", EmailOutboundProvider.SMTP.value)).strip().lower()
     try:

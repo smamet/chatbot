@@ -7,7 +7,7 @@ from chatbot.application.mail_connection_service import MailConnectionService
 from chatbot.application.mail_oauth_service import prepare_oauth_mail_config
 from chatbot.config.settings import Settings, get_settings
 from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.connector_schema import is_oauth_auth_type, resolve_email_auth_type
+from chatbot.domain.models.connector_schema import is_oauth_auth_type, resolve_email_auth_type, runtime_mail_config_keys
 
 
 def _connection_id_from_config(config: dict) -> int | None:
@@ -46,13 +46,14 @@ def prepare_email_connector_config(
     )
     if updated is None:
         return mail_cfg
+    persisted = {key: value for key, value in updated.items() if key not in runtime_mail_config_keys()}
     svc = ConnectorService(session)
     svc.upsert(
         tenant_id=connector.tenant_id,
         direction=direction,
         type=ConnectorType.EMAIL,
         mode=connector.mode,
-        config=updated,
+        config=persisted,
         active=connector.active,
     )
     session.flush()
