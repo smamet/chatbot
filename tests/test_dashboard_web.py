@@ -2457,6 +2457,51 @@ def test_approve_email_uses_custom_subject_from_form(dashboard_env) -> None:
     assert send_mock.call_args.kwargs["subject"] == "Manual subject line"
 
 
+def test_approve_email_uses_draft_html_from_form_without_save(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={
+                "outbound_provider": "smtp",
+                "smtp_host": "mailpit",
+                "smtp_port": "1025",
+                "from_addr": "bot@test.local",
+            },
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Ancien texte",
+            draft_html="<p>Ancien texte</p>",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    edited_html = "<p>VDtec est spécialisée dans les systèmes de sécurité.</p>"
+    _login(client, admin.email, "admin-pass")
+    with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
+        r = client.post(
+            f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
+            data={"draft_html": edited_html, "draft_subject": "Rép. : Question"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    send_mock.assert_called_once()
+    assert send_mock.call_args.kwargs["body_html"] == edited_html
+    assert send_mock.call_args.kwargs["subject"] == "Rép. : Question"
+
+
 def test_validation_detail_shows_stale_banner_when_quote_changed(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, data, factory = dashboard_env
     with factory() as session:

@@ -116,6 +116,45 @@ def test_smtp_sender_with_tls(mock_smtp_cls) -> None:
     )
 
 
+@patch("chatbot.adapters.mail.smtp_sender.smtplib.SMTP")
+def test_smtp_sender_utf8_accents_use_base64(mock_smtp_cls) -> None:
+    mock_smtp = MagicMock()
+    mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
+    body_html = (
+        "<p>VDtec est spécialisée dans les systèmes de sécurité.</p>"
+        "<p>Rue de la Démocratie&nbsp;— test</p>"
+    )
+    SmtpEmailSender(
+        host="smtp.example.com",
+        port=587,
+        username="user",
+        password="pass",
+        use_tls=True,
+    ).send(
+        EmailMessage(
+            to_addr="a@b.com",
+            subject="Rép. : Question",
+            body_text="VDtec est spécialisée dans les systèmes de sécurité.",
+            body_html=body_html,
+            from_addr="bot@example.com",
+        )
+    )
+    raw = mock_smtp.sendmail.call_args[0][2]
+    parsed = email.message_from_bytes(raw)
+    for part in parsed.walk():
+        if part.get_content_maintype() == "multipart":
+            continue
+        if part.get_content_type() not in ("text/plain", "text/html"):
+            continue
+        assert part.get("Content-Transfer-Encoding") == "base64"
+        assert part.get_content_charset() == "utf-8"
+        decoded = part.get_payload(decode=True).decode("utf-8")
+        assert "spécialisée" in decoded
+        if part.get_content_type() == "text/html":
+            assert "Démocratie" in decoded
+            assert "&nbsp;" in decoded
+
+
 def test_imap_use_ssl_by_port() -> None:
     assert _imap_use_ssl({"imap_port": "3143"}) is False
     assert _imap_use_ssl({"imap_port": "993"}) is True

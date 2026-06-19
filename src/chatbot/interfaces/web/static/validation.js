@@ -11,12 +11,38 @@
     });
   }
 
+  const validationActionFormsSelector =
+    ".validation-save-form, form[action*='/validation/'][action*='/approve'], form[action*='/validation/'][action*='/reject']";
+
+  function getQuillHtml(quill) {
+    return typeof quill.getSemanticHTML === "function"
+      ? quill.getSemanticHTML()
+      : quill.root.innerHTML;
+  }
+
+  function syncValidationDraftHtmlToForms() {
+    const editorEl = document.querySelector(".validation-editor");
+    const quill = editorEl?.querySelector(".validation-quill")?.__quill;
+    if (!quill) return;
+    const html = getQuillHtml(quill);
+    document.querySelectorAll(validationActionFormsSelector).forEach((form) => {
+      let hidden = form.querySelector('input[name="draft_html"]');
+      if (!hidden) {
+        hidden = document.createElement("input");
+        hidden.type = "hidden";
+        hidden.name = "draft_html";
+        form.appendChild(hidden);
+      }
+      hidden.value = html;
+    });
+  }
+
   function syncValidationSubjectToForms() {
     const subjectEl = document.querySelector(".validation-draft-subject");
     if (!subjectEl) return;
     const value = subjectEl.value;
     document
-      .querySelectorAll(".validation-save-form, form[action*='/validation/'][action*='/approve']")
+      .querySelectorAll(validationActionFormsSelector)
       .forEach((form) => {
         let hidden = form.querySelector('input[name="draft_subject"]');
         if (hidden && hidden !== subjectEl) {
@@ -33,14 +59,18 @@
       });
   }
 
-  function initValidationSubjectSync() {
-    const subjectEl = document.querySelector(".validation-draft-subject");
-    if (!subjectEl) return;
-    document
-      .querySelectorAll(".validation-save-form, form[action*='/validation/'][action*='/approve']")
-      .forEach((form) => {
-        form.addEventListener("submit", syncValidationSubjectToForms);
-      });
+  function syncValidationDraftToForms() {
+    syncValidationSubjectToForms();
+    syncValidationDraftHtmlToForms();
+  }
+
+  function initValidationDraftSync() {
+    const hasEditor = Boolean(document.querySelector(".validation-editor"));
+    const hasSubject = Boolean(document.querySelector(".validation-draft-subject"));
+    if (!hasEditor && !hasSubject) return;
+    document.querySelectorAll(validationActionFormsSelector).forEach((form) => {
+      form.addEventListener("submit", syncValidationDraftToForms);
+    });
   }
 
   function initQuillEditors() {
@@ -66,6 +96,7 @@
           ],
         },
       });
+      quillHost.__quill = quill;
 
       let initialHtml = "";
       if (source.tagName === "SCRIPT") {
@@ -82,11 +113,7 @@
       }
 
       saveForm.addEventListener("submit", () => {
-        syncValidationSubjectToForms();
-        hiddenInput.value =
-          typeof quill.getSemanticHTML === "function"
-            ? quill.getSemanticHTML()
-            : quill.root.innerHTML;
+        hiddenInput.value = getQuillHtml(quill);
       });
     });
   }
@@ -296,7 +323,7 @@
     const page = document.querySelector(".validation-detail-page");
     if (!page) return;
     initQuillEditors();
-    initValidationSubjectSync();
+    initValidationDraftSync();
     if (window.ChatbotMarkdown) {
       window.ChatbotMarkdown.applyMarkdown(page);
     }

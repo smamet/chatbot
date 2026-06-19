@@ -63,6 +63,23 @@ class SmtpEmailSender:
             smtp.ehlo()
         self._authenticate(smtp)
 
+    def _build_mime_bytes(self, message: EmailMessage) -> bytes:
+        msg = StdEmailMessage()
+        msg["From"] = message.from_addr
+        msg["To"] = message.to_addr
+        msg["Subject"] = message.subject
+        msg.set_content(message.body_text, charset="utf-8", cte="base64")
+        if message.body_html:
+            msg.add_alternative(message.body_html, subtype="html", charset="utf-8", cte="base64")
+        for att in message.attachments:
+            msg.add_attachment(
+                att.data,
+                maintype="application",
+                subtype=att.mime_type.split("/")[-1] if "/" in att.mime_type else "octet-stream",
+                filename=att.filename,
+            )
+        return msg.as_bytes()
+
     def verify_connection(self) -> None:
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
@@ -72,25 +89,11 @@ class SmtpEmailSender:
             raise EmailSendError(f"SMTP connection failed: {exc}") from exc
 
     def send(self, message: EmailMessage) -> None:
-        msg = StdEmailMessage()
-        msg["From"] = message.from_addr
-        msg["To"] = message.to_addr
-        msg["Subject"] = message.subject
-        msg.set_content(message.body_text)
-        if message.body_html:
-            msg.add_alternative(message.body_html, subtype="html")
-        for att in message.attachments:
-            msg.add_attachment(
-                att.data,
-                maintype="application",
-                subtype=att.mime_type.split("/")[-1] if "/" in att.mime_type else "octet-stream",
-                filename=att.filename,
-            )
         envelope_from = self._smtp_envelope_from(message)
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
                 self._prepare_connection(smtp)
-                smtp.sendmail(envelope_from, [message.to_addr], msg.as_bytes())
+                smtp.sendmail(envelope_from, [message.to_addr], self._build_mime_bytes(message))
         except smtplib.SMTPSenderRefused as exc:
             raise EmailSendError(
                 f"SMTP send refused by server (code {exc.smtp_code}). "

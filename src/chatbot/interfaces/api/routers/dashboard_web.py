@@ -546,6 +546,40 @@ def _require_pending_email_reply(reply: PendingReply) -> None:
         raise HTTPException(status_code=400, detail="Attachments are only supported for email")
 
 
+def _persist_validation_email_draft_from_form(
+    session: Session,
+    *,
+    tenant_id: int,
+    reply: PendingReply,
+    form,
+    edited_by: str,
+    outbound_config: dict | None = None,
+) -> PendingReply:
+    if reply.channel != ConnectorType.EMAIL.value:
+        return reply
+    if "draft_html" in form:
+        try:
+            reply = save_pending_reply_draft(
+                session,
+                tenant_id=tenant_id,
+                reply=reply,
+                draft_html=str(form.get("draft_html", "")),
+                draft_subject=str(form.get("draft_subject", "")),
+                edited_by=edited_by,
+            )
+        except DraftEditError:
+            pass
+    if outbound_config is not None:
+        reply = persist_validation_email_subject(
+            session,
+            tenant_id=tenant_id,
+            reply=reply,
+            form_subject=str(form.get("draft_subject", "")),
+            outbound_config=outbound_config,
+        )
+    return reply
+
+
 def _merge_resolved_selection(form, reply) -> str | None:
     lines = resolved_lines_from_json(reply.quote_resolved_json)
     if not lines:
@@ -3222,11 +3256,12 @@ async def approve_validation_reply(
     config = connector.config if connector else {}
     form = await request.form()
     if reply.channel == ConnectorType.EMAIL.value:
-        reply = persist_validation_email_subject(
+        reply = _persist_validation_email_draft_from_form(
             session,
             tenant_id=tenant.id,
             reply=reply,
-            form_subject=str(form.get("draft_subject", "")),
+            form=form,
+            edited_by=user.email,
             outbound_config=_outbound_email_config(session, tenant.id),
         )
     resolved_json = _merge_resolved_selection(form, reply)
@@ -3448,7 +3483,8 @@ def retry_validation_quote(
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/reject")
-def reject_validation_reply(
+async def reject_validation_reply(
+    request: Request,
     slug: str,
     reply_id: int,
     user: User = Depends(require_validator),
@@ -3465,6 +3501,14 @@ def reject_validation_reply(
         raise HTTPException(status_code=404)
     if reply.status != PendingReplyStatus.PENDING:
         raise HTTPException(status_code=400, detail="Reply is not pending")
+    form = await request.form()
+    _persist_validation_email_draft_from_form(
+        session,
+        tenant_id=tenant.id,
+        reply=reply,
+        form=form,
+        edited_by=user.email,
+    )
     cleanup_pending_reply_attachments(reply)
     mark_imap_seen_for_pending_reply(
         session,
