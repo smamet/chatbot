@@ -1462,6 +1462,46 @@ def test_mail_connection_crud_and_connector_reference(dashboard_env) -> None:
         assert conn.config.get("auth_type") == "google_oauth"
 
 
+@patch("chatbot.application.connector_test_service.ImapMailClient")
+def test_mail_connection_test_endpoint_imap(mock_imap_cls, dashboard_env) -> None:
+    from chatbot.adapters.microsoft.oauth import OAuthTokens
+    from chatbot.application.mail_connection_service import MailConnectionService
+
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    client.post(
+        f"/dashboard/bots/{slug}/mail-connections",
+        data={
+            "label": "M365",
+            "provider": "microsoft_oauth",
+            "mailbox_email": "bot@example.com",
+            "microsoft_client_id": "cid",
+            "microsoft_client_secret": "sec",
+        },
+        follow_redirects=False,
+    )
+    with factory() as session:
+        svc = MailConnectionService(session)
+        conn = svc.list_for_tenant(tenant_id)[0]
+        svc.apply_oauth_tokens(
+            conn,
+            OAuthTokens(access_token="at", refresh_token="rt", expires_at=9999999999),
+        )
+        session.commit()
+        connection_id = conn.id
+    instance = MagicMock()
+    mock_imap_cls.return_value = instance
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/mail-connections/{connection_id}/test",
+        data={"test": "imap"},
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True, body
+    instance.connect.assert_called_once()
+
+
 def _save_erpnext_integration(client: TestClient, slug: str, **extra: str) -> None:
     data = {
         "integration_type": "erpnext",

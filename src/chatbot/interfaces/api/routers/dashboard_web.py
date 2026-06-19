@@ -2043,6 +2043,7 @@ async def test_mail_connection(
     user: User = Depends(require_editor),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
 ):
     tenant = _tenant_or_404(tenant_service, slug)

@@ -79,6 +79,8 @@ def run_mail_connection_test(
         return ConnectorTestResult(ok=False, message="Invalid test type.", error="invalid_test")
     except (ImapError, EmailSendError, MailOAuthError) as exc:
         return ConnectorTestResult(ok=False, message="Connection failed.", error=str(exc))
+    except Exception as exc:
+        return ConnectorTestResult(ok=False, message="Connection failed.", error=str(exc))
 
 
 def _test_imap(
