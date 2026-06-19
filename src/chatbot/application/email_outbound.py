@@ -6,7 +6,6 @@ from chatbot.adapters.mail.body_format import format_email_bodies
 from chatbot.adapters.mail.factory import build_email_sender
 from chatbot.adapters.mail.smtp_sender import EmailSendError
 from chatbot.adapters.mail.types import EmailAttachment, EmailMessage
-from chatbot.domain.models.connector_schema import is_oauth_auth_type, resolve_email_auth_type
 from chatbot.domain.models.outbound_attachment import OutboundAttachment
 
 _RE_PREFIX = re.compile(r"^re:\s*", re.IGNORECASE)
@@ -32,15 +31,6 @@ def resolve_email_subject(
     return "Reply"
 
 
-def _smtp_from_addr(config: dict) -> str:
-    from_addr = str(config.get("from_addr", "")).strip()
-    if is_oauth_auth_type(resolve_email_auth_type(config)):
-        mailbox = str(config.get("smtp_username", "")).strip()
-        if mailbox:
-            return mailbox
-    return from_addr
-
-
 def send_email_reply(
     *,
     config: dict,
@@ -53,7 +43,7 @@ def send_email_reply(
     to = to_addr.strip()
     if not to:
         raise EmailSendError("Recipient email address is empty")
-    from_addr = _smtp_from_addr(config)
+    from_addr = str(config.get("from_addr", "")).strip()
     if not from_addr:
         raise EmailSendError("Missing from_addr in email connector config")
     draft = subject.strip() if subject and subject.strip() else None

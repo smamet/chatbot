@@ -54,6 +54,7 @@ def test_smtp_sender_no_tls(mock_smtp_cls) -> None:
     assert envelope_from == "client@example.com"
     assert recipients == ["bot@test.local"]
     sent = email.message_from_bytes(raw)
+    assert sent["From"] == "client@example.com"
     assert sent.get_content_type() == "multipart/alternative"
     parts = list(sent.walk())
     payloads: dict[str, str] = {}

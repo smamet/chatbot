@@ -51,7 +51,8 @@ class SmtpEmailSender:
         if self._username:
             smtp.login(self._username, self._password)
 
-    def _envelope_from(self, message: EmailMessage) -> str:
+    def _smtp_envelope_from(self, message: EmailMessage) -> str:
+        """MAIL FROM used in SMTP envelope. For OAuth must be the authenticated mailbox."""
         if self._access_token and self._username:
             return self._username
         return message.from_addr
@@ -68,8 +69,7 @@ class SmtpEmailSender:
 
     def send(self, message: EmailMessage) -> None:
         msg = StdEmailMessage()
-        envelope_from = self._envelope_from(message)
-        msg["From"] = envelope_from
+        msg["From"] = message.from_addr
         msg["To"] = message.to_addr
         msg["Subject"] = message.subject
         msg.set_content(message.body_text)
@@ -82,6 +82,7 @@ class SmtpEmailSender:
                 subtype=att.mime_type.split("/")[-1] if "/" in att.mime_type else "octet-stream",
                 filename=att.filename,
             )
+        envelope_from = self._smtp_envelope_from(message)
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
                 if self._use_tls:
