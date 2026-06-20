@@ -35,5 +35,7 @@ class PendingReply:
     quote_erp_modified: str | None = None
     draft_html: str | None = None
     draft_subject: str | None = None
+    mail_draft_id: int | None = None
+    thread_id: int | None = None
     resolved_by: str | None = None
     resolved_at: datetime | None = None

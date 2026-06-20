@@ -1,0 +1,43 @@
+from __future__ import annotations
+
+from datetime import UTC, datetime
+
+from chatbot.application.validation_message_ui import bubble_from_content, bubble_from_draft
+from chatbot.domain.models.mail_draft import MailDraft, MailDraftStatus
+from chatbot.domain.models.message import MessageRole
+
+_NOW = datetime.now(tz=UTC)
+
+
+def test_bubble_hides_sanitize_meta_when_clean_equals_raw() -> None:
+    bubble = bubble_from_draft(
+        draft=MailDraft(
+            id=1,
+            tenant_id=1,
+            imap_uid="1",
+            from_addr="a@b.com",
+            to_addr="bot@test.local",
+            subject="Hi",
+            body_in="Same text",
+            body_new="Same text",
+            draft_reply="",
+            status=MailDraftStatus.PENDING,
+            created_at=_NOW,
+            updated_at=_NOW,
+        )
+    )
+    assert bubble.content_clean == "Same text"
+    assert bubble.content_raw is None
+    assert bubble.token_raw is None
+    assert bubble.reduction_pct is None
+
+
+def test_bubble_shows_sanitize_meta_when_clean_differs_from_raw() -> None:
+    bubble = bubble_from_content(
+        role=MessageRole.USER,
+        content="clean",
+        content_raw="raw with extra",
+    )
+    assert bubble.content_raw == "raw with extra"
+    assert bubble.token_raw is not None
+    assert bubble.reduction_pct is not None

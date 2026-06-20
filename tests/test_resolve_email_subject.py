@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from chatbot.application.email_outbound import resolve_email_subject
+from chatbot.application.email_outbound import coalesce_stored_email_subject, resolve_email_subject
 
 
 @pytest.mark.parametrize(
@@ -30,4 +30,34 @@ def test_resolve_email_subject(
             inbound_subject=inbound_subject or None,
         )
         == expected
+    )
+
+
+def test_coalesce_stored_email_subject_ignores_generic_reply_when_inbound_present() -> None:
+    assert (
+        coalesce_stored_email_subject(
+            stored_draft_subject="Reply",
+            inbound_subject="Re: EBOP LTD",
+        )
+        is None
+    )
+    assert (
+        resolve_email_subject(
+            draft_subject=coalesce_stored_email_subject(
+                stored_draft_subject="Reply",
+                inbound_subject="Re: EBOP LTD",
+            ),
+            inbound_subject="Re: EBOP LTD",
+        )
+        == "Re: EBOP LTD"
+    )
+
+
+def test_coalesce_keeps_operator_edited_subject() -> None:
+    assert (
+        coalesce_stored_email_subject(
+            stored_draft_subject="Custom follow-up",
+            inbound_subject="Re: EBOP LTD",
+        )
+        == "Custom follow-up"
     )

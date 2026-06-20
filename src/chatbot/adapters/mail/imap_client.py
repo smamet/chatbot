@@ -25,6 +25,10 @@ class IncomingMail:
     subject: str
     body_text: str
     received_at: datetime | None = None
+    message_id: str = ""
+    in_reply_to: str = ""
+    references: tuple[str, ...] = ()
+    body_html: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -52,6 +56,39 @@ def _decode_header_value(value: str | None) -> str:
 def _extract_email_address(header_value: str) -> str:
     parsed = email.utils.parseaddr(header_value)
     return (parsed[1] or header_value).strip().lower()
+
+
+def _extract_body_html(msg: email.message.Message) -> str | None:
+    if msg.is_multipart():
+        for part in msg.walk():
+            if part.get_content_maintype() == "multipart":
+                continue
+            if part.get_content_type() == "text/html":
+                payload = part.get_payload(decode=True)
+                if payload:
+                    charset = part.get_content_charset() or "utf-8"
+                    return payload.decode(charset, errors="replace").strip()
+        return None
+    if msg.get_content_type() == "text/html":
+        payload = msg.get_payload(decode=True)
+        if payload:
+            charset = msg.get_content_charset() or "utf-8"
+            return payload.decode(charset, errors="replace").strip()
+    return None
+
+
+def _parse_message_ids(header_value: str | None) -> tuple[str, ...]:
+    if not header_value:
+        return ()
+    return tuple(
+        f"<{chunk.strip('<>')}>"
+        for chunk in re.findall(r"<[^>]+>", header_value)
+    )
+
+
+def _normalize_single_message_id(header_value: str | None) -> str:
+    ids = _parse_message_ids(header_value)
+    return ids[0] if ids else ""
 
 
 def _body_text_from_message(msg: email.message.Message) -> str:
@@ -154,6 +191,10 @@ class ImapMailClient:
         to_addr = _extract_email_address(_decode_header_value(msg.get("To")))
         subject = _decode_header_value(msg.get("Subject"))
         body = _body_text_from_message(msg)
+        body_html = _extract_body_html(msg)
+        message_id = _normalize_single_message_id(msg.get("Message-ID"))
+        in_reply_to = _normalize_single_message_id(msg.get("In-Reply-To"))
+        references = _parse_message_ids(msg.get("References"))
         received_at: datetime | None = None
         date_header = msg.get("Date")
         if date_header:
@@ -174,6 +215,10 @@ class ImapMailClient:
             subject=subject,
             body_text=body,
             received_at=received_at,
+            message_id=message_id,
+            in_reply_to=in_reply_to,
+            references=references,
+            body_html=body_html,
         )
 
     def _parse_fetched_preview(self, uid: str, msg_data) -> InboxPreviewMessage | None:

@@ -18,3 +18,6 @@ class EmailMessage:
     from_addr: str
     body_html: str | None = None
     attachments: tuple[EmailAttachment, ...] = field(default_factory=tuple)
+    message_id: str | None = None
+    in_reply_to: str | None = None
+    references: str | None = None

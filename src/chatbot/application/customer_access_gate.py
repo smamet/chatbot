@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from chatbot.domain.contracts.customer_data_client import CustomerDataClient
+from chatbot.application.email_session_id import strip_thread_from_email_session_part
 
 logger = logging.getLogger(__name__)
 
@@ -42,9 +43,13 @@ def parse_session_identity(session_id: str) -> tuple[str | None, str | None]:
         return None, None
     if channel == "email":
         email_part, sep, phone_part = raw_id.partition("|")
-        email = email_part.strip().lower() or None
-        phone = phone_part.strip() if sep and phone_part.strip() else None
-        return email, phone
+        if sep:
+            email_only = strip_thread_from_email_session_part(email_part)
+            email = email_only.strip().lower() or None
+            phone = phone_part.strip() or None
+            return email, phone
+        email_only = strip_thread_from_email_session_part(email_part)
+        return email_only.strip().lower() or None, None
     if channel == "whatsapp":
         return None, raw_id
     return None, None
@@ -58,7 +63,8 @@ def session_display_label(session_id: str) -> str:
         return session_id
     channel, raw_id = session_id.split(":", 1)
     if channel == "email":
-        return raw_id.partition("|")[0]
+        main = strip_thread_from_email_session_part(raw_id.partition("|")[0])
+        return main.partition("|")[0]
     if channel == "dashboard":
         return raw_id
     return raw_id

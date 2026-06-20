@@ -40,6 +40,8 @@ def _row_to_pending(row: PendingReplyRow) -> PendingReply:
         quote_erp_modified=row.quote_erp_modified,
         draft_html=row.draft_html,
         draft_subject=row.draft_subject,
+        mail_draft_id=row.mail_draft_id,
+        thread_id=row.thread_id,
         resolved_by=row.resolved_by,
         resolved_at=(
             row.resolved_at.replace(tzinfo=UTC)
@@ -71,6 +73,8 @@ class SqlAlchemyPendingReplyRepository:
         quote_external_id: str | None = None,
         attachments_json: str | None = None,
         quote_erp_modified: str | None = None,
+        mail_draft_id: int | None = None,
+        thread_id: int | None = None,
     ) -> PendingReply:
         now = datetime.now(UTC)
         row = PendingReplyRow(
@@ -90,6 +94,8 @@ class SqlAlchemyPendingReplyRepository:
             quote_external_id=quote_external_id,
             attachments_json=attachments_json,
             quote_erp_modified=quote_erp_modified,
+            mail_draft_id=mail_draft_id,
+            thread_id=thread_id,
             created_at=now,
             updated_at=now,
         )

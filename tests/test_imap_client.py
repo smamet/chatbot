@@ -46,6 +46,7 @@ def test_smtp_sender_no_tls(mock_smtp_cls) -> None:
             body_text="Plain body",
             body_html="<p>HTML body</p>",
             from_addr="client@example.com",
+            message_id="<test@example.com>",
         )
     )
     mock_smtp.starttls.assert_not_called()
@@ -105,6 +106,7 @@ def test_smtp_sender_with_tls(mock_smtp_cls) -> None:
             subject="Hi",
             body_text="Body",
             from_addr="bot@example.com",
+            message_id="<test@example.com>",
         )
     )
     mock_smtp.starttls.assert_called_once()
@@ -137,6 +139,7 @@ def test_smtp_sender_utf8_accents_use_base64(mock_smtp_cls) -> None:
             body_text="VDtec est spécialisée dans les systèmes de sécurité.",
             body_html=body_html,
             from_addr="bot@example.com",
+            message_id="<test@example.com>",
         )
     )
     raw = mock_smtp.sendmail.call_args[0][2]
@@ -280,3 +283,40 @@ def test_imap_client_context_manager(mock_cls) -> None:
         assert client is instance
     instance.connect.assert_called_once()
     instance.close.assert_called_once()
+
+
+def test_parse_message_ids_from_references() -> None:
+    from chatbot.adapters.mail.imap_client import _parse_message_ids
+
+    refs = _parse_message_ids("<a@x.com> <b@x.com>")
+    assert refs == ("<a@x.com>", "<b@x.com>")
+
+
+def test_smtp_build_mime_includes_thread_headers() -> None:
+    import email
+
+    from chatbot.adapters.mail.smtp_sender import SmtpEmailSender
+    from chatbot.adapters.mail.types import EmailMessage
+
+    sender = SmtpEmailSender(
+        host="smtp.example.com",
+        port=587,
+        username="u",
+        password="p",
+        use_tls=False,
+    )
+    raw = sender._build_mime_bytes(
+        EmailMessage(
+            to_addr="client@example.com",
+            subject="Re: Test",
+            body_text="Hello",
+            from_addr="bot@example.com",
+            message_id="<out@example.com>",
+            in_reply_to="<in@example.com>",
+            references="<in@example.com>",
+        )
+    )
+    msg = email.message_from_bytes(raw)
+    assert msg["Message-ID"] == "<out@example.com>"
+    assert msg["In-Reply-To"] == "<in@example.com>"
+    assert msg["References"] == "<in@example.com>"

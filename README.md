@@ -101,6 +101,8 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 **Validation (email):** inbox on the bot **Validation** tab; open a pending reply to edit the draft, attach files (drag-and-drop), and approve. Attachments are stored under `data/attachments/{slug}/{reply_id}/` and removed on approve/reject. Quote PDFs from ERPNext are attached automatically when applicable.
 
+**Email threading:** each inbound email is assigned to a conversation thread (`thread_key`) using RFC headers (`Message-ID`, `In-Reply-To`, `References`) when present, otherwise normalized subject matching, with an optional LLM disambiguation step for ambiguous cases only (`EMAIL_THREAD_LLM_ENABLED`, default false). New threads use `session_id` = `email:{addr}~{thread_key}` (legacy `email:{addr}` sessions are unchanged). Quoted reply text is stripped before the chat LLM sees the message; the full raw body is kept for validation. On approve, outbound email includes `In-Reply-To` and `References` so the recipient's mail client groups the reply correctly. Env: `EMAIL_THREAD_STALE_DAYS`, `EMAIL_THREAD_LLM_ENABLED`. Run `./sail migrate` for migrations `019_email_threads` and `020_mail_draft_thread_resolution`.
+
 See [docs/dev/greenmail.md](docs/dev/greenmail.md) for connector presets (IN: GreenMail, OUT: Mailpit).
 
 **Monitoring:** admins open **Monitoring** in the top nav for a platform-wide view; bot managers open a bot → **Monitoring** tab. Shows last 30 days of Gemini token usage (in/out), live disk breakdown, trend charts, and **estimated USD cost**. Internal estimates use published Google list prices (`gemini-2.5-flash`: $0.30 / $2.50 per 1M input/output tokens). Client admins see billable amounts only, using platform defaults (`CLIENT_BILLING_*` in `.env`) or per-bot rates set by an admin on the monitoring tab. Override list prices without a deploy via `GEMINI_PRICING_JSON`. Estimates are not invoices — see [Google pricing](https://ai.google.dev/gemini-api/docs/pricing). After upgrading, run `./sail migrate` (migrations `014`–`016`) and `./sail restart worker-catalog` so disk history charts populate.
@@ -154,7 +156,7 @@ By default, a backup is saved under `data/backups/{slug}/{timestamp}/` (JSON + `
 ./sail chatbot bot-restore my-bot data/backups/my-bot/20260615T143022Z --yes
 ```
 
-**Removed:** messages, hook events, validation queue (replies + edits + audit), orders, mail drafts, test chat sessions, `data/attachments/{slug}/`, `data/quotes/{slug}/`.
+**Removed:** messages, hook events, validation queue (replies + edits + audit), orders, mail drafts, email threads, outbound email messages, test chat sessions, `data/attachments/{slug}/`, `data/quotes/{slug}/`.
 
 **Kept:** tenant row, connectors, integrations, `ingested_files`, LanceDB vectors, document/catalog files, `mail_imap_uids` (old inbox messages are not re-fetched).
 

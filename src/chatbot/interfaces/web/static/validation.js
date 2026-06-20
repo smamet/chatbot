@@ -319,11 +319,36 @@
     });
   }
 
+  function initValidationBodyToggle() {
+    document.querySelectorAll(".validation-bubble-toggle").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const turn = btn.closest(".msg-turn");
+        if (!turn) return;
+        const clean = turn.querySelector(".validation-bubble-clean");
+        const raw = turn.querySelector(".validation-bubble-raw");
+        if (!clean || !raw) return;
+        const showingRaw = btn.dataset.state === "raw";
+        if (showingRaw) {
+          clean.hidden = false;
+          raw.hidden = true;
+          btn.dataset.state = "clean";
+          btn.textContent = "Show raw";
+        } else {
+          clean.hidden = true;
+          raw.hidden = false;
+          btn.dataset.state = "raw";
+          btn.textContent = "Show cleaned";
+        }
+      });
+    });
+  }
+
   function initDetailPage() {
     const page = document.querySelector(".validation-detail-page");
     if (!page) return;
     initQuillEditors();
     initValidationDraftSync();
+    initValidationBodyToggle();
     if (window.ChatbotMarkdown) {
       window.ChatbotMarkdown.applyMarkdown(page);
     }

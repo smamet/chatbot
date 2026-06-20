@@ -1355,7 +1355,7 @@
 <div class="table-wrap">
   <table class="data-table validation-table validation-table--inbox">
     <thead><tr>
-      <th>ID</th><th>Kind</th><th>Channel</th><th>Session</th><th>Recipient</th>
+      <th>ID</th><th>Kind</th><th>Channel</th><th>From</th><th>Subject</th>
       {% if validation_subtab in ('approved', 'rejected') %}<th>By</th><th>At</th>{% else %}<th>Created</th>{% endif %}
       <th></th>
     </tr></thead>
@@ -1376,11 +1376,21 @@
           {% if item.manual_attachment_count %}
           <span class="validation-inbox-flag validation-inbox-flag--attach" title="{{ item.manual_attachment_count }} file{% if item.manual_attachment_count != 1 %}s{% endif %} attached">{{ item.manual_attachment_count }} file{% if item.manual_attachment_count != 1 %}s{% endif %}</span>
           {% endif %}
+          {% if r.channel == 'email' and item.thread_resolution_tooltip %}
+          <span class="validation-inbox-flag validation-inbox-flag--thread-{{ 'llm' if item.thread_resolution_used_llm else 'auto' }}"
+                title="{{ item.thread_resolution_tooltip }}">●</span>
+          {% endif %}
         </span>
       </td>
       <td><code>{{ r.channel }}</code></td>
       <td><code>{{ r.session_id | session_label }}</code></td>
-      <td><code>{{ r.recipient_id }}</code></td>
+      <td class="validation-inbox-subject"{% if item.inbound_subject %} title="{{ item.inbound_subject }}"{% endif %}>
+        {%- if r.channel == 'email' and item.inbound_subject -%}
+        {{ item.inbound_subject }}
+        {%- else -%}
+        <span class="text-muted">—</span>
+        {%- endif -%}
+      </td>
       {% if validation_subtab in ('approved', 'rejected') %}
       <td class="text-muted">{{ r.resolved_by or '—' }}</td>
       <td class="text-muted">{{ r.resolved_at.strftime('%Y-%m-%d %H:%M') if r.resolved_at else '—' }}</td>

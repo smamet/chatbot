@@ -24,3 +24,10 @@ class MailDraft:
     status: MailDraftStatus
     created_at: datetime
     updated_at: datetime
+    body_new: str = ""
+    thread_id: int | None = None
+    message_id: str = ""
+    in_reply_to: str = ""
+    references_header: str | None = None
+    normalized_subject: str = ""
+    thread_resolution_json: str | None = None

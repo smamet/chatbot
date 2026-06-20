@@ -5,8 +5,13 @@
   <div>
     <h1>Validation #{{ reply.id }}</h1>
     <p class="text-muted validation-detail-meta">
-      <code>{{ reply.channel }}</code> · <code>{{ reply.session_id | session_label }}</code> ·
-      <code>{{ reply.recipient_id }}</code> ·
+      <code>{{ reply.channel }}</code> ·
+      {%- if reply.channel == 'email' -%}
+      <code>{{ reply.session_id | session_label }}</code>
+      {%- if item.inbound_subject %} · <span class="validation-detail-subject">{{ item.inbound_subject }}</span>{% endif -%}
+      {%- else -%}
+      <code>{{ reply.session_id | session_label }}</code> · <code>{{ reply.recipient_id }}</code>
+      {%- endif %} ·
       Generated {{ reply.created_at.strftime('%Y-%m-%d %H:%M') if reply.created_at else '—' }}
     </p>
     <a href="{{ validation_inbox_url }}" class="btn btn-secondary btn-sm validation-detail-back">← Back to inbox</a>
@@ -42,13 +47,32 @@
             <time class="msg-time" datetime="{{ m.created_at.isoformat() }}">{{ m.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
             {% endif %}
           </div>
-          <div class="msg-body{% if m.role.value == 'user' %} msg-body--plain{% elif m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div>
+          <div class="validation-bubble-body">
+            <pre class="validation-bubble-text msg-body{% if m.role.value == 'user' %} msg-body--plain{% elif m.role.value == 'assistant' %} js-md{% endif %} validation-bubble-clean">{{ m.content_clean }}</pre>
+            {% if m.content_raw %}
+            <pre class="validation-bubble-text msg-body msg-body--plain validation-bubble-raw" hidden>{{ m.content_raw }}</pre>
+            {% endif %}
+          </div>
         </div>
+        {% if m.content_raw %}
+        <div class="validation-bubble-footer">
+          {% if m.token_raw is not none and m.reduction_pct is not none %}
+          <span class="validation-bubble-tokens" title="Approximate token count (len/4)">~{{ m.token_raw }} tokens → ~{{ m.token_new }} tokens (−{{ m.reduction_pct }}%)</span>
+          {% elif m.token_new %}
+          <span class="validation-bubble-tokens" title="Approximate token count (len/4)">~{{ m.token_new }} tokens</span>
+          {% endif %}
+          <button type="button" class="validation-bubble-toggle" data-state="clean">Show raw</button>
+        </div>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
     {% elif item.inbound_text %}
-    <pre class="validation-message-body">{{ item.inbound_text }}</pre>
+    <div class="msg msg-user validation-single-inbound">
+      <div class="validation-bubble-body">
+        <pre class="validation-bubble-text msg-body msg-body--plain validation-bubble-clean">{{ item.inbound_text }}</pre>
+      </div>
+    </div>
     {% else %}
     <p class="text-muted">No messages found for this reply.</p>
     {% endif %}

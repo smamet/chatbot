@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.orm import (
     ConnectorRow,
+    EmailThreadRow,
     HookEventRow,
     IngestedFileRow,
     IntegrationRow,
@@ -20,6 +21,7 @@ from chatbot.adapters.persistence.orm import (
     OrderEventRow,
     OrderItemRow,
     OrderRow,
+    OutboundEmailMessageRow,
     PendingReplyAuditEventRow,
     PendingReplyEditRow,
     PendingReplyRow,
@@ -42,6 +44,8 @@ _OPERATIONAL_TABLES: tuple[tuple[str, type], ...] = (
     ("pending_reply_edits", PendingReplyEditRow),
     ("pending_reply_audit_events", PendingReplyAuditEventRow),
     ("mail_drafts", MailDraftRow),
+    ("email_threads", EmailThreadRow),
+    ("outbound_email_messages", OutboundEmailMessageRow),
     ("test_chat_sessions", TestChatSessionRow),
 )
 
@@ -102,11 +106,13 @@ class TenantFlushService:
 
         logs.append(self._delete_pending_reply_edits(tenant_id))
         logs.append(self._delete_pending_reply_audit(tenant_id))
+        logs.append(self._delete_outbound_email_messages(tenant_id))
         logs.append(self._delete_pending_replies(tenant_id))
         logs.append(self._delete_hook_events(tenant_id))
         logs.extend(self._delete_orders(tenant_id))
         logs.append(self._delete_messages(tenant_id))
         logs.append(self._delete_mail_drafts(tenant_id))
+        logs.append(self._delete_email_threads(tenant_id))
         logs.append(self._delete_test_chat_sessions(tenant_id))
         logs.extend(self._remove_runtime_dirs(slug))
         logs.extend(self._summarize_kept(tenant_id))
@@ -208,10 +214,12 @@ class TenantFlushService:
             ("orders", OrderRow),
             ("order_items", OrderItemRow),
             ("order_events", OrderEventRow),
+            ("email_threads", EmailThreadRow),
+            ("mail_drafts", MailDraftRow),
             ("pending_replies", PendingReplyRow),
             ("pending_reply_edits", PendingReplyEditRow),
             ("pending_reply_audit_events", PendingReplyAuditEventRow),
-            ("mail_drafts", MailDraftRow),
+            ("outbound_email_messages", OutboundEmailMessageRow),
             ("test_chat_sessions", TestChatSessionRow),
         ]
         for key, model in insert_order:
@@ -288,6 +296,16 @@ class TenantFlushService:
     def _delete_mail_drafts(self, tenant_id: int) -> str:
         n = self._count_delete(delete(MailDraftRow).where(MailDraftRow.tenant_id == tenant_id))
         return f"deleted mail_drafts: {n}"
+
+    def _delete_outbound_email_messages(self, tenant_id: int) -> str:
+        n = self._count_delete(
+            delete(OutboundEmailMessageRow).where(OutboundEmailMessageRow.tenant_id == tenant_id)
+        )
+        return f"deleted outbound_email_messages: {n}"
+
+    def _delete_email_threads(self, tenant_id: int) -> str:
+        n = self._count_delete(delete(EmailThreadRow).where(EmailThreadRow.tenant_id == tenant_id))
+        return f"deleted email_threads: {n}"
 
     def _delete_test_chat_sessions(self, tenant_id: int) -> str:
         n = self._count_delete(

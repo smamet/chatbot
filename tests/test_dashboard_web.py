@@ -32,6 +32,16 @@ from chatbot.interfaces.api.deps import _build_chat_service
 from chatbot.interfaces.api.main import create_app, refresh_genai_clients_if_needed
 
 
+def _validation_inbox_row(html: str, reply_id: int) -> str:
+    marker = f'/validation/{reply_id}"'
+    start = html.find(marker)
+    assert start != -1, f"validation row for reply {reply_id} not found"
+    row_start = html.rfind("<tr", 0, start)
+    row_end = html.find("</tr>", start)
+    assert row_start != -1 and row_end != -1
+    return html[row_start : row_end + len("</tr>")]
+
+
 @pytest.fixture
 def dashboard_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     data = tmp_path / "data"
@@ -2888,3 +2898,97 @@ def test_non_admin_cannot_open_global_monitoring(dashboard_env) -> None:
     _login(client, editor.email, "edit-pass")
     r = client.get("/dashboard/monitoring")
     assert r.status_code == 403
+
+
+def test_validation_inbox_shows_thread_resolution_badge(dashboard_env) -> None:
+    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from chatbot.application.email_thread_resolution import audit_to_json
+    from chatbot.application.email_thread_resolution import ThreadResolutionAudit
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        draft = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).create(
+            imap_uid="99",
+            from_addr="client@example.com",
+            to_addr="bot@test.local",
+            subject="Devis pompe",
+            body_in="Question",
+            body_new="Question",
+            thread_resolution_json=audit_to_json(
+                ThreadResolutionAudit(
+                    method="rfc_headers",
+                    used_llm=False,
+                    steps=("rfc_headers",),
+                )
+            ),
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com~abc123",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Reply",
+            mail_draft_id=draft.id,
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    page = client.get(f"/dashboard/bots/{slug}?tab=validation")
+    assert page.status_code == 200
+    row = _validation_inbox_row(page.text, reply_id)
+    assert "validation-inbox-flag--thread-auto" in row
+    assert "Resolved via: RFC headers" in row
+
+
+def test_validation_detail_header_and_body_toggle(dashboard_env) -> None:
+    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        draft = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).create(
+            imap_uid="100",
+            from_addr="accounts@vdtec.net",
+            to_addr="bot@test.local",
+            subject="Rappel des payment",
+            body_in="Bonjour,&nbsp;long raw body " + ("x" * 200),
+            body_new="Bonjour, cleaned",
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:accounts@vdtec.net~thread1",
+            channel="email",
+            recipient_id="accounts@vdtec.net",
+            draft_text="Reply",
+            mail_draft_id=draft.id,
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+    assert detail.status_code == 200
+    assert "validation-detail-subject" in detail.text
+    assert "Rappel des payment" in detail.text
+    assert detail.text.count("accounts@vdtec.net") == 1
+    assert "Show raw" in detail.text
+    assert "validation-bubble-tokens" in detail.text
+    assert "Bonjour, cleaned" in detail.text

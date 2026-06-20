@@ -48,6 +48,14 @@ class Settings(BaseSettings):
         default=26_214_400, validation_alias="ATTACHMENT_MAX_TOTAL_BYTES"
     )
     rewrite_model: str = Field(default="gemini-2.5-flash", validation_alias="REWRITE_MODEL")
+    email_thread_stale_days: int = Field(default=90, validation_alias="EMAIL_THREAD_STALE_DAYS")
+    email_thread_subject_similarity: float = Field(
+        default=0.85, validation_alias="EMAIL_THREAD_SUBJECT_SIMILARITY"
+    )
+    email_thread_llm_enabled: bool = Field(default=False, validation_alias="EMAIL_THREAD_LLM_ENABLED")
+    email_thread_llm_min_confidence: float = Field(
+        default=0.7, validation_alias="EMAIL_THREAD_LLM_MIN_CONFIDENCE"
+    )
 
     database_url: str = Field(
         default="mysql+pymysql://chatbot:chatbot@127.0.0.1:3306/chatbot",

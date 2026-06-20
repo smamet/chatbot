@@ -45,7 +45,7 @@ class MessageRow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
-    session_id: Mapped[str] = mapped_column(String(256), index=True)
+    session_id: Mapped[str] = mapped_column(String(512), index=True)
     role: Mapped[str] = mapped_column(String(32))
     content: Mapped[str] = mapped_column(Text())
     context_debug_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
@@ -77,7 +77,7 @@ class OrderRow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
-    session_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(512), nullable=False)
     customer_key: Mapped[str] = mapped_column(String(128), nullable=False)
     customer_name: Mapped[str | None] = mapped_column(String(256), nullable=True)
     customer_tel: Mapped[str | None] = mapped_column(String(64), nullable=True)
@@ -116,7 +116,7 @@ class OrderEventRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     order_id: Mapped[int | None] = mapped_column(ForeignKey("orders.id"), nullable=True, index=True)
-    session_id: Mapped[str] = mapped_column(String(256), nullable=False)
+    session_id: Mapped[str] = mapped_column(String(512), nullable=False)
     customer_key: Mapped[str] = mapped_column(String(128), nullable=False)
     action: Mapped[str] = mapped_column(String(32), nullable=False)
     result: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -220,7 +220,7 @@ class PendingReplyRow(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     connector_id: Mapped[int] = mapped_column(ForeignKey("connectors.id"))
-    session_id: Mapped[str] = mapped_column(String(256))
+    session_id: Mapped[str] = mapped_column(String(512))
     channel: Mapped[str] = mapped_column(String(32))
     recipient_id: Mapped[str] = mapped_column(String(256))
     draft_text: Mapped[str] = mapped_column(Text())
@@ -237,6 +237,8 @@ class PendingReplyRow(Base):
     quote_erp_modified: Mapped[str | None] = mapped_column(String(64), nullable=True)
     resolved_by: Mapped[str | None] = mapped_column(String(256), nullable=True)
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    mail_draft_id: Mapped[int | None] = mapped_column(ForeignKey("mail_drafts.id"), nullable=True)
+    thread_id: Mapped[int | None] = mapped_column(ForeignKey("email_threads.id"), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -292,7 +294,7 @@ class HookEventRow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
-    session_id: Mapped[str] = mapped_column(String(256))
+    session_id: Mapped[str] = mapped_column(String(512))
     type: Mapped[str] = mapped_column(String(64))
     payload_json: Mapped[str] = mapped_column(Text())
     status: Mapped[str] = mapped_column(String(32), default="pending")
@@ -309,6 +311,47 @@ class HookEventRow(Base):
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class EmailThreadRow(Base):
+    __tablename__ = "email_threads"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "from_addr",
+            "thread_key",
+            name="uq_email_threads_tenant_from_key",
+        ),
+        Index("ix_email_threads_tenant_from", "tenant_id", "from_addr"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    from_addr: Mapped[str] = mapped_column(String(512), default="")
+    thread_key: Mapped[str] = mapped_column(String(16), default="")
+    root_message_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    normalized_subject: Mapped[str] = mapped_column(String(512), default="")
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC)
+    )
+
+
+class OutboundEmailMessageRow(Base):
+    __tablename__ = "outbound_email_messages"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "message_id", name="uq_outbound_email_tenant_message"),
+        Index("ix_outbound_email_messages_tenant_thread", "tenant_id", "thread_id"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
+    thread_id: Mapped[int] = mapped_column(ForeignKey("email_threads.id"))
+    message_id: Mapped[str] = mapped_column(String(255))
+    in_reply_to: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    references_header: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    pending_reply_id: Mapped[int | None] = mapped_column(ForeignKey("pending_replies.id"), nullable=True)
+    sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+
 class MailDraftRow(Base):
     __tablename__ = "mail_drafts"
     __table_args__ = (Index("ix_mail_drafts_tenant_status", "tenant_id", "status"),)
@@ -320,9 +363,16 @@ class MailDraftRow(Base):
     to_addr: Mapped[str] = mapped_column(String(512), default="")
     subject: Mapped[str] = mapped_column(String(1024), default="")
     body_in: Mapped[str] = mapped_column(Text(), default="")
+    body_new: Mapped[str] = mapped_column(Text(), default="")
     draft_reply: Mapped[str] = mapped_column(Text(), default="")
     status: Mapped[str] = mapped_column(String(32), default="pending")
     rating: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    thread_id: Mapped[int | None] = mapped_column(ForeignKey("email_threads.id"), nullable=True)
+    message_id: Mapped[str] = mapped_column(String(255), default="")
+    in_reply_to: Mapped[str] = mapped_column(String(255), default="")
+    references_header: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    normalized_subject: Mapped[str] = mapped_column(String(512), default="")
+    thread_resolution_json: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
@@ -358,7 +408,7 @@ class TestChatSessionRow(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
-    session_id: Mapped[str] = mapped_column(String(256))
+    session_id: Mapped[str] = mapped_column(String(512))
     label: Mapped[str] = mapped_column(String(256))
     last_quote_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

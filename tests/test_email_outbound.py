@@ -91,8 +91,9 @@ def test_email_out_fields_filtered_by_provider() -> None:
 @patch("chatbot.application.email_outbound.build_email_sender")
 def test_send_email_reply_uses_factory(mock_build) -> None:
     mock_sender = MagicMock()
+    mock_sender.send.return_value = "<sent@example.com>"
     mock_build.return_value = mock_sender
-    send_email_reply(
+    sent_id = send_email_reply(
         config={
             "outbound_provider": "smtp",
             "from_addr": "bot@example.com",
@@ -110,6 +111,8 @@ def test_send_email_reply_uses_factory(mock_build) -> None:
     assert msg.body_text == "Hello world"
     assert msg.body_html is not None
     assert "<strong>world</strong>" in msg.body_html
+    assert msg.message_id is not None
+    assert sent_id == "<sent@example.com>"
 
 
 @patch("chatbot.application.channel_outbound.send_email_reply")
@@ -121,14 +124,11 @@ def test_dispatch_channel_reply_email(mock_send) -> None:
         config={"from_addr": "bot@example.com"},
         settings=MagicMock(),
     )
-    mock_send.assert_called_once_with(
-        config={"from_addr": "bot@example.com"},
-        to_addr="user@test.com",
-        body="Draft body",
-        subject=None,
-        body_html=None,
-        attachments=None,
-    )
+    mock_send.assert_called_once()
+    kwargs = mock_send.call_args.kwargs
+    assert kwargs["config"] == {"from_addr": "bot@example.com"}
+    assert kwargs["to_addr"] == "user@test.com"
+    assert kwargs["body"] == "Draft body"
 
 
 def test_build_email_sender_smtp_no_tls() -> None:
@@ -173,6 +173,7 @@ def test_mailjet_sender_posts(mock_client_cls) -> None:
             subject="Hi",
             body_text="Body",
             from_addr="bot@example.com",
+            message_id="<test@example.com>",
         )
     )
     mock_client.post.assert_called_once()

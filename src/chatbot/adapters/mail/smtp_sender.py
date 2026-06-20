@@ -68,6 +68,12 @@ class SmtpEmailSender:
         msg["From"] = message.from_addr
         msg["To"] = message.to_addr
         msg["Subject"] = message.subject
+        if message.message_id:
+            msg["Message-ID"] = message.message_id
+        if message.in_reply_to:
+            msg["In-Reply-To"] = message.in_reply_to
+        if message.references:
+            msg["References"] = message.references
         msg.set_content(message.body_text, charset="utf-8", cte="base64")
         if message.body_html:
             msg.add_alternative(message.body_html, subtype="html", charset="utf-8", cte="base64")
@@ -88,7 +94,9 @@ class SmtpEmailSender:
         except smtplib.SMTPException as exc:
             raise EmailSendError(f"SMTP connection failed: {exc}") from exc
 
-    def send(self, message: EmailMessage) -> None:
+    def send(self, message: EmailMessage) -> str:
+        if not message.message_id:
+            raise EmailSendError("message_id is required for SMTP send")
         envelope_from = self._smtp_envelope_from(message)
         try:
             with smtplib.SMTP(self._host, self._port, timeout=30) as smtp:
@@ -102,3 +110,4 @@ class SmtpEmailSender:
             ) from exc
         except smtplib.SMTPException as exc:
             raise EmailSendError(f"SMTP send failed: {exc}") from exc
+        return message.message_id

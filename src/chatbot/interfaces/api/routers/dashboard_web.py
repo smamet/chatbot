@@ -43,8 +43,14 @@ from chatbot.application.channel_outbound import (
     get_outbound_connector,
     persist_validation_email_subject,
 )
-from chatbot.application.email_outbound import resolve_email_subject
+from chatbot.application.email_outbound import coalesce_stored_email_subject, resolve_email_subject
+from chatbot.application.email_thread_resolution import audit_from_json, format_resolution_tooltip
 from chatbot.application.pending_reply_inbound import inbound_for_pending_reply
+from chatbot.application.validation_message_ui import (
+    ValidationMessageBubble,
+    bubble_from_content,
+    bubble_from_draft,
+)
 from chatbot.application.customer_access_gate import build_channel_session_id, resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
 from chatbot.application.erpnext_catalog_sync_service import (
@@ -383,8 +389,44 @@ def _automation_modules_for_ui(integrations: list[Integration]) -> list[dict]:
     return rows
 
 
-def _conversation_history_for_pending_reply(session: Session, tenant_id: int, reply) -> list:
-    from chatbot.domain.models.message import ChatMessage, MessageRole
+def _email_from_addr_for_reply(reply: PendingReply) -> str:
+    from_addr = (reply.recipient_id or reply.session_id.removeprefix("email:")).strip().lower()
+    if "~" in from_addr:
+        from_addr = from_addr.split("~", 1)[0]
+    return from_addr
+
+
+def _message_bubble_for_reply(
+    session: Session,
+    tenant_id: int,
+    reply: PendingReply,
+    *,
+    role,
+    content: str,
+    created_at,
+) -> ValidationMessageBubble:
+    from chatbot.domain.models.message import MessageRole
+
+    if (reply.channel or "").lower() != "email" or role != MessageRole.USER:
+        return bubble_from_content(role=role, content=content, created_at=created_at)
+
+    draft_repo = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id)
+    draft = draft_repo.find_nearest_before(
+        thread_id=reply.thread_id,
+        from_addr=_email_from_addr_for_reply(reply),
+        before=created_at,
+    )
+    if draft is not None:
+        return bubble_from_draft(draft=draft, role=role, created_at=created_at)
+    return bubble_from_content(role=role, content=content, created_at=created_at)
+
+
+def _conversation_history_for_pending_reply(
+    session: Session,
+    tenant_id: int,
+    reply: PendingReply,
+) -> list[ValidationMessageBubble]:
+    from chatbot.domain.models.message import MessageRole
 
     conv = SqlAlchemyConversationRepository(session, tenant_id)
     before = reply.created_at
@@ -392,17 +434,36 @@ def _conversation_history_for_pending_reply(session: Session, tenant_id: int, re
         before = before.replace(tzinfo=UTC)
     messages = conv.list_messages_before(reply.session_id, before)
     if messages:
-        # Last message is the draft under validation (shown in the WYSIWYG panel).
         messages = messages[:-1]
     if messages:
-        return messages
+        return [
+            _message_bubble_for_reply(
+                session,
+                tenant_id,
+                reply,
+                role=m.role,
+                content=m.content,
+                created_at=m.created_at,
+            )
+            for m in messages
+        ]
     inbound = inbound_for_pending_reply(session, tenant_id, reply)
     if inbound.get("text"):
+        draft = inbound.get("mail_draft")
+        if draft is not None:
+            return [
+                bubble_from_draft(
+                    draft=draft,
+                    role=MessageRole.USER,
+                    created_at=inbound.get("received_at"),
+                )
+            ]
         return [
-            ChatMessage(
+            bubble_from_content(
                 role=MessageRole.USER,
                 content=inbound["text"],
                 created_at=inbound.get("received_at"),
+                content_raw=inbound.get("raw_text") or None,
             )
         ]
     return []
@@ -490,10 +551,26 @@ def _pending_reply_ui_item(
         else {}
     )
     outbound_subject = resolve_email_subject(
-        draft_subject=reply.draft_subject,
+        draft_subject=coalesce_stored_email_subject(
+            stored_draft_subject=reply.draft_subject,
+            connector_config=outbound_config,
+            inbound_subject=inbound.get("subject"),
+        ),
         connector_config=outbound_config,
         inbound_subject=inbound.get("subject") or None,
     )
+    thread_resolution_used_llm: bool | None = None
+    thread_resolution_tooltip: str | None = None
+    if reply.channel == ConnectorType.EMAIL.value:
+        draft = inbound.get("mail_draft")
+        if draft is None:
+            draft = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).find_for_pending_reply(
+                reply
+            )
+        audit = audit_from_json(draft.thread_resolution_json) if draft else None
+        if audit is not None:
+            thread_resolution_used_llm = audit.used_llm
+            thread_resolution_tooltip = format_resolution_tooltip(audit)
     return {
         "reply": reply,
         "resolved_lines": resolved,
@@ -504,6 +581,8 @@ def _pending_reply_ui_item(
         "inbound_text": inbound["text"],
         "outbound_subject": outbound_subject,
         "conversation_history": conversation_history,
+        "thread_resolution_used_llm": thread_resolution_used_llm,
+        "thread_resolution_tooltip": thread_resolution_tooltip,
         "quote_pdf_url": quote_pdf_url,
         "erpnext_quote_url": _erpnext_quotation_edit_url(
             session, tenant_id, reply.quote_external_id

@@ -13,6 +13,12 @@ from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepos
 from chatbot.application.channel_outbound import get_outbound_connector
 from chatbot.application.chat_service_factory import build_chat_service_for_worker
 from chatbot.application.connector_service import ConnectorService
+from chatbot.application.email_body_sanitize import prepare_email_body_new
+from chatbot.application.email_session_id import build_email_thread_session_id
+from chatbot.application.email_subject import normalize_subject
+from chatbot.application.email_thread_factory import build_email_thread_resolver
+from chatbot.application.email_thread_resolution import audit_to_json
+from chatbot.application.email_thread_resolver import InboundEmailHeaders
 from chatbot.application.mail_connector_runtime import prepare_email_connector_config
 from chatbot.application.outbound_orchestrator import queue_after_chat
 from chatbot.config.settings import Settings
@@ -73,18 +79,40 @@ def _process_one_mail(
         uid_repo.record_skipped(mail.uid, received_at=mail.received_at)
         return False
 
+    chat_body = prepare_email_body_new(mail.body_text)
+    resolver = build_email_thread_resolver(session, settings, tenant)
+    resolved = resolver.resolve(
+        from_addr=mail.from_addr,
+        subject=mail.subject,
+        body_new=chat_body,
+        received_at=mail.received_at,
+        headers=InboundEmailHeaders(
+            message_id=mail.message_id,
+            in_reply_to=mail.in_reply_to,
+            references=mail.references,
+        ),
+    )
+    session_id = build_email_thread_session_id(mail.from_addr, resolved.thread_key)
+    refs_header = " ".join(mail.references) if mail.references else None
+
     draft = draft_repo.create(
         imap_uid=mail.uid,
         from_addr=mail.from_addr,
         to_addr=mail.to_addr,
         subject=mail.subject,
         body_in=mail.body_text,
+        body_new=chat_body,
         status=MailDraftStatus.PENDING,
+        thread_id=resolved.thread.id,
+        message_id=mail.message_id,
+        in_reply_to=mail.in_reply_to,
+        references_header=refs_header,
+        normalized_subject=normalize_subject(mail.subject),
+        thread_resolution_json=audit_to_json(resolved.audit),
     )
 
     chat = build_chat_service_for_worker(session, settings, tenant)
-    session_id = f"email:{mail.from_addr}"
-    result = chat.handle_user_message(session_id, mail.body_text)
+    result = chat.handle_user_message(session_id, chat_body)
 
     connectors = ConnectorService(SqlAlchemyConnectorRepository(session))
     out_conn = get_outbound_connector(connectors, tenant_id, ConnectorType.EMAIL)
@@ -101,6 +129,9 @@ def _process_one_mail(
         result=result,
         settings=settings,
         tenant_slug=tenant.slug,
+        mail_draft_id=draft.id,
+        thread_id=resolved.thread.id,
+        inbound_email_subject=mail.subject,
     )
     draft_repo.mark_processed(draft.id, draft_reply=result.text)
     uid_repo.record_processed(mail.uid, received_at=mail.received_at)

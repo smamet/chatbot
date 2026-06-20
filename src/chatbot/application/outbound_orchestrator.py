@@ -49,6 +49,8 @@ def _queue_quote_pending(
     resolved_json: str | None,
     quote_external_id: str | None = None,
     attachments_json: str | None = None,
+    mail_draft_id: int | None = None,
+    thread_id: int | None = None,
 ) -> PendingReply:
     from chatbot.application.channel_outbound import queue_pending_reply
 
@@ -66,6 +68,8 @@ def _queue_quote_pending(
         quote_resolved_json=resolved_json,
         quote_external_id=quote_external_id,
         attachments_json=attachments_json,
+        mail_draft_id=mail_draft_id,
+        thread_id=thread_id,
     )
     return pending
 
@@ -80,6 +84,9 @@ def queue_after_chat(
     result: LlmResult,
     settings: Settings,
     tenant_slug: str,
+    mail_draft_id: int | None = None,
+    thread_id: int | None = None,
+    inbound_email_subject: str | None = None,
 ) -> tuple[str, PendingReply | None]:
     """Return (status, pending_reply_if_queued)."""
     from chatbot.application.channel_outbound import (
@@ -151,6 +158,8 @@ def queue_after_chat(
                         recipient_id=recipient_id,
                         result=result,
                         resolved_json=resolved_json,
+                        mail_draft_id=mail_draft_id,
+                        thread_id=thread_id,
                     )
                     repo.update_quote_fields(pending.id, fulfillment_error=str(exc))
                     return "queued", pending
@@ -165,6 +174,8 @@ def queue_after_chat(
                 resolved_json=resolved_json,
                 quote_external_id=quote_external_id,
                 attachments_json=attachments_json,
+                mail_draft_id=mail_draft_id,
+                thread_id=thread_id,
             )
             if quote_external_id and quote_erp_modified:
                 SqlAlchemyPendingReplyRepository(session).update_quote_fields(
@@ -183,6 +194,9 @@ def queue_after_chat(
             recipient_id=recipient_id,
             draft_text=result.text,
             hook_event_id=getattr(result, "hook_event_id", None),
+            mail_draft_id=mail_draft_id,
+            thread_id=thread_id,
+            inbound_email_subject=inbound_email_subject,
         )
         return "queued", pending
 

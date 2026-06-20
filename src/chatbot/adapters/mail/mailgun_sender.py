@@ -31,13 +31,20 @@ class MailgunEmailSender:
         except httpx.HTTPError as exc:
             raise EmailSendError(f"Mailgun connection failed: {exc}") from exc
 
-    def send(self, message: EmailMessage) -> None:
+    def send(self, message: EmailMessage) -> str:
+        if not message.message_id:
+            raise EmailSendError("message_id is required for Mailgun send")
         data = {
             "from": message.from_addr,
             "to": message.to_addr,
             "subject": message.subject,
             "text": message.body_text,
+            "h:Message-ID": message.message_id,
         }
+        if message.in_reply_to:
+            data["h:In-Reply-To"] = message.in_reply_to
+        if message.references:
+            data["h:References"] = message.references
         if message.body_html:
             data["html"] = message.body_html
         try:
@@ -50,3 +57,4 @@ class MailgunEmailSender:
                 response.raise_for_status()
         except httpx.HTTPError as exc:
             raise EmailSendError(f"Mailgun send failed: {exc}") from exc
+        return message.message_id

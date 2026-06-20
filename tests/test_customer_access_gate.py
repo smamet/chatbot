@@ -33,6 +33,16 @@ def test_parse_session_identity_email_with_phone() -> None:
     assert phone == "+33612345678"
 
 
+def test_parse_session_identity_email_with_thread_key() -> None:
+    email, phone = parse_session_identity("email:alice@example.com~abc123def456")
+    assert email == "alice@example.com"
+    assert phone is None
+
+
+def test_session_display_label_strips_thread_key() -> None:
+    assert session_display_label("email:alice@example.com~abc123") == "alice@example.com"
+
+
 def test_session_display_label_hides_phone_suffix() -> None:
     assert session_display_label("email:alice@example.com|+33612345678") == "alice@example.com"
 
