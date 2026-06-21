@@ -682,6 +682,60 @@ textarea {
   color: #b91c1c;
 }
 
+.error-page {
+  max-width: 42rem;
+  margin: var(--space-lg) auto;
+}
+
+.error-page__code {
+  margin: 0 0 var(--space-xs);
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+}
+
+.error-page__title {
+  margin-bottom: var(--space-sm);
+}
+
+.error-page__summary {
+  margin: 0 0 var(--space-md);
+  line-height: 1.5;
+}
+
+.error-page__meta {
+  margin: 0 0 var(--space-sm);
+  word-break: break-word;
+}
+
+.error-page__actions {
+  margin: var(--space-md) 0 0;
+}
+
+.error-traceback-details {
+  margin: var(--space-md) 0;
+}
+
+.error-traceback-details summary {
+  cursor: pointer;
+  font-weight: 500;
+  margin-bottom: var(--space-xs);
+}
+
+.error-traceback {
+  max-height: 24rem;
+  overflow: auto;
+  margin: 0;
+  padding: var(--space-sm);
+  background: #f1f5f9;
+  border: 1px solid #e2e8f0;
+  border-radius: var(--radius-sm, 4px);
+  font-size: 0.75rem;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 .validation-quote-error {
   display: flex;
   flex-wrap: wrap;
@@ -904,6 +958,25 @@ textarea {
 .validation-inbox-flag--thread-llm {
   background: #fef9c3;
   color: #854d0e;
+}
+
+.validation-inbox-channel {
+  white-space: nowrap;
+}
+
+.validation-inbox-channel-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--text-muted, #64748b);
+  vertical-align: middle;
+}
+
+.validation-inbox-channel .validation-inbox-flags {
+  margin-left: 0.35rem;
+  vertical-align: middle;
 }
 
 .validation-bubble-footer {
@@ -1135,6 +1208,25 @@ textarea {
   min-height: 0;
 }
 
+.validation-editor-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-sm);
+  flex-wrap: wrap;
+}
+
+.validation-regenerate-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin-left: auto;
+}
+
+.validation-save-form {
+  margin: 0;
+}
+
 .validation-quill {
   flex: 1;
   min-height: 16rem;
@@ -1152,10 +1244,6 @@ textarea {
 
 .validation-quill .ql-editor {
   min-height: 14rem;
-}
-
-.validation-save-form {
-  margin: 0;
 }
 
 .validation-thread {

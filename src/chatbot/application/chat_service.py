@@ -142,3 +142,55 @@ class ChatService:
 
     def draft_reply(self, session_id: str, inbound_text: str) -> LlmResult:
         return self.handle_user_message(session_id, inbound_text)
+
+    def regenerate_assistant_reply(
+        self,
+        session_id: str,
+        *,
+        history: list[ChatMessage],
+        inbound_text: str,
+    ) -> LlmResult:
+        """Re-run the LLM for a pending reply without persisting new messages."""
+        _ = session_id
+        user_msg = ChatMessage(role=MessageRole.USER, content=inbound_text.strip())
+        messages = [*history, user_msg]
+        system = self._load_system_instruction()
+        customer_chars = 0
+        if self._integration_enricher:
+            data_block = self._integration_enricher(session_id)
+            if data_block:
+                customer_chars = len(data_block)
+                system = f"{system}\n\n--- Customer data ---\n{data_block}"
+        rag_chunks = 0
+        rag_chars = 0
+        if self._rag and self._settings.rag_enabled:
+            retrieval = self._rag.build_retrieval_context(inbound_text)
+            rag_chunks = retrieval.chunk_count
+            rag_chars = retrieval.char_count
+            if retrieval.text:
+                system = f"{system}\n\n--- Retrieved context ---\n{retrieval.text}"
+                if not self._settings.dev_mode:
+                    system = (
+                        f"{system}\n\n"
+                        "Do not mention internal file names, paths, or parenthetical "
+                        "source citations such as (Source: …) in your reply to the customer."
+                    )
+        result = self._llm.generate_chat(
+            system_instruction=system,
+            messages=messages,
+        )
+        extracted = extract_hook(result.text)
+        context_debug = ContextDebugInfo(
+            rag_chunks=rag_chunks,
+            rag_chars=rag_chars,
+            customer_chars=customer_chars,
+            system_chars=len(system),
+        )
+        return LlmResult(
+            text=extracted.clean_reply,
+            usage=result.usage,
+            hook_type=extracted.hook_type,
+            hook_payload_json=extracted.payload_json,
+            hook_event_id=None,
+            context_debug=context_debug,
+        )

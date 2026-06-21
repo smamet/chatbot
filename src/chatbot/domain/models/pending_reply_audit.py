@@ -8,6 +8,8 @@ from enum import StrEnum
 class ValidationAuditAction(StrEnum):
     APPROVED = "approved"
     REJECTED = "rejected"
+    REGENERATED = "regenerated"
+    REJECT_BLACKLIST = "reject_blacklist"
     ATTACHMENT_ADDED = "attachment_added"
     ATTACHMENT_REMOVED = "attachment_removed"
     RESOLVE_PRODUCTS = "resolve_products"

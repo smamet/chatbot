@@ -21,6 +21,7 @@ class TenantConfig:
     dev_mode: bool = False
     automation_modules: tuple[str, ...] = ("core.orders",)
     hook_instructions_extra: str = ""
+    email_blocked_senders: tuple[str, ...] = ()
 
     def to_json(self) -> str:
         return json.dumps(
@@ -38,6 +39,7 @@ class TenantConfig:
                 "dev_mode": self.dev_mode,
                 "automation_modules": list(self.automation_modules),
                 "hook_instructions_extra": self.hook_instructions_extra,
+                "email_blocked_senders": list(self.email_blocked_senders),
             },
             ensure_ascii=True,
         )
@@ -66,6 +68,13 @@ class TenantConfig:
             automation_modules = cls().automation_modules
         else:
             automation_modules = ()
+        blocked_raw = data.get("email_blocked_senders")
+        if "email_blocked_senders" in data and isinstance(blocked_raw, list):
+            email_blocked_senders = tuple(
+                str(addr).strip().lower() for addr in blocked_raw if str(addr).strip()
+            )
+        else:
+            email_blocked_senders = ()
         return cls(
             chat_model=str(data.get("chat_model", cls.chat_model)),
             embedding_model=str(data.get("embedding_model", cls.embedding_model)),
@@ -80,6 +89,7 @@ class TenantConfig:
             dev_mode=bool(data.get("dev_mode", False)),
             automation_modules=automation_modules,
             hook_instructions_extra=str(data.get("hook_instructions_extra", "")),
+            email_blocked_senders=email_blocked_senders,
         )
 
 

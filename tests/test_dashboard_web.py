@@ -86,6 +86,13 @@ def dashboard_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
                 context_debug=None,
             )
 
+        def regenerate_assistant_reply(self, session_id: str, *, history, inbound_text):
+            return SimpleNamespace(
+                text=f"regen:{inbound_text}",
+                usage=SimpleNamespace(prompt_tokens=1, candidates_tokens=1, total_tokens=2),
+                context_debug=None,
+            )
+
     app.dependency_overrides.clear()
 
     original_build = _build_chat_service
@@ -102,6 +109,11 @@ def dashboard_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
                     session_id, ChatMessage(role=MessageRole.ASSISTANT, content=out.text)
                 )
                 return out
+
+            def regenerate_assistant_reply(self, session_id: str, *, history, inbound_text):
+                return fake.regenerate_assistant_reply(
+                    session_id, history=history, inbound_text=inbound_text
+                )
 
         return _Wrapper()
 
@@ -273,7 +285,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
     assert r.status_code == 200
     assert "foo@bar.com" in r.text
     assert "email:foo@bar.com" not in r.text
-    assert 'class="msg-body msg-body--plain"' in r.text
+    assert 'validation-bubble-clean' in r.text
     assert 'class="msg-body js-md"' in r.text
     assert "**bold** reply" in r.text
     assert "markdown.js" in r.text
@@ -778,7 +790,7 @@ def test_validation_tab_renders_quill_editor_for_email(dashboard_env) -> None:
     assert "/validation/1/save" in detail.text
     assert "Generated" in detail.text
     assert "Received" in detail.text
-    assert 'class="msg-body msg-body--plain"' in detail.text
+    assert 'validation-bubble-clean' in detail.text
     assert "Re-resolve products" not in detail.text
 
 
@@ -2988,7 +3000,249 @@ def test_validation_detail_header_and_body_toggle(dashboard_env) -> None:
     assert detail.status_code == 200
     assert "validation-detail-subject" in detail.text
     assert "Rappel des payment" in detail.text
-    assert detail.text.count("accounts@vdtec.net") == 1
+    assert detail.text.count("accounts@vdtec.net") == 2
     assert "Show raw" in detail.text
     assert "validation-bubble-tokens" in detail.text
-    assert "Bonjour, cleaned" in detail.text
+    assert "Bonjour," in detail.text
+
+
+def test_validation_inbox_uses_channel_icon_not_kind_columns(dashboard_env) -> None:
+    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Hello",
+        )
+        session.commit()
+    _login(client, admin.email, "admin-pass")
+    page = client.get(f"/dashboard/bots/{slug}?tab=validation")
+    assert page.status_code == 200
+    assert "<th>Kind</th>" not in page.text
+    assert "<th>Channel</th>" not in page.text
+    assert "validation-inbox-channel-icon" in page.text
+
+
+def test_validation_regenerate_from_raw(dashboard_env) -> None:
+    from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from chatbot.application.validation_audit_service import ValidationAuditService
+    from chatbot.domain.models.message import ChatMessage, MessageRole
+    from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    raw_body = "RAW inbound body for regenerate"
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        conv = SqlAlchemyConversationRepository(session, tenant_id)
+        session_id = "email:client@example.com"
+        conv.append_message(
+            session_id, ChatMessage(role=MessageRole.USER, content="clean body")
+        )
+        conv.append_message(
+            session_id, ChatMessage(role=MessageRole.ASSISTANT, content="Old draft")
+        )
+        draft = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).create(
+            imap_uid="101",
+            from_addr="client@example.com",
+            to_addr="bot@test.local",
+            subject="Hi",
+            body_in=raw_body,
+            body_new="clean body",
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id=session_id,
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Old draft",
+            mail_draft_id=draft.id,
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+    assert "Regenerate from raw" in detail.text
+    assert "help-tip" in detail.text
+    assert "Show raw" in detail.text
+    assert "/regenerate" in detail.text
+
+    r = client.post(f"/dashboard/bots/{slug}/validation/{reply_id}/regenerate", follow_redirects=False)
+    assert r.status_code == 303
+
+    with factory() as session:
+        reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
+        assert reply is not None
+        assert reply.draft_text == f"regen:{raw_body}"
+        timeline = ValidationAuditService(session).list_timeline_for_reply(tenant_id, reply_id)
+        assert any(e.action == ValidationAuditAction.REGENERATED.value for e in timeline)
+
+
+def test_validation_regenerate_hidden_for_quote(dashboard_env) -> None:
+    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Quote draft",
+            fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+    assert "Regenerate from raw" not in detail.text
+
+
+def test_history_tab_shows_raw_toggle_for_email_draft(dashboard_env) -> None:
+    from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from chatbot.domain.models.message import ChatMessage, MessageRole
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    session_id = "email:history@example.com"
+    with factory() as session:
+        SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).create(
+            imap_uid="102",
+            from_addr="history@example.com",
+            to_addr="bot@test.local",
+            subject="History",
+            body_in="raw history body " + ("z" * 120) + "&nbsp;extra",
+            body_new="clean only",
+        )
+        conv = SqlAlchemyConversationRepository(session, tenant_id)
+        conv.append_message(
+            session_id,
+            ChatMessage(role=MessageRole.USER, content="clean only"),
+        )
+        session.commit()
+
+    _login(client, admin.email, "admin-pass")
+    page = client.get(f"/dashboard/bots/{slug}?tab=history&sid={session_id}")
+    assert page.status_code == 200
+    assert "Show raw" in page.text
+    assert "validation-bubble-tokens" in page.text
+
+
+def test_reject_blacklist_adds_sender_and_audits(dashboard_env) -> None:
+    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from chatbot.application.validation_audit_service import ValidationAuditService
+    from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        draft = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).create(
+            imap_uid="103",
+            from_addr="spammer@evil.com",
+            to_addr="bot@test.local",
+            subject="Spam",
+            body_in="Buy now",
+            body_new="Buy now",
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:spammer@evil.com",
+            channel="email",
+            recipient_id="spammer@evil.com",
+            draft_text="No thanks",
+            mail_draft_id=draft.id,
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/reject-blacklist",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    with factory() as session:
+        tenant = SqlAlchemyTenantRepository(session).find_by_id(tenant_id)
+        assert tenant is not None
+        assert "spammer@evil.com" in tenant.config.email_blocked_senders
+        timeline = ValidationAuditService(session).list_timeline_for_reply(tenant_id, reply_id)
+        assert any(e.action == ValidationAuditAction.REJECT_BLACKLIST.value for e in timeline)
+
+
+def test_email_blacklist_config_save_normalizes(dashboard_env) -> None:
+    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/email-blacklist",
+        data={"blocked_senders": "A@B.com\na@b.com\n  c@test.com  \n"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with factory() as session:
+        tenant = SqlAlchemyTenantRepository(session).find_by_id(tenant_id)
+        assert tenant is not None
+        assert tenant.config.email_blocked_senders == ("a@b.com", "c@test.com")
+
+
+def test_validation_blacklist_tab_loads(dashboard_env) -> None:
+    client, admin, _, slug, _, _, factory = dashboard_env
+    with factory() as session:
+        from chatbot.application.tenant_service import TenantService
+        from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+
+        tenant = SqlAlchemyTenantRepository(session).find_by_slug(slug)
+        assert tenant is not None
+        TenantService(SqlAlchemyTenantRepository(session)).update_blocked_senders(
+            tenant.id, ["blocked@example.com"]
+        )
+        session.commit()
+
+    _login(client, admin.email, "admin-pass")
+    page = client.get(f"/dashboard/bots/{slug}?tab=validation&vsub=blacklist")
+    assert page.status_code == 200
+    assert "Blocked senders" in page.text
+    assert "blocked@example.com" in page.text
+    assert "Unblock" in page.text
+

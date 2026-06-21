@@ -48,8 +48,16 @@ from chatbot.application.email_thread_resolution import audit_from_json, format_
 from chatbot.application.pending_reply_inbound import inbound_for_pending_reply
 from chatbot.application.validation_message_ui import (
     ValidationMessageBubble,
+    bubble_for_session_message,
     bubble_from_content,
     bubble_from_draft,
+    bubble_to_ui_dict,
+    email_from_addr_from_session,
+    messages_to_bubbles,
+)
+from chatbot.application.validation_regenerate_service import (
+    ValidationRegenerateError,
+    regenerate_pending_reply_from_raw,
 )
 from chatbot.application.customer_access_gate import build_channel_session_id, resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
@@ -390,10 +398,10 @@ def _automation_modules_for_ui(integrations: list[Integration]) -> list[dict]:
 
 
 def _email_from_addr_for_reply(reply: PendingReply) -> str:
-    from_addr = (reply.recipient_id or reply.session_id.removeprefix("email:")).strip().lower()
-    if "~" in from_addr:
-        from_addr = from_addr.split("~", 1)[0]
-    return from_addr
+    addr = email_from_addr_from_session(reply.session_id)
+    if addr:
+        return addr
+    return (reply.recipient_id or "").strip().lower()
 
 
 def _message_bubble_for_reply(
@@ -588,6 +596,9 @@ def _pending_reply_ui_item(
             session, tenant_id, reply.quote_external_id
         ),
         "editor_html": editor_html,
+        "blocked_from_addr": _email_from_addr_for_reply(reply)
+        if reply.channel == ConnectorType.EMAIL.value
+        else None,
     }
 
 
@@ -936,17 +947,36 @@ def _run_dashboard_chat(
     return session_id, chat.handle_user_message(session_id, message.strip())
 
 
-def _chat_message_ui_dict(message: ChatMessage) -> dict:
-    out = {"role": message.role.value, "content": message.content}
+def _chat_message_ui_dict(
+    message: ChatMessage,
+    *,
+    session: Session | None = None,
+    tenant_id: int | None = None,
+    session_id: str | None = None,
+) -> dict:
+    context_debug = None
     if message.context_debug:
         dbg = message.context_debug
-        out["context_size"] = {
+        context_debug = {
             "rag_chunks": dbg.rag_chunks,
             "rag_chars": dbg.rag_chars,
             "customer_chars": dbg.customer_chars,
             "system_chars": dbg.system_chars,
         }
-    return out
+    bubble: ValidationMessageBubble | None = None
+    if session is not None and tenant_id is not None and session_id:
+        bubble = bubble_for_session_message(
+            session,
+            tenant_id,
+            session_id,
+            message,
+        )
+    return bubble_to_ui_dict(
+        bubble,
+        role=message.role,
+        content=message.content,
+        context_debug=context_debug,
+    )
 
 
 class ChatTestSendOut(BaseModel):
@@ -962,6 +992,8 @@ class ChatTestSendOut(BaseModel):
     pdf_warning: str | None = None
     test_session: str | None = None
     context_size: dict[str, int] | None = None
+    user_message: dict | None = None
+    assistant_message: dict | None = None
 
 
 class EmailTestSendOut(BaseModel):
@@ -1400,7 +1432,11 @@ def bot_detail(
         sid = request.query_params.get("sid")
         if sid:
             ctx["selected_sid"] = sid
-            ctx["history_messages"] = repo.list_messages(sid, limit=500)
+            messages = repo.list_messages(sid, limit=500)
+            ctx["history_messages"] = messages
+            ctx["history_bubbles"] = messages_to_bubbles(
+                session, tenant.id, sid, messages
+            )
     elif tab == "chat":
         repo = SqlAlchemyConversationRepository(session, tenant.id)
         require_identity = ctx["has_customer_integration"]
@@ -1427,7 +1463,10 @@ def bot_detail(
         else:
             messages = []
         ctx["chat_messages_json"] = json.dumps(
-            [_chat_message_ui_dict(m) for m in messages]
+            [
+                _chat_message_ui_dict(m, session=session, tenant_id=tenant.id, session_id=test_sid)
+                for m in messages
+            ]
         )
         session_repo = TestChatSessionRepository(session, tenant.id)
         ctx["test_chat_sidebar_sessions"] = _list_test_chat_sidebar_sessions(session, tenant.id)
@@ -1452,13 +1491,16 @@ def bot_detail(
         ctx["show_chat_channel_selector"] = bool(ctx["chat_outbound_connectors"])
     elif tab == "validation":
         vsub = request.query_params.get("vsub", "pending").strip() or "pending"
-        if vsub not in ("pending", "approved", "rejected"):
+        if vsub not in ("pending", "approved", "rejected", "blacklist"):
             vsub = "pending"
         ctx["validation_subtab"] = vsub
         audit_svc = ValidationAuditService(session)
         ctx["validation_activity"] = audit_svc.list_activity(tenant.id, limit=VALIDATION_ACTIVITY_LIMIT)
         ctx["fulfillment_kind_quote"] = FulfillmentKind.ERPNEXT_QUOTE.value
-        if vsub == "pending":
+        if vsub == "blacklist":
+            ctx["blocked_senders"] = list(tenant.config.email_blocked_senders)
+            replies = []
+        elif vsub == "pending":
             replies = pending_repo.list_pending(tenant.id)
         elif vsub == "approved":
             replies = pending_repo.list_by_status(tenant.id, PendingReplyStatus.APPROVED)
@@ -1726,10 +1768,47 @@ def bot_reset_automation_config(
         dev_mode=cfg.dev_mode,
         automation_modules=("core.orders",),
         hook_instructions_extra="",
+        email_blocked_senders=cfg.email_blocked_senders,
     )
     tenant_service.update_tenant(tenant.id, config=updated, hook_instructions=None, update_hook_instructions=True)
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.post("/bots/{slug}/email-blacklist")
+def bot_save_email_blacklist(
+    slug: str,
+    blocked_senders: str = Form(""),
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    addrs = [line.strip() for line in blocked_senders.splitlines() if line.strip()]
+    tenant_service.update_blocked_senders(tenant.id, addrs)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.post("/bots/{slug}/email-blacklist/unblock")
+def bot_unblock_email_sender(
+    slug: str,
+    addr: str = Form(...),
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    tenant_service.unblock_sender(tenant.id, addr)
+    session.commit()
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}?tab=validation&vsub=blacklist",
+        status_code=303,
+    )
 
 
 @router.post("/bots/{slug}/hooks/restore-default")
@@ -3581,26 +3660,132 @@ async def reject_validation_reply(
     if reply.status != PendingReplyStatus.PENDING:
         raise HTTPException(status_code=400, detail="Reply is not pending")
     form = await request.form()
-    _persist_validation_email_draft_from_form(
+    _reject_pending_reply(
         session,
         tenant_id=tenant.id,
         reply=reply,
         form=form,
         edited_by=user.email,
+        settings=settings,
+    )
+    session.commit()
+    return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
+
+
+def _reject_pending_reply(
+    session: Session,
+    *,
+    tenant_id: int,
+    reply: PendingReply,
+    form,
+    edited_by: str,
+    settings: Settings,
+) -> None:
+    _persist_validation_email_draft_from_form(
+        session,
+        tenant_id=tenant_id,
+        reply=reply,
+        form=form,
+        edited_by=edited_by,
     )
     cleanup_pending_reply_attachments(reply)
     mark_imap_seen_for_pending_reply(
         session,
-        tenant_id=tenant.id,
+        tenant_id=tenant_id,
         reply=reply,
         settings=settings,
     )
     ValidationAuditService(session).resolve_reply(
         reply,
         status=PendingReplyStatus.REJECTED,
+        actor_email=edited_by,
+    )
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/regenerate")
+async def regenerate_validation_reply(
+    request: Request,
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_validator),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.status != PendingReplyStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Reply is not pending")
+    repo = SqlAlchemyConversationRepository(session, tenant.id)
+    hook_repo = SqlAlchemyHookEventRepository(session, tenant.id)
+    chat = _build_chat_service(request, settings, tenant, repo, hook_repo, db_session=session)
+    try:
+        regenerate_pending_reply_from_raw(
+            session,
+            tenant,
+            reply,
+            settings=settings,
+            chat=chat,
+            edited_by=user.email,
+        )
+    except ValidationRegenerateError as exc:
+        request.session["validation_error"] = str(exc)
+    else:
+        request.session["validation_warning"] = (
+            "Proposed reply regenerated from raw inbound email."
+        )
+    session.commit()
+    return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/reject-blacklist")
+async def reject_blacklist_validation_reply(
+    request: Request,
+    slug: str,
+    reply_id: int,
+    user: User = Depends(require_validator),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.status != PendingReplyStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Reply is not pending")
+    blocked_addr = _email_from_addr_for_reply(reply)
+    if not blocked_addr:
+        blocked_addr = (reply.recipient_id or "").strip().lower()
+    if not blocked_addr:
+        raise HTTPException(status_code=400, detail="Cannot determine sender address")
+    form = await request.form()
+    _reject_pending_reply(
+        session,
+        tenant_id=tenant.id,
+        reply=reply,
+        form=form,
+        edited_by=user.email,
+        settings=settings,
+    )
+    tenant_service.update_blocked_senders(tenant.id, [blocked_addr])
+    ValidationAuditService(session).log_event(
+        tenant_id=tenant.id,
+        pending_reply_id=reply.id,
+        action=ValidationAuditAction.REJECT_BLACKLIST,
         actor_email=user.email,
+        detail={"blocked_addr": blocked_addr},
     )
     session.commit()
+    request.session["validation_warning"] = f"Reply rejected and {blocked_addr} blocked."
     return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
 
 
@@ -3787,6 +3972,21 @@ def bot_chat_test_send(
                 "customer_chars": dbg.customer_chars,
                 "system_chars": dbg.system_chars,
             }
+        conv_repo = SqlAlchemyConversationRepository(session, tenant.id)
+        recent = conv_repo.list_messages(session_id, limit=2)
+        user_message: dict | None = None
+        assistant_message: dict | None = None
+        if len(recent) >= 2:
+            user_message = _chat_message_ui_dict(
+                recent[0], session=session, tenant_id=tenant.id, session_id=session_id
+            )
+            assistant_message = _chat_message_ui_dict(
+                recent[1], session=session, tenant_id=tenant.id, session_id=session_id
+            )
+        elif len(recent) == 1:
+            assistant_message = _chat_message_ui_dict(
+                recent[0], session=session, tenant_id=tenant.id, session_id=session_id
+            )
         return ChatTestSendOut(
             reply=result.text,
             hook_type=hook_type,
@@ -3800,6 +4000,8 @@ def bot_chat_test_send(
             pdf_warning=pdf_warning,
             test_session=out_test_session,
             context_size=context_size,
+            user_message=user_message,
+            assistant_message=assistant_message,
         )
     except HTTPException:
         session.rollback()

@@ -31,6 +31,11 @@ def _audit_summary(action: ValidationAuditAction, detail_json: str | None) -> st
         return "Approved reply"
     if action == ValidationAuditAction.REJECTED:
         return "Rejected reply"
+    if action == ValidationAuditAction.REGENERATED:
+        return "Regenerated proposed reply from raw inbound email"
+    if action == ValidationAuditAction.REJECT_BLACKLIST:
+        addr = detail.get("blocked_addr", "sender")
+        return f"Rejected reply and blocked {addr}"
     if action == ValidationAuditAction.ATTACHMENT_ADDED:
         name = detail.get("filename", "file")
         return f"Added attachment {name}"

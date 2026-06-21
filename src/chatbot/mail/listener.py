@@ -56,6 +56,13 @@ def _should_skip_mail(mail: IncomingMail, process_since: datetime | None) -> boo
     return mail.received_at < process_since
 
 
+def _is_sender_blocked(from_addr: str, config) -> bool:
+    blocked = getattr(config, "email_blocked_senders", ()) or ()
+    if not blocked:
+        return False
+    return (from_addr or "").strip().lower() in blocked
+
+
 def _process_one_mail(
     session: Session,
     *,
@@ -77,6 +84,10 @@ def _process_one_mail(
     process_since = parse_process_since(in_connector.config)
     if _should_skip_mail(mail, process_since):
         uid_repo.record_skipped(mail.uid, received_at=mail.received_at)
+        return False
+
+    if _is_sender_blocked(mail.from_addr, tenant.config):
+        uid_repo.record_blacklisted(mail.uid, received_at=mail.received_at)
         return False
 
     chat_body = prepare_email_body_new(mail.body_text)

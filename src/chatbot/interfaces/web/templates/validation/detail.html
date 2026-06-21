@@ -1,5 +1,6 @@
 {% extends "base.html" %}
 {% from "macros/markdown_scripts.html" import markdown_scripts %}
+{% from "macros/help_tip.html" import help_tip %}
 {% block body %}
 <div class="page-header validation-detail-page">
   <div>
@@ -123,10 +124,21 @@
              value="{{ item.outbound_subject }}">
       <div class="validation-quill" id="validation-quill-{{ reply.id }}"></div>
       <script type="application/json" class="validation-draft-html-source">{{ item.editor_html | tojson }}</script>
-      <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/save" class="validation-save-form">
-        <input type="hidden" name="draft_html" class="validation-draft-html-input">
-        <button type="submit" class="btn-secondary btn-sm">Save draft</button>
-      </form>
+      <div class="validation-editor-actions">
+        <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/save" class="validation-save-form">
+          <input type="hidden" name="draft_html" class="validation-draft-html-input">
+          <button type="submit" class="btn-secondary btn-sm">Save draft</button>
+        </form>
+        {% if is_pending and not item.is_quote %}
+        <div class="validation-regenerate-action">
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/regenerate" class="inline-form validation-regenerate-form"
+                data-confirm="This will replace the proposed reply using the full original email. Continue?">
+            <button type="submit" class="btn-secondary btn-sm">Regenerate from raw</button>
+          </form>
+          {{ help_tip("Sometimes details are lost when the email is cleaned for the bot (see Show raw above). Use this to draft a new reply from the full original message instead of the shortened version.") }}
+        </div>
+        {% endif %}
+      </div>
     </div>
     {% else %}
     <div class="validation-message-body msg-body js-md">{{ reply.draft_text }}</div>
@@ -293,6 +305,12 @@
   <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/reject" class="inline-form">
     <button type="submit" class="btn-secondary btn-sm">Reject</button>
   </form>
+  {% if reply.channel == 'email' and is_pending and not item.is_quote and item.blocked_from_addr %}
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/reject-blacklist" class="inline-form validation-reject-blacklist-form"
+        data-confirm="This will reject this reply and block all future emails from {{ item.blocked_from_addr }}. Continue?">
+    <button type="submit" class="btn-secondary btn-sm">Reject &amp; Blacklist</button>
+  </form>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -320,5 +338,6 @@
 {{ markdown_scripts() }}
 <link href="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.snow.css" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/quill@2.0.3/dist/quill.js"></script>
+<script src="/static/message-bubbles.js"></script>
 <script src="/static/validation.js"></script>
 {% endblock %}

@@ -1,0 +1,30 @@
+{% macro message_bubble(role, content_clean, content_raw=None, token_raw=None, token_new=None, reduction_pct=None, created_at=None, role_label=None, markdown=False) -%}
+<div class="msg-turn msg-turn-{{ role }}">
+  <div class="msg msg-{{ role }}">
+    {% if role_label or created_at %}
+    <div class="msg-meta">
+      {% if role_label %}<strong>{{ role_label }}</strong>{% endif %}
+      {% if created_at %}
+      <time class="msg-time" datetime="{{ created_at.isoformat() }}">{{ created_at.strftime('%Y-%m-%d %H:%M') }}</time>
+      {% endif %}
+    </div>
+    {% endif %}
+    <div class="validation-bubble-body">
+      <pre class="validation-bubble-text msg-body{% if role == 'user' %} msg-body--plain{% elif markdown %} js-md{% endif %} validation-bubble-clean">{{ content_clean }}</pre>
+      {% if content_raw %}
+      <pre class="validation-bubble-text msg-body msg-body--plain validation-bubble-raw" hidden>{{ content_raw }}</pre>
+      {% endif %}
+    </div>
+  </div>
+  {% if content_raw %}
+  <div class="validation-bubble-footer">
+    {% if token_raw is not none and reduction_pct is not none %}
+    <span class="validation-bubble-tokens" title="Approximate token count (len/4)">~{{ token_raw }} tokens → ~{{ token_new }} tokens (−{{ reduction_pct }}%)</span>
+    {% elif token_new %}
+    <span class="validation-bubble-tokens" title="Approximate token count (len/4)">~{{ token_new }} tokens</span>
+    {% endif %}
+    <button type="button" class="validation-bubble-toggle" data-state="clean">Show raw</button>
+  </div>
+  {% endif %}
+</div>
+{%- endmacro %}

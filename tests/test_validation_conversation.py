@@ -44,8 +44,8 @@ def test_conversation_history_excludes_current_draft(test_settings, test_tenant)
         history = _conversation_history_for_pending_reply(session, tenant.id, reply)
 
     assert len(history) == 3
-    assert history[0].content == "First question"
-    assert history[1].content == "First answer"
-    assert history[2].content == "Second question"
-    assert all(m.content != "Current draft" for m in history)
+    assert history[0].content_clean == "First question"
+    assert history[1].content_clean == "First answer"
+    assert history[2].content_clean == "Second question"
+    assert all(m.content_clean != "Current draft" for m in history)
     assert all(m.created_at is not None for m in history)

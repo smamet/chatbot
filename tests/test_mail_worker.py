@@ -83,6 +83,36 @@ def _mail(uid: str, from_addr: str = "client@example.com") -> IncomingMail:
     )
 
 
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_blacklisted_sender_skips_llm(mock_imap_ctx, mail_env) -> None:
+    factory, settings, tenant_id, _, _ = mail_env
+    with factory() as session:
+        from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+        from chatbot.application.tenant_service import TenantService
+
+        TenantService(SqlAlchemyTenantRepository(session)).update_blocked_senders(
+            tenant_id, ["blocked@evil.com"]
+        )
+        session.commit()
+
+    imap = MagicMock()
+    imap.fetch_pending.return_value = [_mail("blk-1", from_addr="blocked@evil.com")]
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+
+    with patch("chatbot.mail.listener.build_chat_service_for_worker") as mock_build:
+        n = mail_listener.run_once(factory, settings)
+        mock_build.assert_not_called()
+
+    assert n == 0
+    with factory() as session:
+        from chatbot.adapters.persistence.mail_imap_uid_repository import (
+            SqlAlchemyMailImapUidRepository,
+        )
+
+        uid_repo = SqlAlchemyMailImapUidRepository(session, tenant_id=tenant_id)
+        assert uid_repo.exists_by_uid("blk-1")
+
+
 @patch("chatbot.mail.listener.queue_after_chat")
 @patch("chatbot.mail.listener.build_chat_service_for_worker")
 @patch("chatbot.mail.listener.imap_client")

@@ -12,7 +12,7 @@
   }
 
   const validationActionFormsSelector =
-    ".validation-save-form, form[action*='/validation/'][action*='/approve'], form[action*='/validation/'][action*='/reject']";
+    ".validation-save-form, form[action*='/validation/'][action*='/approve'], form[action*='/validation/'][action*='/reject']:not(.validation-reject-blacklist-form)";
 
   function getQuillHtml(quill) {
     return typeof quill.getSemanticHTML === "function"
@@ -320,24 +320,28 @@
   }
 
   function initValidationBodyToggle() {
-    document.querySelectorAll(".validation-bubble-toggle").forEach((btn) => {
-      btn.addEventListener("click", () => {
-        const turn = btn.closest(".msg-turn");
-        if (!turn) return;
-        const clean = turn.querySelector(".validation-bubble-clean");
-        const raw = turn.querySelector(".validation-bubble-raw");
-        if (!clean || !raw) return;
-        const showingRaw = btn.dataset.state === "raw";
-        if (showingRaw) {
-          clean.hidden = false;
-          raw.hidden = true;
-          btn.dataset.state = "clean";
-          btn.textContent = "Show raw";
-        } else {
-          clean.hidden = true;
-          raw.hidden = false;
-          btn.dataset.state = "raw";
-          btn.textContent = "Show cleaned";
+    if (typeof window.initMessageBodyToggle === "function") {
+      window.initMessageBodyToggle(document.querySelector(".validation-detail-page"));
+    }
+  }
+
+  function initValidationRegenerateConfirm() {
+    document.querySelectorAll(".validation-regenerate-form").forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        const message = form.dataset.confirm || "Continue?";
+        if (!window.confirm(message)) {
+          event.preventDefault();
+        }
+      });
+    });
+  }
+
+  function initValidationRejectBlacklistConfirm() {
+    document.querySelectorAll(".validation-reject-blacklist-form").forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        const message = form.dataset.confirm || "Continue?";
+        if (!window.confirm(message)) {
+          event.preventDefault();
         }
       });
     });
@@ -349,6 +353,8 @@
     initQuillEditors();
     initValidationDraftSync();
     initValidationBodyToggle();
+    initValidationRegenerateConfirm();
+    initValidationRejectBlacklistConfirm();
     if (window.ChatbotMarkdown) {
       window.ChatbotMarkdown.applyMarkdown(page);
     }

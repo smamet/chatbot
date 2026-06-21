@@ -166,7 +166,8 @@
     return parts.join(" · ");
   }
 
-  function appendMessage(role, content, { markdown = false, contextSize = null } = {}) {
+  function renderMessageBubble(turnData) {
+    const role = turnData.role || "user";
     const turn = document.createElement("div");
     turn.className = `msg-turn msg-turn-${role}`;
 
@@ -175,16 +176,56 @@
     const label = document.createElement("strong");
     label.textContent = role;
     div.appendChild(label);
-    const body = document.createElement("div");
-    body.className = role === "user" ? "msg-body msg-body--plain" : "msg-body";
-    if (markdown && role === "assistant") {
-      body.innerHTML = renderMarkdown(content);
+
+    const bubbleBody = document.createElement("div");
+    bubbleBody.className = "validation-bubble-body";
+
+    const clean = document.createElement("pre");
+    clean.className = `validation-bubble-text msg-body validation-bubble-clean${
+      role === "user" ? " msg-body--plain" : turnData.markdown ? " js-md" : ""
+    }`;
+    const cleanText = turnData.content_clean ?? turnData.content ?? "";
+    if (turnData.markdown && role === "assistant") {
+      clean.innerHTML = renderMarkdown(cleanText);
     } else {
-      body.textContent = content;
+      clean.textContent = cleanText;
     }
-    div.appendChild(body);
+    bubbleBody.appendChild(clean);
+
+    if (turnData.content_raw) {
+      const raw = document.createElement("pre");
+      raw.className =
+        "validation-bubble-text msg-body msg-body--plain validation-bubble-raw";
+      raw.hidden = true;
+      raw.textContent = turnData.content_raw;
+      bubbleBody.appendChild(raw);
+    }
+
+    div.appendChild(bubbleBody);
     turn.appendChild(div);
 
+    if (turnData.content_raw) {
+      const footer = document.createElement("div");
+      footer.className = "validation-bubble-footer";
+      const tokens = document.createElement("span");
+      tokens.className = "validation-bubble-tokens";
+      tokens.title = "Approximate token count (len/4)";
+      if (turnData.token_raw != null && turnData.reduction_pct != null) {
+        tokens.textContent = `~${turnData.token_raw} tokens → ~${turnData.token_new} tokens (−${turnData.reduction_pct}%)`;
+      } else if (turnData.token_new) {
+        tokens.textContent = `~${turnData.token_new} tokens`;
+      }
+      footer.appendChild(tokens);
+      const toggle = document.createElement("button");
+      toggle.type = "button";
+      toggle.className = "validation-bubble-toggle";
+      toggle.dataset.state = "clean";
+      toggle.textContent = "Show raw";
+      footer.appendChild(toggle);
+      turn.appendChild(footer);
+    }
+
+    const contextSize = turnData.context_size || turnData.contextSize || null;
     if (contextSize && role === "assistant") {
       const debug = document.createElement("p");
       debug.className = "msg-context-debug";
@@ -193,8 +234,27 @@
     }
 
     thread.appendChild(turn);
+    if (typeof window.initMessageBodyToggle === "function") {
+      window.initMessageBodyToggle(turn);
+    }
+    if (turnData.markdown && role === "assistant" && window.ChatbotMarkdown) {
+      window.ChatbotMarkdown.applyMarkdown(turn);
+    }
     scrollThread();
     return turn;
+  }
+
+  function appendMessage(role, content, opts = {}) {
+    if (opts.content_clean != null || opts.content_raw) {
+      return renderMessageBubble({ role, content, ...opts });
+    }
+    return renderMessageBubble({
+      role,
+      content,
+      content_clean: content,
+      markdown: opts.markdown,
+      context_size: opts.contextSize,
+    });
   }
 
   function setPageLoading(on) {
@@ -268,9 +328,9 @@
     try {
       const messages = JSON.parse(initialEl.textContent || "[]");
       messages.forEach((m) => {
-        appendMessage(m.role, m.content, {
-          markdown: m.role === "assistant",
-          contextSize: m.context_size || null,
+        renderMessageBubble({
+          ...m,
+          markdown: m.markdown || m.role === "assistant",
         });
       });
     } catch (_) {
@@ -287,7 +347,7 @@
     saveStoredIdentity(email, phone, channel);
     abortController = new AbortController();
     setLoading(true);
-    appendMessage("user", text.trim());
+    appendMessage("user", text.trim(), { content_clean: text.trim() });
     input.value = "";
     showTyping();
 
@@ -315,10 +375,24 @@
       const data = await res.json();
       if (data.test_session) saveAnonymousSessionId(data.test_session);
       syncIdentityFields();
-      appendMessage("assistant", data.reply || "", {
-        markdown: true,
-        contextSize: data.context_size || null,
-      });
+      if (data.user_message) {
+        const lastUser = thread?.querySelector(".msg-turn-user:last-of-type");
+        if (lastUser) lastUser.remove();
+        renderMessageBubble({ ...data.user_message, markdown: false });
+      }
+      if (data.assistant_message) {
+        renderMessageBubble({
+          ...data.assistant_message,
+          markdown: true,
+          context_size: data.context_size || data.assistant_message.context_size,
+        });
+      } else {
+        appendMessage("assistant", data.reply || "", {
+          content_clean: data.reply || "",
+          markdown: true,
+          context_size: data.context_size || null,
+        });
+      }
       showHookStatus(data);
     } catch (err) {
       hideTyping();

@@ -5,6 +5,7 @@ import re
 import secrets
 import shutil
 import unicodedata
+from dataclasses import replace
 from decimal import Decimal
 
 from chatbot.config.settings import Settings
@@ -113,6 +114,29 @@ class TenantService:
             client_billing_output_per_million_usd=output_per_million_usd,
             update_client_billing=True,
         )
+
+    def update_blocked_senders(self, tenant_id: int, blocked_senders: list[str]) -> Tenant | None:
+        tenant = self._repo.find_by_id(tenant_id)
+        if tenant is None:
+            return None
+        normalized = sorted(
+            {
+                addr.strip().lower()
+                for addr in blocked_senders
+                if addr and addr.strip()
+            }
+        )
+        config = replace(tenant.config, email_blocked_senders=tuple(normalized))
+        return self._repo.update(tenant_id, config=config)
+
+    def unblock_sender(self, tenant_id: int, addr: str) -> Tenant | None:
+        tenant = self._repo.find_by_id(tenant_id)
+        if tenant is None:
+            return None
+        key = addr.strip().lower()
+        remaining = tuple(a for a in tenant.config.email_blocked_senders if a != key)
+        config = replace(tenant.config, email_blocked_senders=remaining)
+        return self._repo.update(tenant_id, config=config)
 
     def delete_tenant(self, tenant_id: int, *, settings: Settings) -> bool:
         tenant = self._repo.find_by_id(tenant_id)

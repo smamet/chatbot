@@ -106,6 +106,34 @@ class SqlAlchemyConversationRepository:
         )
         return list(self._session.scalars(stmt))
 
+    def update_user_message_content(
+        self,
+        session_id: str,
+        *,
+        old_content: str,
+        new_content: str,
+        before: datetime | None = None,
+    ) -> bool:
+        stmt = (
+            select(MessageRow)
+            .where(
+                MessageRow.tenant_id == self._tenant_id,
+                MessageRow.session_id == session_id,
+                MessageRow.role == MessageRole.USER.value,
+                MessageRow.content == old_content,
+            )
+            .order_by(desc(MessageRow.id))
+            .limit(1)
+        )
+        if before is not None:
+            stmt = stmt.where(MessageRow.created_at <= before)
+        row = self._session.scalar(stmt)
+        if row is None:
+            return False
+        row.content = new_content
+        self._session.flush()
+        return True
+
     def update_assistant_message_content(
         self,
         session_id: str,

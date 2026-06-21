@@ -57,3 +57,21 @@ class SqlAlchemyMailImapUidRepository:
         )
         self._session.add(row)
         self._session.flush()
+
+    def record_blacklisted(
+        self,
+        imap_uid: str,
+        *,
+        received_at: datetime | None = None,
+    ) -> None:
+        if self.exists_by_uid(imap_uid):
+            return
+        row = MailImapUidRow(
+            tenant_id=self._tenant_id,
+            imap_uid=imap_uid,
+            disposition="blacklisted",
+            received_at=received_at,
+            created_at=datetime.now(UTC),
+        )
+        self._session.add(row)
+        self._session.flush()

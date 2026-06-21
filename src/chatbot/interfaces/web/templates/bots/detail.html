@@ -1,6 +1,8 @@
 {% extends "base.html" %}
 {% from "macros/help_tip.html" import help_tip %}
 {% from "macros/markdown_scripts.html" import markdown_scripts %}
+{% from "macros/channel_icon.html" import channel_icon %}
+{% from "macros/message_bubble.html" import message_bubble %}
 {% block body %}
 <div class="page-header">
   <h1>{{ tenant.name }}</h1>
@@ -119,6 +121,19 @@
         <button type="submit" class="btn-secondary">Reset modules to defaults</button>
       </form>
     </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Blocked email senders</h2>
+    <p class="text-muted field-hint">Inbound mail from these addresses is ignored (no LLM, no validation queue). One address per line, compared case-insensitively.</p>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/email-blacklist">
+      <label>Blocked senders (one per line)
+        <textarea name="blocked_senders" rows="5">{{ tenant.config.email_blocked_senders | join("\n") }}</textarea>
+      </label>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-secondary btn-sm">Save blocked senders</button>
+      </div>
+    </form>
   </div>
 
   <div class="card">
@@ -1336,7 +1351,36 @@
   <a href="?tab=validation&amp;vsub=pending" class="{% if validation_subtab == 'pending' %}active{% endif %}">Pending{% if pending_count %} <span class="tab-badge">{{ pending_count }}</span>{% endif %}</a>
   <a href="?tab=validation&amp;vsub=approved" class="{% if validation_subtab == 'approved' %}active{% endif %}">Approved</a>
   <a href="?tab=validation&amp;vsub=rejected" class="{% if validation_subtab == 'rejected' %}active{% endif %}">Rejected</a>
+  <a href="?tab=validation&amp;vsub=blacklist" class="{% if validation_subtab == 'blacklist' %}active{% endif %}">Blacklist</a>
 </nav>
+{% if validation_subtab == 'blacklist' %}
+<div class="card">
+  <h2 class="card-title">Blocked senders</h2>
+  <p class="text-muted field-hint">These addresses are rejected at the mail listener. Edit the list on the Config tab.</p>
+</div>
+<div class="table-wrap">
+  <table class="data-table validation-table">
+    <thead><tr><th>Address</th><th></th></tr></thead>
+    <tbody>
+    {% for addr in blocked_senders %}
+    <tr>
+      <td><code>{{ addr }}</code></td>
+      <td>
+        {% if can_edit %}
+        <form method="post" action="/dashboard/bots/{{ tenant.slug }}/email-blacklist/unblock" class="inline-form">
+          <input type="hidden" name="addr" value="{{ addr }}">
+          <button type="submit" class="btn-secondary btn-sm">Unblock</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="2" class="empty-state">No blocked senders</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
 <div class="card">
   <h2 class="card-title">
     {%- if validation_subtab == 'approved' -%}Approved replies
@@ -1355,7 +1399,7 @@
 <div class="table-wrap">
   <table class="data-table validation-table validation-table--inbox">
     <thead><tr>
-      <th>ID</th><th>Kind</th><th>Channel</th><th>From</th><th>Subject</th>
+      <th>ID</th><th></th><th>From</th><th>Subject</th>
       {% if validation_subtab in ('approved', 'rejected') %}<th>By</th><th>At</th>{% else %}<th>Created</th>{% endif %}
       <th></th>
     </tr></thead>
@@ -1367,8 +1411,8 @@
         tabindex="0"
         role="link">
       <td>{{ r.id }}</td>
-      <td>
-        <code>{% if item.is_quote %}quote{% else %}reply{% endif %}</code>
+      <td class="validation-inbox-channel">
+        {{ channel_icon(r.channel) }}
         <span class="validation-inbox-flags">
           {% if item.has_erpnext_quote %}
           <span class="validation-inbox-flag validation-inbox-flag--quote" title="ERPNext quotation {{ r.quote_external_id }}">Quote</span>
@@ -1382,7 +1426,6 @@
           {% endif %}
         </span>
       </td>
-      <td><code>{{ r.channel }}</code></td>
       <td><code>{{ r.session_id | session_label }}</code></td>
       <td class="validation-inbox-subject"{% if item.inbound_subject %} title="{{ item.inbound_subject }}"{% endif %}>
         {%- if r.channel == 'email' and item.inbound_subject -%}
@@ -1400,7 +1443,7 @@
       <td class="validation-row-chevron" aria-hidden="true">▶</td>
     </tr>
     {% else %}
-    <tr><td colspan="{% if validation_subtab in ('approved', 'rejected') %}8{% else %}7{% endif %}" class="empty-state">
+    <tr><td colspan="{% if validation_subtab in ('approved', 'rejected') %}7{% else %}6{% endif %}" class="empty-state">
       {%- if validation_subtab == 'approved' -%}No approved replies yet
       {%- elif validation_subtab == 'rejected' -%}No rejected replies yet
       {%- else -%}No replies awaiting validation
@@ -1433,6 +1476,7 @@
   {% endfor %}
   </ul>
 </section>
+{% endif %}
 
 {% elif tab == 'history' %}
 <section class="history-layout">
@@ -1450,13 +1494,30 @@
     {% if selected_sid %}
     <h2 class="card-title">Messages — {{ selected_sid | session_label }}</h2>
     <div class="chat-thread history-thread">
-    {% for m in history_messages %}
-    <div class="msg-turn msg-turn-{{ m.role.value }}">
-      <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'user' %} msg-body--plain{% elif m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
+    {% for m, bubble in history_bubbles %}
+      {% if bubble %}
+      {{ message_bubble(
+        m.role.value,
+        bubble.content_clean,
+        bubble.content_raw,
+        bubble.token_raw,
+        bubble.token_new,
+        bubble.reduction_pct,
+        m.created_at,
+        role_label=m.role.value,
+        markdown=(m.role.value == 'assistant')
+      ) }}
       {% if m.context_debug %}
       <p class="msg-context-debug">{{ m.context_debug | context_debug_label }}</p>
       {% endif %}
-    </div>
+      {% else %}
+      <div class="msg-turn msg-turn-{{ m.role.value }}">
+        <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'user' %} msg-body--plain{% elif m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
+        {% if m.context_debug %}
+        <p class="msg-context-debug">{{ m.context_debug | context_debug_label }}</p>
+        {% endif %}
+      </div>
+      {% endif %}
     {% else %}
     <p class="text-muted">No messages</p>
     {% endfor %}
@@ -1467,6 +1528,7 @@
   </div>
 </section>
 {{ markdown_scripts() }}
+<script src="/static/message-bubbles.js"></script>
 
 {% elif tab == 'chat' %}
 <section class="history-layout chat-test-layout">
@@ -1540,6 +1602,7 @@
   <p id="chat-hook-status" class="chat-hook-status" hidden></p>
   <p class="text-muted" style="margin-top:1rem">Session: <code id="chat-session-label">{{ chat_session_id }}</code></p>
   {{ markdown_scripts() }}
+  <script src="/static/message-bubbles.js"></script>
   <script src="/static/chat-test.js"></script>
   </div>
 </section>

@@ -49,3 +49,10 @@ def test_bubble_from_content_converts_html_legacy_message() -> None:
     assert bubble.content_clean == "Legacy quarantine text"
     assert bubble.content_raw == html
     assert bubble.token_raw is not None
+
+
+def test_email_from_addr_from_session() -> None:
+    from chatbot.application.validation_message_ui import email_from_addr_from_session
+
+    assert email_from_addr_from_session("email:client@example.com~abc123") == "client@example.com"
+    assert email_from_addr_from_session("whatsapp:+123") is None
