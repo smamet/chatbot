@@ -129,6 +129,17 @@ class TenantService:
         config = replace(tenant.config, email_blocked_senders=tuple(normalized))
         return self._repo.update(tenant_id, config=config)
 
+    def add_blocked_sender(self, tenant_id: int, addr: str) -> Tenant | None:
+        tenant = self._repo.find_by_id(tenant_id)
+        if tenant is None:
+            return None
+        key = addr.strip().lower()
+        if not key:
+            return tenant
+        merged = sorted(set(tenant.config.email_blocked_senders) | {key})
+        config = replace(tenant.config, email_blocked_senders=tuple(merged))
+        return self._repo.update(tenant_id, config=config)
+
     def unblock_sender(self, tenant_id: int, addr: str) -> Tenant | None:
         tenant = self._repo.find_by_id(tenant_id)
         if tenant is None:

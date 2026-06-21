@@ -1,18 +1,26 @@
 {% extends "base.html" %}
 {% from "macros/markdown_scripts.html" import markdown_scripts %}
 {% from "macros/help_tip.html" import help_tip %}
+{% from "macros/channel_icon.html" import channel_icon %}
 {% block body %}
 <div class="page-header validation-detail-page">
   <div>
     <h1>Validation #{{ reply.id }}</h1>
     <p class="text-muted validation-detail-meta">
-      <code>{{ reply.channel }}</code> ·
+      {{ channel_icon(reply.channel) }}
+      <span class="validation-detail-meta-sep" aria-hidden="true">·</span>
       {%- if reply.channel == 'email' -%}
-      <code>{{ reply.session_id | session_label }}</code>
-      {%- if item.inbound_subject %} · <span class="validation-detail-subject">{{ item.inbound_subject }}</span>{% endif -%}
+      <code title="{{ reply.recipient_id or (reply.session_id | session_label) }}">{{ reply.session_id | session_label }}</code>
+      {%- if item.inbound_subject -%}
+      <span class="validation-detail-meta-sep" aria-hidden="true">·</span>
+      <span class="validation-detail-subject" title="{{ item.inbound_subject }}">{{ item.inbound_subject }}</span>
+      {%- endif -%}
       {%- else -%}
-      <code>{{ reply.session_id | session_label }}</code> · <code>{{ reply.recipient_id }}</code>
-      {%- endif %} ·
+      <code title="{{ reply.session_id | session_label }}">{{ reply.session_id | session_label }}</code>
+      <span class="validation-detail-meta-sep" aria-hidden="true">·</span>
+      <code title="{{ reply.recipient_id }}">{{ reply.recipient_id }}</code>
+      {%- endif -%}
+      <span class="validation-detail-meta-sep" aria-hidden="true">·</span>
       Generated {{ reply.created_at.strftime('%Y-%m-%d %H:%M') if reply.created_at else '—' }}
     </p>
     <a href="{{ validation_inbox_url }}" class="btn btn-secondary btn-sm validation-detail-back">← Back to inbox</a>
@@ -49,7 +57,11 @@
             {% endif %}
           </div>
           <div class="validation-bubble-body">
-            <pre class="validation-bubble-text msg-body{% if m.role.value == 'user' %} msg-body--plain{% elif m.role.value == 'assistant' %} js-md{% endif %} validation-bubble-clean">{{ m.content_clean }}</pre>
+            {% if m.role.value == 'assistant' %}
+            <div class="validation-bubble-text msg-body js-md validation-bubble-clean">{{ m.content_clean }}</div>
+            {% else %}
+            <pre class="validation-bubble-text msg-body msg-body--plain validation-bubble-clean">{{ m.content_clean }}</pre>
+            {% endif %}
             {% if m.content_raw %}
             <pre class="validation-bubble-text msg-body msg-body--plain validation-bubble-raw" hidden>{{ m.content_raw }}</pre>
             {% endif %}
@@ -116,7 +128,9 @@
     {% endif %}
     {% if reply.channel == 'email' and can_validate %}
     <div class="validation-editor"
-         data-translate-url="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/translate">
+         data-translate-url="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/translate"
+         data-regenerate-url="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/regenerate"
+         data-regenerate-confirm="This will replace the proposed reply using the full original email. The editor only will be updated — click Save draft to persist. Continue?">
       <label class="validation-subject-label" for="validation-draft-subject-{{ reply.id }}">Subject</label>
       <input type="text"
              id="validation-draft-subject-{{ reply.id }}"
@@ -128,24 +142,40 @@
       <div class="validation-editor-actions">
         <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/save" class="validation-save-form">
           <input type="hidden" name="draft_html" class="validation-draft-html-input">
-          <button type="submit" class="btn-secondary btn-sm">Save draft</button>
+          <input type="hidden" name="regenerated_from_raw" class="validation-regenerated-from-raw-input" value="0">
+          <button type="submit" class="btn-secondary btn-sm validation-save-btn">Save draft</button>
         </form>
         {% if is_pending and not item.is_quote %}
-        <div class="validation-regenerate-action">
-          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/regenerate" class="inline-form validation-regenerate-form"
-                data-confirm="This will replace the proposed reply using the full original email. Continue?">
-            <button type="submit" class="btn-secondary btn-sm">Regenerate from raw</button>
-          </form>
-          {{ help_tip("Sometimes details are lost when the email is cleaned for the bot (see Show raw above). Use this to draft a new reply from the full original message instead of the shortened version.") }}
-        </div>
-        <div class="validation-translate-action">
-          <button type="button" class="btn-secondary btn-sm validation-translate-btn" data-target="en">Translate to EN</button>
-          <button type="button" class="btn-secondary btn-sm validation-translate-btn" data-target="fr">Translate to FR</button>
-          {{ help_tip("Updates the draft in the editor only. Click Save draft to persist.") }}
+        <div class="validation-editor-secondary-actions">
+          <button type="button"
+                  class="validation-action-link validation-regenerate-link"
+                  title="Re-run the AI using the full original inbound email (not the cleaned version shown in Conversation). Useful when cleaning removed details such as SKUs or signatures. Updates the editor only — click Save draft to persist.">Regenerate from raw</button>
+          <span class="validation-editor-action-sep" aria-hidden="true">·</span>
+          <button type="button"
+                  class="validation-action-link validation-translate-link"
+                  data-target="en"
+                  title="Translate the draft body and subject to English using AI. Keeps meaning and tone; does not send the email. Updates the editor only — click Save draft to persist.">🇬🇧 EN</button>
+          <span class="validation-editor-action-sep" aria-hidden="true">·</span>
+          <button type="button"
+                  class="validation-action-link validation-translate-link"
+                  data-target="fr"
+                  title="Translate the draft body and subject to French using AI. Keeps meaning and tone; does not send the email. Updates the editor only — click Save draft to persist.">🇫🇷 FR</button>
+          <span class="validation-editor-action-sep validation-revert-sep" aria-hidden="true" hidden>·</span>
+          <button type="button"
+                  class="validation-action-link validation-revert-link"
+                  hidden
+                  title="Restore the draft as it was before the last Translate or Regenerate from raw. Updates the editor only — click Save draft to persist.">
+            <svg class="validation-revert-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.25" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M3 10h11a4 4 0 0 1 0 8H9"/>
+              <path d="M3 10l4-4"/>
+            </svg>
+            Revert
+          </button>
+          {{ help_tip("Updates the editor only (Regenerate uses the full original email). Click Save draft to persist.") }}
         </div>
         {% endif %}
       </div>
-      <p class="validation-translate-error validation-error" hidden></p>
+      <p class="validation-editor-action-error validation-error" hidden></p>
     </div>
     {% else %}
     <div class="validation-message-body msg-body js-md">{{ reply.draft_text }}</div>

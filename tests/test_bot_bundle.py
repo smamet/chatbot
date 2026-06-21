@@ -11,6 +11,7 @@ from chatbot.adapters.persistence.engine import create_db_engine, session_factor
 from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.application.bot_bundle_service import (
+    BLACKLIST_NAME,
     ImportMode,
     build_export,
     import_bundle,
@@ -36,6 +37,8 @@ def bundle_ctx(test_settings):
         config=TenantConfig(rag_enabled=True, rag_top_k=7),
     )
     tenant_svc.update_tenant(result.tenant.id, active=True)
+    tenant_svc.add_blocked_sender(result.tenant.id, "spammer@evil.com")
+    tenant_svc.add_blocked_sender(result.tenant.id, "noise@test.com")
     conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
     conn_svc.upsert(
         tenant_id=result.tenant.id,
@@ -76,6 +79,9 @@ def test_build_export_contains_manifest_and_documents(bundle_ctx) -> None:
         assert manifest["bot"]["gemini_api_key"] == "tenant-gemini-key"
         assert manifest["bot"]["config"]["rag_enabled"] is True
         assert manifest["bot"]["config"]["rag_top_k"] == 7
+        assert manifest["email_blocked_senders"] == ["noise@test.com", "spammer@evil.com"]
+        assert BLACKLIST_NAME in zf.namelist()
+        assert zf.read(BLACKLIST_NAME).decode("utf-8") == "noise@test.com\nspammer@evil.com\n"
         assert len(manifest["connectors"]) == 1
         assert manifest["connectors"][0]["config"]["verify_token"] == "secret-vt"
         assert zf.read("documents/guide.md") == b"doc content"
@@ -103,6 +109,7 @@ def test_import_create_round_trip(bundle_ctx) -> None:
     assert imported.hook_instructions == "Hook me"
     assert imported.gemini_api_key == "tenant-gemini-key"
     assert imported.config.rag_top_k == 7
+    assert imported.config.email_blocked_senders == ("noise@test.com", "spammer@evil.com")
 
     docs_dir = tenant_docs_dir(settings, imported.slug)
     assert (docs_dir / "guide.md").read_text(encoding="utf-8") == "doc content"

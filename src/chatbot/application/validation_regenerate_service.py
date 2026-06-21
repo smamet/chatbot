@@ -1,25 +1,18 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC
 
-from markdownify import markdownify as html_to_markdown
 from sqlalchemy.orm import Session
 
-from chatbot.adapters.mail.body_format import email_draft_html_from_markdown, sanitize_email_html
+from chatbot.adapters.mail.body_format import email_draft_html_from_markdown
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
 from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-from chatbot.adapters.persistence.pending_reply_edit_repository import (
-    SqlAlchemyPendingReplyEditRepository,
-)
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 from chatbot.application.chat_service import ChatService
-from chatbot.application.draft_edit_service import draft_edit_text_diff
-from chatbot.application.validation_audit_service import ValidationAuditService
 from chatbot.config.settings import Settings
 from chatbot.domain.models.fulfillment import FulfillmentKind
-from chatbot.domain.models.message import MessageRole
+from chatbot.domain.models.message import ChatMessage, MessageRole
 from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
-from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
 from chatbot.domain.models.tenant import Tenant
 
 
@@ -27,15 +20,24 @@ class ValidationRegenerateError(RuntimeError):
     pass
 
 
-def regenerate_pending_reply_from_raw(
+@dataclass(frozen=True, slots=True)
+class RegenerateDraftResult:
+    draft_html: str
+    draft_text: str
+
+
+@dataclass(frozen=True, slots=True)
+class _RegenerateContext:
+    session_id: str
+    body_in: str
+    history: list[ChatMessage]
+
+
+def _prepare_regenerate(
     session: Session,
     tenant: Tenant,
     reply: PendingReply,
-    *,
-    settings: Settings,
-    chat: ChatService,
-    edited_by: str,
-) -> PendingReply:
+) -> _RegenerateContext:
     if reply.status != PendingReplyStatus.PENDING:
         raise ValidationRegenerateError("Reply is not pending")
     if (reply.channel or "").lower() != "email":
@@ -56,63 +58,37 @@ def regenerate_pending_reply_from_raw(
     if before.tzinfo is None:
         before = before.replace(tzinfo=UTC)
     messages = conv.list_messages_before(reply.session_id, before)
-    pending_user_content: str | None = None
-    old_assistant_content = reply.draft_text or ""
     if len(messages) >= 2 and messages[-1].role == MessageRole.ASSISTANT:
         if messages[-2].role == MessageRole.USER:
-            pending_user_content = messages[-2].content
+            pass
         messages = messages[:-2]
     elif messages and messages[-1].role == MessageRole.ASSISTANT:
         messages = messages[:-1]
 
-    result = chat.regenerate_assistant_reply(
-        reply.session_id,
+    return _RegenerateContext(
+        session_id=reply.session_id,
+        body_in=body_in,
         history=messages,
-        inbound_text=body_in,
-    )
-    new_markdown = (result.text or "").strip()
-    new_html = sanitize_email_html(email_draft_html_from_markdown(new_markdown))
-    before_html = reply.draft_html or sanitize_email_html(
-        email_draft_html_from_markdown(old_assistant_content)
     )
 
-    pending_repo = SqlAlchemyPendingReplyRepository(session)
-    updated = pending_repo.update_draft(
-        reply.id,
-        draft_text=new_markdown,
-        draft_html=new_html,
-    )
-    if updated is None:
-        raise ValidationRegenerateError("Failed to update pending reply draft")
 
-    conv.update_assistant_message_content(
-        reply.session_id,
-        old_content=old_assistant_content,
-        new_content=new_markdown,
+def generate_pending_reply_from_raw(
+    session: Session,
+    tenant: Tenant,
+    reply: PendingReply,
+    *,
+    settings: Settings,
+    chat: ChatService,
+) -> RegenerateDraftResult:
+    _ = settings
+    ctx = _prepare_regenerate(session, tenant, reply)
+    result = chat.regenerate_assistant_reply(
+        ctx.session_id,
+        history=ctx.history,
+        inbound_text=ctx.body_in,
     )
-    if pending_user_content is not None:
-        conv.update_user_message_content(
-            reply.session_id,
-            old_content=pending_user_content,
-            new_content=body_in,
-            before=before,
-        )
-
-    diff = draft_edit_text_diff(before_html, new_html)
-    if diff:
-        SqlAlchemyPendingReplyEditRepository(session).create(
-            tenant_id=tenant.id,
-            pending_reply_id=reply.id,
-            edited_by=edited_by,
-            body_before=before_html,
-            body_after=new_html,
-            diff=diff,
-        )
-
-    ValidationAuditService(session).log_event(
-        tenant_id=tenant.id,
-        pending_reply_id=reply.id,
-        action=ValidationAuditAction.REGENERATED,
-        actor_email=edited_by,
-    )
-    return updated
+    draft_text = (result.text or "").strip()
+    draft_html = email_draft_html_from_markdown(draft_text)
+    if not draft_html.strip():
+        raise ValidationRegenerateError("Regenerate produced empty body")
+    return RegenerateDraftResult(draft_html=draft_html, draft_text=draft_text)

@@ -4,7 +4,7 @@ import io
 import json
 import shutil
 import zipfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir
+from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.application.connector_service import ConnectorService
 from chatbot.application.tenant_service import TenantService
 from chatbot.config.settings import Settings
@@ -22,6 +23,7 @@ from chatbot.domain.models.tenant import Tenant, TenantConfig, TenantCreateResul
 EXPORT_VERSION = 1
 MANIFEST_NAME = "manifest.json"
 DOCUMENTS_PREFIX = "documents/"
+BLACKLIST_NAME = "email-blacklist.txt"
 
 
 class ImportMode(StrEnum):
@@ -47,6 +49,44 @@ def _config_from_dict(data: dict) -> TenantConfig:
     return TenantConfig.from_json(json.dumps(data))
 
 
+def _normalize_blocked_senders(addrs: list[str]) -> tuple[str, ...]:
+    return tuple(
+        sorted(
+            {
+                addr.strip().lower()
+                for addr in addrs
+                if addr and str(addr).strip()
+            }
+        )
+    )
+
+
+def _blocked_senders_from_bundle(manifest: dict, bot: dict, zf: zipfile.ZipFile) -> tuple[str, ...]:
+    if BLACKLIST_NAME in zf.namelist():
+        try:
+            raw = zf.read(BLACKLIST_NAME).decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise BotBundleError("Invalid bundle: email-blacklist.txt must be UTF-8") from exc
+        return _normalize_blocked_senders(raw.splitlines())
+
+    top_level = manifest.get("email_blocked_senders")
+    if isinstance(top_level, list):
+        return _normalize_blocked_senders([str(addr) for addr in top_level])
+
+    cfg_raw = bot.get("config")
+    if isinstance(cfg_raw, dict):
+        cfg_blocked = cfg_raw.get("email_blocked_senders")
+        if isinstance(cfg_blocked, list):
+            return _normalize_blocked_senders([str(addr) for addr in cfg_blocked])
+    return ()
+
+
+def _config_with_blocked_senders(bot: dict, blocked: tuple[str, ...]) -> TenantConfig:
+    cfg_raw = bot.get("config")
+    config = _config_from_dict(cfg_raw) if isinstance(cfg_raw, dict) else TenantConfig()
+    return replace(config, email_blocked_senders=blocked)
+
+
 def _connector_to_dict(conn) -> dict:
     return {
         "direction": conn.direction.value,
@@ -58,10 +98,12 @@ def _connector_to_dict(conn) -> dict:
 
 
 def build_manifest(tenant: Tenant, connectors: list) -> dict:
+    blocked = list(tenant.config.email_blocked_senders)
     return {
         "export_version": EXPORT_VERSION,
         "exported_at": datetime.now(UTC).isoformat(),
         "source_slug": tenant.slug,
+        "email_blocked_senders": blocked,
         "bot": {
             "name": tenant.name,
             "active": tenant.active,
@@ -79,17 +121,22 @@ def build_export(
     settings: Settings,
     session: Session,
 ) -> bytes:
+    fresh = TenantService(SqlAlchemyTenantRepository(session)).get_by_id(tenant.id)
+    if fresh is not None:
+        tenant = fresh
     connectors = ConnectorService(SqlAlchemyConnectorRepository(session)).list_for_tenant(
         tenant.id
     )
     manifest = build_manifest(tenant, connectors)
     docs_root = tenant_docs_dir(settings, tenant.slug)
+    blocked_lines = "\n".join(tenant.config.email_blocked_senders)
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(
             MANIFEST_NAME,
             json.dumps(manifest, indent=2, ensure_ascii=False),
         )
+        zf.writestr(BLACKLIST_NAME, blocked_lines + ("\n" if blocked_lines else ""))
         if docs_root.is_dir():
             for path in docs_root.rglob("*"):
                 if not path.is_file():
@@ -174,9 +221,11 @@ def _apply_bot_fields(
     bot: dict,
     *,
     name: str | None = None,
+    config: TenantConfig | None = None,
 ) -> Tenant | None:
-    cfg_raw = bot.get("config")
-    config = _config_from_dict(cfg_raw) if isinstance(cfg_raw, dict) else TenantConfig()
+    if config is None:
+        cfg_raw = bot.get("config")
+        config = _config_from_dict(cfg_raw) if isinstance(cfg_raw, dict) else TenantConfig()
     gemini_key = bot.get("gemini_api_key")
     if isinstance(gemini_key, str):
         gemini_key = gemini_key.strip() or None
@@ -214,12 +263,12 @@ def import_bundle(
         manifest = _parse_manifest(zf)
         bot = manifest["bot"]
         connectors_data = manifest.get("connectors", [])
+        blocked = _blocked_senders_from_bundle(manifest, bot, zf)
+        config = _config_with_blocked_senders(bot, blocked)
 
         connector_service = ConnectorService(SqlAlchemyConnectorRepository(session))
 
         if mode == ImportMode.CREATE:
-            cfg_raw = bot.get("config")
-            config = _config_from_dict(cfg_raw) if isinstance(cfg_raw, dict) else TenantConfig()
             gemini_key = bot.get("gemini_api_key")
             if isinstance(gemini_key, str):
                 gemini_key = gemini_key.strip() or None
@@ -252,6 +301,7 @@ def import_bundle(
                 tenant.id,
                 bot,
                 name=new_name.strip() if new_name and new_name.strip() else None,
+                config=config,
             )
             if updated is None:
                 raise BotBundleError("Failed to update target bot")

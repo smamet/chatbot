@@ -57,7 +57,7 @@ from chatbot.application.validation_message_ui import (
 )
 from chatbot.application.validation_regenerate_service import (
     ValidationRegenerateError,
-    regenerate_pending_reply_from_raw,
+    generate_pending_reply_from_raw,
 )
 from chatbot.application.validation_translate_service import (
     ValidationTranslateError,
@@ -3488,8 +3488,9 @@ async def save_validation_draft(
     form = await request.form()
     draft_html = str(form.get("draft_html", ""))
     draft_subject = str(form.get("draft_subject", ""))
+    regenerated_from_raw = str(form.get("regenerated_from_raw", "")).strip() == "1"
     try:
-        save_pending_reply_draft(
+        updated = save_pending_reply_draft(
             session,
             tenant_id=tenant.id,
             reply=reply,
@@ -3497,6 +3498,14 @@ async def save_validation_draft(
             draft_subject=draft_subject,
             edited_by=user.email,
         )
+        if regenerated_from_raw:
+            ValidationAuditService(session).log_event(
+                tenant_id=tenant.id,
+                pending_reply_id=reply.id,
+                action=ValidationAuditAction.REGENERATED,
+                actor_email=user.email,
+            )
+        _ = updated
     except DraftEditError as exc:
         request.session["validation_error"] = str(exc)
     session.commit()
@@ -3765,26 +3774,24 @@ async def regenerate_validation_reply(
         raise HTTPException(status_code=404)
     if reply.status != PendingReplyStatus.PENDING:
         raise HTTPException(status_code=400, detail="Reply is not pending")
+    if reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE:
+        raise HTTPException(status_code=400, detail="Regenerate is not available for quote replies")
     repo = SqlAlchemyConversationRepository(session, tenant.id)
     hook_repo = SqlAlchemyHookEventRepository(session, tenant.id)
     chat = _build_chat_service(request, settings, tenant, repo, hook_repo, db_session=session)
     try:
-        regenerate_pending_reply_from_raw(
+        generated = generate_pending_reply_from_raw(
             session,
             tenant,
             reply,
             settings=settings,
             chat=chat,
-            edited_by=user.email,
         )
     except ValidationRegenerateError as exc:
-        request.session["validation_error"] = str(exc)
-    else:
-        request.session["validation_warning"] = (
-            "Proposed reply regenerated from raw inbound email."
-        )
-    session.commit()
-    return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse(
+        {"ok": True, "draft_html": generated.draft_html, "draft_text": generated.draft_text}
+    )
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/reject-blacklist")
@@ -3820,7 +3827,7 @@ async def reject_blacklist_validation_reply(
         edited_by=user.email,
         settings=settings,
     )
-    tenant_service.update_blocked_senders(tenant.id, [blocked_addr])
+    tenant_service.add_blocked_sender(tenant.id, blocked_addr)
     ValidationAuditService(session).log_event(
         tenant_id=tenant.id,
         pending_reply_id=reply.id,

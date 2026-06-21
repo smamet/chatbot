@@ -20,6 +20,61 @@
   let validationDraftDirty = false;
   let validationDraftBaseline = { html: "", subject: "" };
 
+  function getEditorSnapshot(editorEl) {
+    const quill = editorEl.querySelector(".validation-quill")?.__quill;
+    const subjectEl = editorEl.querySelector(".validation-draft-subject");
+    return {
+      html: quill ? getQuillHtml(quill) : "",
+      subject: subjectEl?.value || "",
+    };
+  }
+
+  function pushValidationEditorSnapshot(editorEl) {
+    editorEl._validationUndoSnapshot = getEditorSnapshot(editorEl);
+    updateValidationRevertLink(editorEl);
+  }
+
+  function clearValidationEditorSnapshot(editorEl) {
+    delete editorEl._validationUndoSnapshot;
+    updateValidationRevertLink(editorEl);
+  }
+
+  function updateValidationRevertLink(editorEl) {
+    const link = editorEl.querySelector(".validation-revert-link");
+    const sep = editorEl.querySelector(".validation-revert-sep");
+    const visible = Boolean(editorEl._validationUndoSnapshot);
+    if (link) {
+      link.hidden = !visible;
+    }
+    if (sep) {
+      sep.hidden = !visible;
+    }
+  }
+
+  function revertValidationEditor(editorEl) {
+    const snapshot = editorEl._validationUndoSnapshot;
+    if (!snapshot) return;
+    applyDraftHtmlToEditor(editorEl, snapshot.html, snapshot.subject, {
+      skipSnapshot: true,
+    });
+    clearValidationEditorSnapshot(editorEl);
+    setRegeneratedFromRawFlag(editorEl, false);
+    showEditorActionError(editorEl, "");
+  }
+
+  function getQuillHtml(quill) {
+    return typeof quill.getSemanticHTML === "function"
+      ? quill.getSemanticHTML()
+      : quill.root.innerHTML;
+  }
+
+  function syncSaveButtonAppearance() {
+    document.querySelectorAll(".validation-save-btn").forEach((btn) => {
+      btn.classList.toggle("btn-primary", validationDraftDirty);
+      btn.classList.toggle("btn-secondary", !validationDraftDirty);
+    });
+  }
+
   function captureValidationDraftBaseline(editorEl) {
     const quill = editorEl.querySelector(".validation-quill")?.__quill;
     const subjectEl = editorEl.querySelector(".validation-draft-subject");
@@ -28,6 +83,8 @@
       subject: subjectEl?.value || "",
     };
     validationDraftDirty = false;
+    clearValidationEditorSnapshot(editorEl);
+    syncSaveButtonAppearance();
   }
 
   function updateValidationDraftDirty(editorEl) {
@@ -39,6 +96,49 @@
     validationDraftDirty =
       html !== validationDraftBaseline.html ||
       subject !== validationDraftBaseline.subject;
+    syncSaveButtonAppearance();
+  }
+
+  function showEditorActionError(editorEl, message) {
+    const errorEl = editorEl.querySelector(".validation-editor-action-error");
+    if (!errorEl) return;
+    if (message) {
+      errorEl.textContent = message;
+      errorEl.hidden = false;
+    } else {
+      errorEl.textContent = "";
+      errorEl.hidden = true;
+    }
+  }
+
+  function applyDraftHtmlToEditor(editorEl, draftHtml, draftSubject, options) {
+    const opts = options || {};
+    const quillHost = editorEl.querySelector(".validation-quill");
+    const quill = quillHost?.__quill;
+    if (!quill) return false;
+
+    if (!opts.skipSnapshot) {
+      pushValidationEditorSnapshot(editorEl);
+    }
+
+    quill.setContents([]);
+    if (draftHtml) {
+      quill.clipboard.dangerouslyPasteHTML(draftHtml);
+    }
+    const subjectEl = editorEl.querySelector(".validation-draft-subject");
+    if (subjectEl && typeof draftSubject === "string") {
+      subjectEl.value = draftSubject;
+    }
+    syncValidationDraftToForms();
+    updateValidationDraftDirty(editorEl);
+    return true;
+  }
+
+  function setRegeneratedFromRawFlag(editorEl, value) {
+    const input = editorEl.querySelector(".validation-regenerated-from-raw-input");
+    if (input) {
+      input.value = value ? "1" : "0";
+    }
   }
 
   function initValidationUnsavedGuard() {
@@ -66,26 +166,12 @@
       });
     });
 
-    document
-      .querySelectorAll(".validation-regenerate-form, .validation-reject-blacklist-form")
-      .forEach((form) => {
-        form.addEventListener("submit", () => {
-          validationDraftDirty = false;
-        });
-      });
-
     window.addEventListener("beforeunload", (event) => {
       if (!validationDraftDirty) return;
       event.preventDefault();
       event.returnValue = validationUnsavedMessage;
       return validationUnsavedMessage;
     });
-  }
-
-  function getQuillHtml(quill) {
-    return typeof quill.getSemanticHTML === "function"
-      ? quill.getSemanticHTML()
-      : quill.root.innerHTML;
   }
 
   function syncValidationDraftHtmlToForms() {
@@ -393,17 +479,6 @@
     }
   }
 
-  function initValidationRegenerateConfirm() {
-    document.querySelectorAll(".validation-regenerate-form").forEach((form) => {
-      form.addEventListener("submit", (event) => {
-        const message = form.dataset.confirm || "Continue?";
-        if (!window.confirm(message)) {
-          event.preventDefault();
-        }
-      });
-    });
-  }
-
   function initValidationRejectBlacklistConfirm() {
     document.querySelectorAll(".validation-reject-blacklist-form").forEach((form) => {
       form.addEventListener("submit", (event) => {
@@ -415,45 +490,92 @@
     });
   }
 
+  function setEditorActionLinksDisabled(editorEl, disabled) {
+    editorEl
+      .querySelectorAll(".validation-action-link")
+      .forEach((link) => {
+        link.disabled = disabled;
+      });
+  }
+
+  function initValidationRevert() {
+    document.querySelectorAll(".validation-editor").forEach((editorEl) => {
+      const link = editorEl.querySelector(".validation-revert-link");
+      if (!link) return;
+      link.addEventListener("click", () => {
+        revertValidationEditor(editorEl);
+      });
+      updateValidationRevertLink(editorEl);
+    });
+  }
+
+  function initValidationRegenerate() {
+    document.querySelectorAll(".validation-editor").forEach((editorEl) => {
+      const regenerateUrl = editorEl.dataset.regenerateUrl;
+      const regenerateLink = editorEl.querySelector(".validation-regenerate-link");
+      if (!regenerateUrl || !regenerateLink) return;
+
+      regenerateLink.addEventListener("click", async () => {
+        const confirmMessage =
+          editorEl.dataset.regenerateConfirm ||
+          "This will replace the proposed reply using the full original email. The editor only will be updated — click Save draft to persist. Continue?";
+        if (!window.confirm(confirmMessage)) return;
+
+        showEditorActionError(editorEl, "");
+        const loadingLabel = regenerateLink.textContent;
+        setEditorActionLinksDisabled(editorEl, true);
+        regenerateLink.textContent = "Regenerating…";
+
+        try {
+          const response = await fetch(regenerateUrl, {
+            method: "POST",
+            credentials: "same-origin",
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) {
+            showEditorActionError(editorEl, payload.detail || "Regenerate failed.");
+            return;
+          }
+          if (!applyDraftHtmlToEditor(editorEl, payload.draft_html)) {
+            showEditorActionError(editorEl, "Editor not ready.");
+            return;
+          }
+          setRegeneratedFromRawFlag(editorEl, true);
+        } catch {
+          showEditorActionError(editorEl, "Regenerate failed.");
+        } finally {
+          regenerateLink.textContent = loadingLabel;
+          setEditorActionLinksDisabled(editorEl, false);
+        }
+      });
+    });
+  }
+
   function initValidationTranslate() {
     document.querySelectorAll(".validation-editor").forEach((editorEl) => {
       const translateUrl = editorEl.dataset.translateUrl;
       if (!translateUrl) return;
 
-      const errorEl = editorEl.querySelector(".validation-translate-error");
       const subjectEl = editorEl.querySelector(".validation-draft-subject");
-      const buttons = editorEl.querySelectorAll(".validation-translate-btn");
-      if (!buttons.length) return;
+      const links = editorEl.querySelectorAll(".validation-translate-link");
+      if (!links.length) return;
 
-      const showError = (message) => {
-        if (!errorEl) return;
-        if (message) {
-          errorEl.textContent = message;
-          errorEl.hidden = false;
-        } else {
-          errorEl.textContent = "";
-          errorEl.hidden = true;
-        }
-      };
-
-      buttons.forEach((btn) => {
-        btn.addEventListener("click", async () => {
+      links.forEach((link) => {
+        link.addEventListener("click", async () => {
           const quillHost = editorEl.querySelector(".validation-quill");
           const quill = quillHost?.__quill;
           if (!quill) {
-            showError("Editor not ready.");
+            showEditorActionError(editorEl, "Editor not ready.");
             return;
           }
 
-          const targetLang = btn.dataset.target;
+          const targetLang = link.dataset.target;
           if (targetLang !== "en" && targetLang !== "fr") return;
 
-          showError("");
-          const loadingLabel = btn.textContent;
-          buttons.forEach((b) => {
-            b.disabled = true;
-          });
-          btn.textContent = "Translating…";
+          showEditorActionError(editorEl, "");
+          const loadingLabel = link.textContent;
+          setEditorActionLinksDisabled(editorEl, true);
+          link.textContent = "Translating…";
 
           try {
             const response = await fetch(translateUrl, {
@@ -468,27 +590,23 @@
             });
             const payload = await response.json().catch(() => ({}));
             if (!response.ok) {
-              showError(payload.detail || "Translation failed.");
+              showEditorActionError(editorEl, payload.detail || "Translation failed.");
               return;
             }
-            quill.setContents([]);
-            if (payload.draft_html) {
-              quill.clipboard.dangerouslyPasteHTML(payload.draft_html);
+            if (
+              !applyDraftHtmlToEditor(
+                editorEl,
+                payload.draft_html,
+                payload.draft_subject
+              )
+            ) {
+              showEditorActionError(editorEl, "Editor not ready.");
             }
-            if (subjectEl && typeof payload.draft_subject === "string") {
-              subjectEl.value = payload.draft_subject;
-            }
-            syncValidationDraftToForms();
-            updateValidationDraftDirty(editorEl);
           } catch {
-            showError("Translation failed.");
+            showEditorActionError(editorEl, "Translation failed.");
           } finally {
-            buttons.forEach((b) => {
-              b.disabled = false;
-              if (b === btn) {
-                b.textContent = loadingLabel;
-              }
-            });
+            link.textContent = loadingLabel;
+            setEditorActionLinksDisabled(editorEl, false);
           }
         });
       });
@@ -502,9 +620,10 @@
     initValidationUnsavedGuard();
     initValidationDraftSync();
     initValidationBodyToggle();
-    initValidationRegenerateConfirm();
     initValidationRejectBlacklistConfirm();
+    initValidationRegenerate();
     initValidationTranslate();
+    initValidationRevert();
     if (window.ChatbotMarkdown) {
       window.ChatbotMarkdown.applyMarkdown(page);
     }

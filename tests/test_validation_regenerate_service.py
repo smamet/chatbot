@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -14,7 +13,7 @@ from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPend
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.application.validation_regenerate_service import (
     ValidationRegenerateError,
-    regenerate_pending_reply_from_raw,
+    generate_pending_reply_from_raw,
 )
 from chatbot.config.settings import reset_settings_cache_for_tests
 from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
@@ -93,7 +92,7 @@ def regenerate_env(tmp_path, monkeypatch):
     reset_settings_cache_for_tests()
 
 
-def test_regenerate_swaps_body_in_and_updates_draft(regenerate_env) -> None:
+def test_generate_uses_raw_body_and_does_not_persist(regenerate_env) -> None:
     factory, settings, tenant_id, reply_id = regenerate_env
     raw_body = "<p>Raw HTML inbound</p>"
     captured: dict = {}
@@ -112,23 +111,24 @@ def test_regenerate_swaps_body_in_and_updates_draft(regenerate_env) -> None:
         assert tenant is not None
         reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
         assert reply is not None
-        updated = regenerate_pending_reply_from_raw(
+        result = generate_pending_reply_from_raw(
             session,
             tenant,
             reply,
             settings=settings,
             chat=_FakeChat(),
-            edited_by="op@test.com",
         )
-        assert updated.draft_text == "Regenerated reply"
+        assert "Regenerated reply" in result.draft_text
+        assert result.draft_html
         assert captured["inbound_text"] == raw_body
+        assert reply.draft_text == "Old draft reply"
         conv = SqlAlchemyConversationRepository(session, tenant_id)
         messages = conv.list_messages("email:client@example.com")
-        assert messages[-1].content == "Regenerated reply"
-        assert messages[-2].content == raw_body
+        assert messages[-1].content == "Old draft reply"
+        assert messages[-2].content == "Old sanitized body"
 
 
-def test_regenerate_sends_prior_history_plus_full_raw_body(regenerate_env) -> None:
+def test_generate_sends_prior_history_plus_full_raw_body(regenerate_env) -> None:
     factory, settings, tenant_id, reply_id = regenerate_env
     raw_body = "<html><body><p>Full raw with SKU-9999</p></body></html>"
     captured: dict = {}
@@ -184,13 +184,12 @@ def test_regenerate_sends_prior_history_plus_full_raw_body(regenerate_env) -> No
 
         tenant = SqlAlchemyTenantRepository(session).find_by_id(tenant_id)
         assert tenant is not None
-        regenerate_pending_reply_from_raw(
+        generate_pending_reply_from_raw(
             session,
             tenant,
             reply,
             settings=settings,
             chat=_FakeChat(),
-            edited_by="op@test.com",
         )
 
     assert captured["inbound_text"] == raw_body
@@ -199,7 +198,7 @@ def test_regenerate_sends_prior_history_plus_full_raw_body(regenerate_env) -> No
     assert captured["history"][1].content == "First answer"
 
 
-def test_regenerate_rejects_quote(regenerate_env) -> None:
+def test_generate_rejects_quote(regenerate_env) -> None:
     factory, settings, tenant_id, reply_id = regenerate_env
     with factory() as session:
         from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
@@ -223,11 +222,10 @@ def test_regenerate_rejects_quote(regenerate_env) -> None:
         tenant = SqlAlchemyTenantRepository(session).find_by_id(tenant_id)
         assert tenant is not None
         with pytest.raises(ValidationRegenerateError):
-            regenerate_pending_reply_from_raw(
+            generate_pending_reply_from_raw(
                 session,
                 tenant,
                 quote_reply,
                 settings=settings,
                 chat=MagicMock(),
-                edited_by="op@test.com",
             )

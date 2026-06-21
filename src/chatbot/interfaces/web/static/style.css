@@ -805,7 +805,20 @@ textarea {
 }
 
 .validation-detail-page .validation-detail-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
   margin-bottom: 0;
+}
+
+.validation-detail-meta-sep {
+  color: var(--text-muted, #64748b);
+  user-select: none;
+}
+
+.validation-detail-page .validation-detail-meta .validation-inbox-channel-icon {
+  flex-shrink: 0;
 }
 
 .validation-detail-grid {
@@ -1018,6 +1031,9 @@ textarea {
   white-space: pre-wrap;
   word-break: break-word;
 }
+.validation-bubble-text.msg-body:not(.msg-body--plain) {
+  white-space: normal;
+}
 
 .validation-detail-subject {
   color: inherit;
@@ -1216,25 +1232,66 @@ textarea {
   flex-wrap: wrap;
 }
 
-.validation-regenerate-action {
+.validation-editor-secondary-actions {
   display: inline-flex;
   align-items: center;
   gap: 0.35rem;
   margin-left: auto;
+  flex-wrap: wrap;
 }
 
-.validation-translate-action {
+.validation-editor-action-sep {
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.validation-action-link {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #94a3b8;
+  cursor: pointer;
+  text-decoration: none;
+}
+
+.validation-action-link:hover:not(:disabled) {
+  color: #334155;
+}
+
+.validation-action-link:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+
+.validation-revert-link {
   display: inline-flex;
   align-items: center;
-  gap: 0.35rem;
+  gap: 0.25rem;
+  color: var(--color-accent);
 }
 
-.validation-translate-error {
+.validation-revert-link:hover:not(:disabled) {
+  color: var(--color-accent-hover);
+}
+
+.validation-revert-icon {
+  flex-shrink: 0;
+}
+
+.validation-revert-link[hidden],
+.validation-revert-sep[hidden] {
+  display: none;
+}
+
+.validation-editor-action-error {
   flex-basis: 100%;
   margin: 0;
 }
 
-.validation-translate-error[hidden] {
+.validation-editor-action-error[hidden] {
   display: none;
 }
 

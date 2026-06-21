@@ -27,9 +27,6 @@
   let abortController = null;
   let loading = false;
 
-  const renderMarkdown = (text) =>
-    window.ChatbotMarkdown?.renderMarkdown(text) ?? text;
-
   function identityValues() {
     return {
       email: testEmailInput?.value?.trim() || "",
@@ -180,16 +177,13 @@
     const bubbleBody = document.createElement("div");
     bubbleBody.className = "validation-bubble-body";
 
-    const clean = document.createElement("pre");
+    const useMarkdown = turnData.markdown && role === "assistant";
+    const clean = document.createElement(useMarkdown ? "div" : "pre");
     clean.className = `validation-bubble-text msg-body validation-bubble-clean${
-      role === "user" ? " msg-body--plain" : turnData.markdown ? " js-md" : ""
+      role === "user" ? " msg-body--plain" : useMarkdown ? " js-md" : ""
     }`;
     const cleanText = turnData.content_clean ?? turnData.content ?? "";
-    if (turnData.markdown && role === "assistant") {
-      clean.innerHTML = renderMarkdown(cleanText);
-    } else {
-      clean.textContent = cleanText;
-    }
+    clean.textContent = cleanText;
     bubbleBody.appendChild(clean);
 
     if (turnData.content_raw) {
@@ -237,7 +231,7 @@
     if (typeof window.initMessageBodyToggle === "function") {
       window.initMessageBodyToggle(turn);
     }
-    if (turnData.markdown && role === "assistant" && window.ChatbotMarkdown) {
+    if (useMarkdown && window.ChatbotMarkdown) {
       window.ChatbotMarkdown.applyMarkdown(turn);
     }
     scrollThread();

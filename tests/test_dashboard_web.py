@@ -405,6 +405,7 @@ def test_bot_export_import(dashboard_env) -> None:
             hook_instructions="Export hooks",
             gemini_api_key="export-gemini",
         )
+        tenant_svc.add_blocked_sender(tenant_id, "blocked@export.com")
         session.commit()
 
     r = client.get(f"/dashboard/bots/{slug}/export")
@@ -416,6 +417,8 @@ def test_bot_export_import(dashboard_env) -> None:
         manifest = json.loads(zf.read("manifest.json"))
         assert manifest["source_slug"] == slug
         assert manifest["bot"]["prompt"] == "Export prompt"
+        assert manifest["email_blocked_senders"] == ["blocked@export.com"]
+        assert "email-blacklist.txt" in zf.namelist()
         assert "documents/sample.md" in zf.namelist()
 
     r = client.get("/dashboard/bots/import")
@@ -434,6 +437,7 @@ def test_bot_export_import(dashboard_env) -> None:
     with factory() as session:
         tenants = TenantService(SqlAlchemyTenantRepository(session)).list_tenants()
     imported = next(t for t in tenants if t.name == "Imported Bot")
+    assert imported.config.email_blocked_senders == ("blocked@export.com",)
     imported_docs = data / "docs" / imported.slug
     assert (imported_docs / "sample.md").read_text(encoding="utf-8") == "sample doc"
 
@@ -451,6 +455,7 @@ def test_bot_export_import(dashboard_env) -> None:
         assert saved is not None
         assert saved.name == "Overwritten"
         assert saved.prompt == "Export prompt"
+        assert saved.config.email_blocked_senders == ("blocked@export.com",)
 
 
 def test_client_operator_cannot_export_import(dashboard_env) -> None:
@@ -1211,9 +1216,11 @@ def test_validation_detail_shows_translate_buttons(dashboard_env) -> None:
     _login(client, admin.email, "admin-pass")
     detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
     assert detail.status_code == 200
-    assert "validation-translate-btn" in detail.text
-    assert "Translate to EN" in detail.text
-    assert "Translate to FR" in detail.text
+    assert "validation-translate-link" in detail.text
+    assert "🇬🇧 EN" in detail.text
+    assert "🇫🇷 FR" in detail.text
+    assert "validation-revert-link" in detail.text
+    assert "validation-translate-btn" not in detail.text
 
 
 def test_delete_connector_removes_pending_replies(dashboard_env) -> None:
@@ -3249,17 +3256,92 @@ def test_validation_regenerate_from_raw(dashboard_env) -> None:
     _login(client, admin.email, "admin-pass")
     detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
     assert "Regenerate from raw" in detail.text
+    assert "validation-regenerate-link" in detail.text
+    assert "regenerated_from_raw" in detail.text
     assert "help-tip" in detail.text
-    assert "Show raw" in detail.text
-    assert "/regenerate" in detail.text
+    assert "data-regenerate-url" in detail.text
 
-    r = client.post(f"/dashboard/bots/{slug}/validation/{reply_id}/regenerate", follow_redirects=False)
+    r = client.post(f"/dashboard/bots/{slug}/validation/{reply_id}/regenerate")
+    assert r.status_code == 200
+    payload = r.json()
+    assert payload["ok"] is True
+    assert f"regen:{raw_body}" in payload["draft_text"]
+    assert payload["draft_html"]
+
+    with factory() as session:
+        reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
+        assert reply is not None
+        assert reply.draft_text == "Old draft"
+        timeline = ValidationAuditService(session).list_timeline_for_reply(tenant_id, reply_id)
+        assert not any(e.action == ValidationAuditAction.REGENERATED.value for e in timeline)
+
+
+def test_validation_save_after_regenerate_logs_audit(dashboard_env) -> None:
+    from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from chatbot.application.validation_audit_service import ValidationAuditService
+    from chatbot.domain.models.message import ChatMessage, MessageRole
+    from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    raw_body = "RAW inbound body for save audit"
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        conv = SqlAlchemyConversationRepository(session, tenant_id)
+        session_id = "email:client@example.com"
+        conv.append_message(
+            session_id, ChatMessage(role=MessageRole.USER, content="clean body")
+        )
+        conv.append_message(
+            session_id, ChatMessage(role=MessageRole.ASSISTANT, content="Old draft")
+        )
+        draft = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id).create(
+            imap_uid="102",
+            from_addr="client@example.com",
+            to_addr="bot@test.local",
+            subject="Hi",
+            body_in=raw_body,
+            body_new="clean body",
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id=session_id,
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Old draft",
+            mail_draft_id=draft.id,
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    regen = client.post(f"/dashboard/bots/{slug}/validation/{reply_id}/regenerate")
+    assert regen.status_code == 200
+    draft_html = regen.json()["draft_html"]
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/save",
+        data={
+            "draft_html": draft_html,
+            "draft_subject": "Updated subject",
+            "regenerated_from_raw": "1",
+        },
+        follow_redirects=False,
+    )
     assert r.status_code == 303
 
     with factory() as session:
         reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
         assert reply is not None
-        assert reply.draft_text == f"regen:{raw_body}"
+        assert f"regen:{raw_body}" in (reply.draft_text or "")
         timeline = ValidationAuditService(session).list_timeline_for_reply(tenant_id, reply_id)
         assert any(e.action == ValidationAuditAction.REGENERATED.value for e in timeline)
 
@@ -3327,11 +3409,15 @@ def test_reject_blacklist_adds_sender_and_audits(dashboard_env) -> None:
     from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
     from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
     from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from chatbot.application.tenant_service import TenantService
     from chatbot.application.validation_audit_service import ValidationAuditService
     from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
+        TenantService(SqlAlchemyTenantRepository(session)).update_blocked_senders(
+            tenant_id, ["existing@blocked.com"]
+        )
         connector = SqlAlchemyConnectorRepository(session).create(
             tenant_id=tenant_id,
             direction=ConnectorDirection.OUT,
@@ -3369,7 +3455,10 @@ def test_reject_blacklist_adds_sender_and_audits(dashboard_env) -> None:
     with factory() as session:
         tenant = SqlAlchemyTenantRepository(session).find_by_id(tenant_id)
         assert tenant is not None
-        assert "spammer@evil.com" in tenant.config.email_blocked_senders
+        assert tenant.config.email_blocked_senders == (
+            "existing@blocked.com",
+            "spammer@evil.com",
+        )
         timeline = ValidationAuditService(session).list_timeline_for_reply(tenant_id, reply_id)
         assert any(e.action == ValidationAuditAction.REJECT_BLACKLIST.value for e in timeline)
 

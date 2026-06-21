@@ -6,7 +6,7 @@ import re
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.llm.gemini_client import GeminiLlmClient
-from chatbot.adapters.mail.body_format import sanitize_email_html
+from chatbot.adapters.mail.body_format import normalize_email_draft_html, sanitize_email_html
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.application.usage_metering import metered_llm
 from chatbot.config.settings import Settings
@@ -107,7 +107,7 @@ def translate_pending_reply_draft(
         messages=[ChatMessage(role=MessageRole.USER, content=user_content)],
     )
     parsed = _parse_translate_response(result.text)
-    sanitized_html = sanitize_email_html(parsed["draft_html"])
+    sanitized_html = normalize_email_draft_html(sanitize_email_html(parsed["draft_html"]))
     if not sanitized_html.strip():
         raise ValidationTranslateError("Translation produced empty body")
     out_subject = parsed["draft_subject"] or subject_in

@@ -20,6 +20,8 @@ _EMAIL_WRAPPER = """\
 
 _MARKDOWN_EXTENSIONS = ["extra", "nl2br", "sane_lists"]
 _BULLET_LINE_RE = re.compile(r"^(\s*[-*+]\s+|\s*\d+\.\s+)")
+_SIGNATURE_BULLET_BOLD_RE = re.compile(r"^\s*[-*+]\s+(\*\*.+?\*\*)\s*$")
+_SIGNATURE_BLOCKQUOTE_BOLD_RE = re.compile(r"^\s*>\s+(\*\*.+?\*\*)\s*$")
 
 _EMAIL_HTML_TAGS = [
     "p",
@@ -55,6 +57,18 @@ def _compact_plain_text(text: str) -> str:
     return "\n".join(line for line in lines if line)
 
 
+def normalize_signature_bullet_lines(text: str) -> str:
+    """Drop bullet/blockquote markers from lines that are only a bold span (common in email signatures)."""
+    out: list[str] = []
+    for line in text.split("\n"):
+        match = _SIGNATURE_BULLET_BOLD_RE.match(line) or _SIGNATURE_BLOCKQUOTE_BOLD_RE.match(line)
+        if match:
+            out.append(match.group(1))
+        else:
+            out.append(line)
+    return "\n".join(out)
+
+
 def normalize_markdown_lists(text: str) -> str:
     """Insert a blank line before list blocks when Python-Markdown would miss them."""
     lines = text.split("\n")
@@ -83,6 +97,89 @@ def sanitize_email_html(html: str) -> str:
     return cleaned.strip()
 
 
+def _trim_phrasing_whitespace(html: str) -> str:
+    html = re.sub(r"<(strong|em|b|i)>\s+", r"<\1>", html, flags=re.IGNORECASE)
+    html = re.sub(r"\s+</(strong|em|b|i)>", r"</\1>", html, flags=re.IGNORECASE)
+    html = re.sub(r"<p>\s+", "<p>", html, flags=re.IGNORECASE)
+    html = re.sub(r"\s+</p>", "</p>", html, flags=re.IGNORECASE)
+    return html
+
+
+def _li_bold_only_inner(html: str) -> str | None:
+    inner = html.strip()
+    if not inner:
+        return None
+    without_br = re.sub(r"<br\s*/?>", "", inner, flags=re.IGNORECASE).strip()
+    match = re.fullmatch(
+        r"<(?:strong|b)>(.*?)</(?:strong|b)>",
+        without_br,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _flatten_bold_only_lists(html: str) -> str:
+    def replace_list(match: re.Match[str]) -> str:
+        list_body = match.group(1)
+        li_inners = re.findall(r"<li[^>]*>(.*?)</li>", list_body, flags=re.IGNORECASE | re.DOTALL)
+        if not li_inners:
+            return match.group(0)
+        paragraphs: list[str] = []
+        for li_inner in li_inners:
+            bold_text = _li_bold_only_inner(li_inner)
+            if bold_text is None:
+                return match.group(0)
+            paragraphs.append(f"<p><strong>{bold_text}</strong></p>")
+        return "".join(paragraphs)
+
+    html = re.sub(r"<ul[^>]*>(.*?)</ul>", replace_list, html, flags=re.IGNORECASE | re.DOTALL)
+    return re.sub(r"<ol[^>]*>(.*?)</ol>", replace_list, html, flags=re.IGNORECASE | re.DOTALL)
+
+
+def _unwrap_decorative_blockquotes(html: str) -> str:
+    def replace_blockquote(match: re.Match[str]) -> str:
+        inner = match.group(1).strip()
+        if re.search(r"<(?:ul|ol)\b", inner, flags=re.IGNORECASE):
+            return match.group(0)
+        return inner
+
+    return re.sub(
+        r"<blockquote[^>]*>(.*?)</blockquote>",
+        replace_blockquote,
+        html,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+
+
+def _split_br_separated_paragraphs(html: str) -> str:
+    def split_p(match: re.Match[str]) -> str:
+        inner = match.group(1)
+        parts = re.split(r"<br\s*/?>", inner, flags=re.IGNORECASE)
+        parts = [part.strip() for part in parts if part.strip()]
+        if len(parts) <= 1:
+            return match.group(0)
+        return "".join(f"<p>{part}</p>" for part in parts)
+
+    return re.sub(r"<p>(.*?)</p>", split_p, html, flags=re.IGNORECASE | re.DOTALL)
+
+
+def normalize_email_draft_html(html: str) -> str:
+    """Trim stray whitespace and flatten decorative bold-only bullet lists for WYSIWYG display."""
+    if not html:
+        return ""
+    normalized = _trim_phrasing_whitespace(html)
+    normalized = _flatten_bold_only_lists(normalized)
+    normalized = _unwrap_decorative_blockquotes(normalized)
+    return _split_br_separated_paragraphs(normalized)
+
+
+def prepare_email_draft_html_for_editor(html: str) -> str:
+    """Sanitize and normalize stored HTML (migration/backfill; not used on dashboard load)."""
+    return normalize_email_draft_html(sanitize_email_html(html))
+
+
 def markdown_to_plain(text: str) -> str:
     """Strip markdown syntax for the text/plain email part."""
     return format_for_messenger(text)
@@ -90,7 +187,8 @@ def markdown_to_plain(text: str) -> str:
 
 def markdown_to_html_fragment(text: str) -> str:
     """Render markdown to an HTML fragment (no email wrapper)."""
-    normalized = normalize_markdown_lists(text)
+    normalized = normalize_signature_bullet_lines(text)
+    normalized = normalize_markdown_lists(normalized)
     return markdown.markdown(
         normalized,
         extensions=_MARKDOWN_EXTENSIONS,
@@ -166,4 +264,6 @@ def format_email_bodies(
 
 def email_draft_html_from_markdown(text: str) -> str:
     """Build sanitized HTML for validation WYSIWYG from LLM markdown."""
-    return sanitize_email_html(markdown_to_html_fragment(text))
+    html = markdown_to_html_fragment(text)
+    cleaned = sanitize_email_html(html)
+    return normalize_email_draft_html(cleaned)

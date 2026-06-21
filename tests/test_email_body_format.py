@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 from chatbot.adapters.mail.body_format import (
+    email_draft_html_from_markdown,
     format_email_bodies,
     html_to_plain,
     markdown_to_html,
     markdown_to_html_fragment,
     markdown_to_plain,
+    normalize_email_draft_html,
     normalize_markdown_lists,
+    normalize_signature_bullet_lines,
 )
 
 
@@ -69,3 +72,109 @@ def test_html_to_plain_compacts_nested_block_gaps() -> None:
     plain = html_to_plain(html)
     assert plain == "Line one\nLine two"
     assert "\n\n\n" not in plain
+
+
+def test_normalize_signature_bullet_lines_strips_decorative_bullets() -> None:
+    src = "Name\n\n* **Sales Executive**\n- **VDtec Distributors Ltd**"
+    normalized = normalize_signature_bullet_lines(src)
+    assert "**Sales Executive**" in normalized.splitlines()
+    assert "* **Sales Executive**" not in normalized
+    assert "- **VDtec Distributors Ltd**" not in normalized
+
+
+def test_email_draft_flattens_signature_bullet_markdown() -> None:
+    src = """Catherine Halftermeyer
+
+* **Sales Executive**
+* **VDtec Distributors Ltd**
+Office 101, Ebene Junction"""
+    html = email_draft_html_from_markdown(src)
+    assert "<ul>" not in html
+    assert "<strong>Sales Executive</strong>" in html
+    assert "<strong>VDtec Distributors Ltd</strong>" in html
+    assert "Office 101" in html
+
+
+def test_email_draft_preserves_quote_list_with_text_after_bold() -> None:
+    src = "* **SF 300 Clockers:** 22 units x 8,500 Rs"
+    html = email_draft_html_from_markdown(src)
+    assert "<ul>" in html
+    assert "<li>" in html
+    assert "22 units" in html
+
+
+def test_normalize_email_draft_html_trims_strong_whitespace() -> None:
+    html = normalize_email_draft_html("<p><strong> VDtec Distributors Ltd</strong></p>")
+    assert html == "<p><strong>VDtec Distributors Ltd</strong></p>"
+
+
+def test_normalize_email_draft_html_flattens_bold_only_ul() -> None:
+    html = normalize_email_draft_html(
+        "<ul><li><strong>Sales Executive</strong></li>"
+        "<li><strong>VDtec Distributors Ltd</strong></li></ul>"
+    )
+    assert "<ul>" not in html
+    assert "<p><strong>Sales Executive</strong></p>" in html
+    assert "<p><strong>VDtec Distributors Ltd</strong></p>" in html
+
+
+def test_normalize_email_draft_html_flattens_bold_only_ol() -> None:
+    html = normalize_email_draft_html(
+        "<ol><li><strong>Sales Executive</strong></li>"
+        "<li><strong>VDtec Distributors Ltd</strong></li></ol>"
+    )
+    assert "<ol>" not in html
+    assert "<p><strong>Sales Executive</strong></p>" in html
+
+
+def test_normalize_email_draft_html_unwraps_decorative_blockquote() -> None:
+    html = normalize_email_draft_html(
+        "<p>Name</p><blockquote><p><strong>Sales Executive</strong><br>"
+        "<strong>VDtec Distributors Ltd</strong></p></blockquote>"
+    )
+    assert "<blockquote>" not in html
+    assert "<strong>Sales Executive</strong>" in html
+
+
+def test_email_draft_flattens_blockquote_signature_markdown() -> None:
+    src = """Catherine Halftermeyer
+
+> **Sales Executive**
+> **VDtec Distributors Ltd**
+Office 101"""
+    html = email_draft_html_from_markdown(src)
+    assert "<blockquote>" not in html
+    assert "<strong>Sales Executive</strong>" in html
+
+
+def test_email_draft_flattens_numbered_bold_signature_markdown() -> None:
+    src = """Catherine Halftermeyer
+
+1. **Sales Executive**
+2. **VDtec Distributors Ltd**"""
+    html = email_draft_html_from_markdown(src)
+    assert "<ol>" not in html
+    assert "<p><strong>Sales Executive</strong></p>" in html
+
+
+def test_normalize_email_draft_html_splits_br_separated_signature_block() -> None:
+    html = normalize_email_draft_html(
+        "<p>Catherine Halftermeyer</p>"
+        "<p><strong>Sales Executive</strong><br>"
+        "<strong>VDtec Distributors Ltd</strong><br>"
+        "Office 101, Ebene Junction</p>"
+    )
+    assert "<p><strong>Sales Executive</strong></p>" in html
+    assert "<p><strong>VDtec Distributors Ltd</strong></p>" in html
+    assert "<p>Office 101, Ebene Junction</p>" in html
+    assert "<br>" not in html
+
+
+def test_prepare_email_draft_html_for_editor_normalizes_stored_ul() -> None:
+    from chatbot.adapters.mail.body_format import prepare_email_draft_html_for_editor
+
+    html = prepare_email_draft_html_for_editor(
+        "<ul><li><strong>Sales Executive</strong></li></ul>"
+    )
+    assert "<ul>" not in html
+    assert "<strong>Sales Executive</strong>" in html

@@ -7,7 +7,7 @@ from html.parser import HTMLParser
 from markdownify import markdownify as html_to_markdown
 from sqlalchemy.orm import Session
 
-from chatbot.adapters.mail.body_format import sanitize_email_html
+from chatbot.adapters.mail.body_format import normalize_email_draft_html, sanitize_email_html
 from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
 from chatbot.adapters.persistence.pending_reply_edit_repository import (
     SqlAlchemyPendingReplyEditRepository,
@@ -94,7 +94,7 @@ def save_pending_reply_draft(
     if reply.status != PendingReplyStatus.PENDING:
         raise DraftEditError("Reply is not pending")
 
-    sanitized = sanitize_email_html(draft_html)
+    sanitized = normalize_email_draft_html(sanitize_email_html(draft_html))
     before_html = reply.draft_html or ""
     subject_changed = False
     sanitized_subject: str | None = None

@@ -10,7 +10,11 @@
     </div>
     {% endif %}
     <div class="validation-bubble-body">
-      <pre class="validation-bubble-text msg-body{% if role == 'user' %} msg-body--plain{% elif markdown %} js-md{% endif %} validation-bubble-clean">{{ content_clean }}</pre>
+      {% if markdown and role != 'user' %}
+      <div class="validation-bubble-text msg-body js-md validation-bubble-clean">{{ content_clean }}</div>
+      {% else %}
+      <pre class="validation-bubble-text msg-body{% if role == 'user' %} msg-body--plain{% endif %} validation-bubble-clean">{{ content_clean }}</pre>
+      {% endif %}
       {% if content_raw %}
       <pre class="validation-bubble-text msg-body msg-body--plain validation-bubble-raw" hidden>{{ content_raw }}</pre>
       {% endif %}
