@@ -14,6 +14,74 @@
   const validationActionFormsSelector =
     ".validation-save-form, form[action*='/validation/'][action*='/approve'], form[action*='/validation/'][action*='/reject']:not(.validation-reject-blacklist-form)";
 
+  const validationUnsavedMessage =
+    "Vous avez des modifications non enregistrées dans le brouillon. Quitter cette page sans enregistrer ?";
+
+  let validationDraftDirty = false;
+  let validationDraftBaseline = { html: "", subject: "" };
+
+  function captureValidationDraftBaseline(editorEl) {
+    const quill = editorEl.querySelector(".validation-quill")?.__quill;
+    const subjectEl = editorEl.querySelector(".validation-draft-subject");
+    validationDraftBaseline = {
+      html: quill ? getQuillHtml(quill) : "",
+      subject: subjectEl?.value || "",
+    };
+    validationDraftDirty = false;
+  }
+
+  function updateValidationDraftDirty(editorEl) {
+    const quill = editorEl.querySelector(".validation-quill")?.__quill;
+    const subjectEl = editorEl.querySelector(".validation-draft-subject");
+    if (!quill) return;
+    const html = getQuillHtml(quill);
+    const subject = subjectEl?.value || "";
+    validationDraftDirty =
+      html !== validationDraftBaseline.html ||
+      subject !== validationDraftBaseline.subject;
+  }
+
+  function initValidationUnsavedGuard() {
+    const editorEl = document.querySelector(".validation-editor");
+    if (!editorEl) return;
+
+    const quill = editorEl.querySelector(".validation-quill")?.__quill;
+    if (!quill) return;
+
+    captureValidationDraftBaseline(editorEl);
+
+    quill.on("text-change", () => {
+      updateValidationDraftDirty(editorEl);
+    });
+
+    const subjectEl = editorEl.querySelector(".validation-draft-subject");
+    subjectEl?.addEventListener("input", () => {
+      updateValidationDraftDirty(editorEl);
+    });
+
+    document.querySelectorAll(validationActionFormsSelector).forEach((form) => {
+      form.addEventListener("submit", () => {
+        syncValidationDraftToForms();
+        captureValidationDraftBaseline(editorEl);
+      });
+    });
+
+    document
+      .querySelectorAll(".validation-regenerate-form, .validation-reject-blacklist-form")
+      .forEach((form) => {
+        form.addEventListener("submit", () => {
+          validationDraftDirty = false;
+        });
+      });
+
+    window.addEventListener("beforeunload", (event) => {
+      if (!validationDraftDirty) return;
+      event.preventDefault();
+      event.returnValue = validationUnsavedMessage;
+      return validationUnsavedMessage;
+    });
+  }
+
   function getQuillHtml(quill) {
     return typeof quill.getSemanticHTML === "function"
       ? quill.getSemanticHTML()
@@ -347,14 +415,96 @@
     });
   }
 
+  function initValidationTranslate() {
+    document.querySelectorAll(".validation-editor").forEach((editorEl) => {
+      const translateUrl = editorEl.dataset.translateUrl;
+      if (!translateUrl) return;
+
+      const errorEl = editorEl.querySelector(".validation-translate-error");
+      const subjectEl = editorEl.querySelector(".validation-draft-subject");
+      const buttons = editorEl.querySelectorAll(".validation-translate-btn");
+      if (!buttons.length) return;
+
+      const showError = (message) => {
+        if (!errorEl) return;
+        if (message) {
+          errorEl.textContent = message;
+          errorEl.hidden = false;
+        } else {
+          errorEl.textContent = "";
+          errorEl.hidden = true;
+        }
+      };
+
+      buttons.forEach((btn) => {
+        btn.addEventListener("click", async () => {
+          const quillHost = editorEl.querySelector(".validation-quill");
+          const quill = quillHost?.__quill;
+          if (!quill) {
+            showError("Editor not ready.");
+            return;
+          }
+
+          const targetLang = btn.dataset.target;
+          if (targetLang !== "en" && targetLang !== "fr") return;
+
+          showError("");
+          const loadingLabel = btn.textContent;
+          buttons.forEach((b) => {
+            b.disabled = true;
+          });
+          btn.textContent = "Translating…";
+
+          try {
+            const response = await fetch(translateUrl, {
+              method: "POST",
+              credentials: "same-origin",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                target_lang: targetLang,
+                draft_html: getQuillHtml(quill),
+                draft_subject: subjectEl?.value || "",
+              }),
+            });
+            const payload = await response.json().catch(() => ({}));
+            if (!response.ok) {
+              showError(payload.detail || "Translation failed.");
+              return;
+            }
+            quill.setContents([]);
+            if (payload.draft_html) {
+              quill.clipboard.dangerouslyPasteHTML(payload.draft_html);
+            }
+            if (subjectEl && typeof payload.draft_subject === "string") {
+              subjectEl.value = payload.draft_subject;
+            }
+            syncValidationDraftToForms();
+            updateValidationDraftDirty(editorEl);
+          } catch {
+            showError("Translation failed.");
+          } finally {
+            buttons.forEach((b) => {
+              b.disabled = false;
+              if (b === btn) {
+                b.textContent = loadingLabel;
+              }
+            });
+          }
+        });
+      });
+    });
+  }
+
   function initDetailPage() {
     const page = document.querySelector(".validation-detail-page");
     if (!page) return;
     initQuillEditors();
+    initValidationUnsavedGuard();
     initValidationDraftSync();
     initValidationBodyToggle();
     initValidationRegenerateConfirm();
     initValidationRejectBlacklistConfirm();
+    initValidationTranslate();
     if (window.ChatbotMarkdown) {
       window.ChatbotMarkdown.applyMarkdown(page);
     }

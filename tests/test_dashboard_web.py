@@ -691,6 +691,17 @@ def test_validation_activity_shows_scroll_hint(dashboard_env) -> None:
     assert "25 most recent events" in r.text
 
 
+def test_validation_pending_hides_mailpit_hint_without_dev_mode(dashboard_env, monkeypatch) -> None:
+    client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    monkeypatch.setenv("DEV_MODE", "false")
+    reset_settings_cache_for_tests()
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=validation")
+    assert r.status_code == 200
+    assert "Open Mailpit" not in r.text
+    assert "sent via Mailpit in dev" not in r.text
+
+
 @patch("chatbot.interfaces.api.routers.dashboard_web.inject_test_email")
 def test_email_test_send_ok(mock_inject, dashboard_env, monkeypatch) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
@@ -1080,6 +1091,131 @@ def test_validation_save_draft_updates_html_and_message(dashboard_env) -> None:
         assert len(edits) == 1
 
 
+@patch("chatbot.interfaces.api.routers.dashboard_web.translate_pending_reply_draft")
+def test_validation_translate_returns_json(mock_translate, dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    mock_translate.return_value = {
+        "draft_html": "<p>Hello</p>",
+        "draft_subject": "Re: Test",
+    }
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Bonjour",
+            draft_html="<p>Bonjour</p>",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/translate",
+        json={
+            "target_lang": "en",
+            "draft_html": "<p>Bonjour</p>",
+            "draft_subject": "Objet",
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["draft_html"] == "<p>Hello</p>"
+    assert body["draft_subject"] == "Re: Test"
+    mock_translate.assert_called_once()
+
+
+def test_validation_translate_rejects_quote(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:quote@example.com",
+            channel="email",
+            recipient_id="quote@example.com",
+            draft_text="Quote",
+            fulfillment_kind=FulfillmentKind.ERPNEXT_QUOTE,
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/translate",
+        json={"target_lang": "en", "draft_html": "<p>Quote</p>", "draft_subject": ""},
+    )
+    assert r.status_code == 400
+
+
+def test_validation_translate_requires_login(dashboard_env) -> None:
+    client, _admin, _, slug, _tenant_id, _data, _factory = dashboard_env
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/1/translate",
+        json={"target_lang": "en", "draft_html": "<p>Hi</p>", "draft_subject": ""},
+    )
+    assert r.status_code in (401, 403, 302)
+
+
+def test_validation_detail_shows_translate_buttons(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Body",
+            draft_html="<p>Body</p>",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    _login(client, admin.email, "admin-pass")
+    detail = client.get(f"/dashboard/bots/{slug}/validation/{reply_id}")
+    assert detail.status_code == 200
+    assert "validation-translate-btn" in detail.text
+    assert "Translate to EN" in detail.text
+    assert "Translate to FR" in detail.text
+
+
 def test_delete_connector_removes_pending_replies(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     with factory() as session:
@@ -1126,6 +1262,35 @@ def test_delete_connector_removes_pending_replies(dashboard_env) -> None:
         )
 
         assert SqlAlchemyPendingReplyRepository(session).list_pending(tenant_id) == []
+
+
+def test_outbound_email_connector_defaults_to_validation_mode(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "email",
+            "direction": "out",
+            "active": "on",
+            "outbound_provider": "smtp",
+            "from_addr": "bot@example.com",
+            "smtp_host": "smtp.example.com",
+            "smtp_port": "587",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with factory() as session:
+        from chatbot.application.connector_service import ConnectorService
+
+        conn = ConnectorService(SqlAlchemyConnectorRepository(session)).find(
+            tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+        )
+        assert conn is not None
+        assert conn.mode == ConnectorMode.VALIDATION
 
 
 def test_email_in_connector_sets_process_since_on_save(dashboard_env) -> None:

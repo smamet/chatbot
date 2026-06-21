@@ -115,7 +115,8 @@
     </div>
     {% endif %}
     {% if reply.channel == 'email' and can_validate %}
-    <div class="validation-editor">
+    <div class="validation-editor"
+         data-translate-url="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/translate">
       <label class="validation-subject-label" for="validation-draft-subject-{{ reply.id }}">Subject</label>
       <input type="text"
              id="validation-draft-subject-{{ reply.id }}"
@@ -137,8 +138,14 @@
           </form>
           {{ help_tip("Sometimes details are lost when the email is cleaned for the bot (see Show raw above). Use this to draft a new reply from the full original message instead of the shortened version.") }}
         </div>
+        <div class="validation-translate-action">
+          <button type="button" class="btn-secondary btn-sm validation-translate-btn" data-target="en">Translate to EN</button>
+          <button type="button" class="btn-secondary btn-sm validation-translate-btn" data-target="fr">Translate to FR</button>
+          {{ help_tip("Updates the draft in the editor only. Click Save draft to persist.") }}
+        </div>
         {% endif %}
       </div>
+      <p class="validation-translate-error validation-error" hidden></p>
     </div>
     {% else %}
     <div class="validation-message-body msg-body js-md">{{ reply.draft_text }}</div>

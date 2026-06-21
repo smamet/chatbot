@@ -59,6 +59,10 @@ from chatbot.application.validation_regenerate_service import (
     ValidationRegenerateError,
     regenerate_pending_reply_from_raw,
 )
+from chatbot.application.validation_translate_service import (
+    ValidationTranslateError,
+    translate_pending_reply_draft,
+)
 from chatbot.application.customer_access_gate import build_channel_session_id, resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
 from chatbot.application.erpnext_catalog_sync_service import (
@@ -333,7 +337,7 @@ async def _connector_config_from_request(
         cmode = (
             ConnectorMode.DIRECT
             if cdir == ConnectorDirection.IN
-            else ConnectorMode(str(form.get("mode", "direct")))
+            else ConnectorMode(str(form.get("mode", "validation")))
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid connector") from exc
@@ -1006,6 +1010,12 @@ class EmailTestPollOut(BaseModel):
     ok: bool
     processed_mails: int
     message: str
+
+
+class ValidationTranslateIn(BaseModel):
+    target_lang: str
+    draft_html: str
+    draft_subject: str = ""
 
 
 @router.get("/bots", response_class=HTMLResponse)
@@ -3491,6 +3501,40 @@ async def save_validation_draft(
         request.session["validation_error"] = str(exc)
     session.commit()
     return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
+
+
+@router.post("/bots/{slug}/validation/{reply_id}/translate")
+async def translate_validation_draft(
+    slug: str,
+    reply_id: int,
+    body: ValidationTranslateIn,
+    user: User = Depends(require_validator),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    pending_repo = SqlAlchemyPendingReplyRepository(session)
+    reply = pending_repo.find_by_id(reply_id)
+    if reply is None or reply.tenant_id != tenant.id:
+        raise HTTPException(status_code=404)
+    if reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE:
+        raise HTTPException(status_code=400, detail="Translation is not available for quote replies")
+    try:
+        translated = translate_pending_reply_draft(
+            reply,
+            draft_html=body.draft_html,
+            draft_subject=body.draft_subject,
+            target_lang=body.target_lang,
+            tenant=tenant,
+            settings=settings,
+            session=session,
+        )
+    except ValidationTranslateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return JSONResponse({"ok": True, **translated})
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/refresh-pdf")

@@ -1223,6 +1223,21 @@ textarea {
   margin-left: auto;
 }
 
+.validation-translate-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.validation-translate-error {
+  flex-basis: 100%;
+  margin: 0;
+}
+
+.validation-translate-error[hidden] {
+  display: none;
+}
+
 .validation-save-form {
   margin: 0;
 }
