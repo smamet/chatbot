@@ -99,8 +99,9 @@ Clears messages, `hook_events`, validation queue (`pending_replies` + edits + au
 
 ### Monitoring (API usage, disk, estimated cost)
 
-- **Global (admin):** `/dashboard/monitoring` — platform token chart (30 days), disk charts (sum of tenants + host), per-bot table with internal + client billable columns.
-- **Per-bot:** `?tab=monitoring` (`can_edit` required). Token in/out totals, daily charts (Chart.js), live disk breakdown, daily usage table with est. cost. Admins also see internal estimate + Google pricing link + **Client billing rates** form (`POST /dashboard/bots/{slug}/monitoring/client-billing`).
+- **Global (admin):** `/dashboard/monitoring` — platform token chart, disk charts (sum of tenants + host), per-bot table with internal + client billable columns.
+- **Per-bot:** `?tab=monitoring` (`can_edit` required). Token in/out totals, daily charts (Chart.js), live disk breakdown, paginated daily usage detail table with est. cost. Admins also see internal estimate + Google pricing link + **Client billing rates** form (`POST /dashboard/bots/{slug}/monitoring/client-billing`).
+- **Date range:** optional `usage_from` / `usage_to` query params (UTC `YYYY-MM-DD`, both required when set; max 366 days). Default last 30 days; **Last 30 days** button clears params. Filter drives summary, charts, costs, and detail table on both global and per-bot pages. Detail table pagination: `usage_page` (50 rows/page). Live disk scan is not filtered.
 - **Metering:** `MeteredLlmClient` / `MeteredEmbedder` at Gemini choke points; `recorder=None` for CLI paths that should not bill. Recorder errors are swallowed so chat/sync never fails on usage DB issues.
 - **Tables:** `api_usage_daily` (per tenant/date/operation/model); `disk_usage_daily` (`tenant_id` NULL = host snapshot).
 - **Disk snapshots:** `DiskSnapshotService.record_all_if_due()` in `worker_catalog.run_once()` after catalog sync — runs even when no ERPNext tenants; idempotent upsert for today (UTC). Env `DISK_SNAPSHOT_ENABLED` (default on). Restart `worker-catalog` after deploy.

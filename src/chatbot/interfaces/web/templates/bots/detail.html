@@ -3,6 +3,7 @@
 {% from "macros/markdown_scripts.html" import markdown_scripts %}
 {% from "macros/channel_icon.html" import channel_icon %}
 {% from "macros/message_bubble.html" import message_bubble %}
+{% from "macros/monitoring_filter.html" import monitoring_filter, monitoring_pagination %}
 {% block body %}
 <div class="page-header">
   <h1>{{ tenant.name }}</h1>
@@ -1694,8 +1695,12 @@
 </div>
 
 {% elif tab == 'monitoring' %}
+<div class="card monitoring-filter-card">
+  {{ monitoring_filter(usage_from, usage_to, monitoring_query_string, 'monitoring', '?tab=monitoring') }}
+</div>
+
 <div class="card" style="margin-bottom:1rem">
-  <h2 class="card-title">API usage (last {{ usage_days }} days)</h2>
+  <h2 class="card-title">API usage ({{ usage_from }} → {{ usage_to }})</h2>
   <p>
     <strong class="tabular-nums">{{ format_count(usage_summary.total_tokens) }}</strong> total tokens
     (<span class="tabular-nums">{{ format_count(usage_summary.prompt_tokens) }}</span> in /
@@ -1749,6 +1754,11 @@
   <h2 class="card-title">Client billing rates ($/M tokens)</h2>
   <p class="monitoring-disclaimer">Client admins see costs calculated with these rates only. Leave blank to use platform defaults (in {{ client_billing_defaults.input }} / out {{ client_billing_defaults.output }}).</p>
   <form method="post" action="/dashboard/bots/{{ tenant.slug }}/monitoring/client-billing">
+    <input type="hidden" name="usage_from" value="{{ usage_from.isoformat() }}">
+    <input type="hidden" name="usage_to" value="{{ usage_to.isoformat() }}">
+    {% if usage_page > 1 %}
+    <input type="hidden" name="usage_page" value="{{ usage_page }}">
+    {% endif %}
     <div class="form-inline-settings">
       <label>Input $/M<input type="text" name="client_billing_input" value="{{ tenant.client_billing_input_per_million_usd or '' }}" placeholder="{{ client_billing_defaults.input }}"></label>
       <label>Output $/M<input type="text" name="client_billing_output" value="{{ tenant.client_billing_output_per_million_usd or '' }}" placeholder="{{ client_billing_defaults.output }}"></label>
@@ -1762,6 +1772,7 @@
 
 <div class="card">
   <h2 class="card-title">Daily API usage</h2>
+  <p class="text-muted monitoring-table-hint">One row per date, operation, and model.</p>
   <div class="table-wrap">
     <table class="data-table">
       <thead>
@@ -1785,6 +1796,7 @@
       </tbody>
     </table>
   </div>
+  {{ monitoring_pagination(usage_from, usage_to, usage_page, usage_page_count, usage_row_total, usage_row_start, usage_row_end, monitoring_query_string, 'monitoring') }}
 </div>
 
 <script

@@ -52,18 +52,22 @@ class SqlAlchemyApiUsageRepository:
         row.total_tokens += total_tokens
         row.call_count += call_count
 
-    def tenant_summary_since(self, tenant_id: int, since: date) -> ApiUsageSummary:
-        row = self._session.execute(
-            select(
-                func.coalesce(func.sum(ApiUsageDailyRow.prompt_tokens), 0),
-                func.coalesce(func.sum(ApiUsageDailyRow.output_tokens), 0),
-                func.coalesce(func.sum(ApiUsageDailyRow.total_tokens), 0),
-                func.coalesce(func.sum(ApiUsageDailyRow.call_count), 0),
-            ).where(
-                ApiUsageDailyRow.tenant_id == tenant_id,
-                ApiUsageDailyRow.usage_date >= since,
-            )
-        ).one()
+    def tenant_summary_since(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date | None = None,
+    ) -> ApiUsageSummary:
+        query = select(
+            func.coalesce(func.sum(ApiUsageDailyRow.prompt_tokens), 0),
+            func.coalesce(func.sum(ApiUsageDailyRow.output_tokens), 0),
+            func.coalesce(func.sum(ApiUsageDailyRow.total_tokens), 0),
+            func.coalesce(func.sum(ApiUsageDailyRow.call_count), 0),
+        ).where(
+            ApiUsageDailyRow.tenant_id == tenant_id,
+            *_usage_date_filters(since, until),
+        )
+        row = self._session.execute(query).one()
         return ApiUsageSummary(
             prompt_tokens=int(row[0]),
             output_tokens=int(row[1]),
@@ -71,21 +75,67 @@ class SqlAlchemyApiUsageRepository:
             call_count=int(row[3]),
         )
 
-    def tenant_daily_since(self, tenant_id: int, since: date) -> list[ApiUsageDayEntry]:
+    def tenant_daily_since(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date | None = None,
+    ) -> list[ApiUsageDayEntry]:
         rows = self._session.scalars(
             select(ApiUsageDailyRow)
             .where(
                 ApiUsageDailyRow.tenant_id == tenant_id,
-                ApiUsageDailyRow.usage_date >= since,
+                *_usage_date_filters(since, until),
             )
             .order_by(ApiUsageDailyRow.usage_date.desc(), ApiUsageDailyRow.operation)
         ).all()
         return [_row_to_entry(r) for r in rows]
 
-    def all_tenant_daily_since(self, since: date) -> dict[int, list[ApiUsageDayEntry]]:
+    def tenant_daily_page(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date,
+        *,
+        offset: int,
+        limit: int,
+    ) -> list[ApiUsageDayEntry]:
         rows = self._session.scalars(
             select(ApiUsageDailyRow)
-            .where(ApiUsageDailyRow.usage_date >= since)
+            .where(
+                ApiUsageDailyRow.tenant_id == tenant_id,
+                *_usage_date_filters(since, until),
+            )
+            .order_by(ApiUsageDailyRow.usage_date.desc(), ApiUsageDailyRow.operation)
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return [_row_to_entry(r) for r in rows]
+
+    def tenant_daily_count(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date,
+    ) -> int:
+        row = self._session.scalar(
+            select(func.count())
+            .select_from(ApiUsageDailyRow)
+            .where(
+                ApiUsageDailyRow.tenant_id == tenant_id,
+                *_usage_date_filters(since, until),
+            )
+        )
+        return int(row or 0)
+
+    def all_tenant_daily_since(
+        self,
+        since: date,
+        until: date | None = None,
+    ) -> dict[int, list[ApiUsageDayEntry]]:
+        rows = self._session.scalars(
+            select(ApiUsageDailyRow)
+            .where(*_usage_date_filters(since, until))
             .order_by(
                 ApiUsageDailyRow.tenant_id,
                 ApiUsageDailyRow.usage_date.desc(),
@@ -97,7 +147,11 @@ class SqlAlchemyApiUsageRepository:
             by_tenant.setdefault(int(row.tenant_id), []).append(_row_to_entry(row))
         return by_tenant
 
-    def all_tenant_summaries_since(self, since: date) -> dict[int, ApiUsageSummary]:
+    def all_tenant_summaries_since(
+        self,
+        since: date,
+        until: date | None = None,
+    ) -> dict[int, ApiUsageSummary]:
         rows = self._session.execute(
             select(
                 ApiUsageDailyRow.tenant_id,
@@ -106,7 +160,7 @@ class SqlAlchemyApiUsageRepository:
                 func.coalesce(func.sum(ApiUsageDailyRow.total_tokens), 0),
                 func.coalesce(func.sum(ApiUsageDailyRow.call_count), 0),
             )
-            .where(ApiUsageDailyRow.usage_date >= since)
+            .where(*_usage_date_filters(since, until))
             .group_by(ApiUsageDailyRow.tenant_id)
         ).all()
         return {
@@ -119,7 +173,12 @@ class SqlAlchemyApiUsageRepository:
             for tenant_id, prompt, output, total, calls in rows
         }
 
-    def tenant_token_series_since(self, tenant_id: int, since: date) -> list[TokenDayPoint]:
+    def tenant_token_series_since(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date | None = None,
+    ) -> list[TokenDayPoint]:
         rows = self._session.execute(
             select(
                 ApiUsageDailyRow.usage_date,
@@ -128,7 +187,7 @@ class SqlAlchemyApiUsageRepository:
             )
             .where(
                 ApiUsageDailyRow.tenant_id == tenant_id,
-                ApiUsageDailyRow.usage_date >= since,
+                *_usage_date_filters(since, until),
             )
             .group_by(ApiUsageDailyRow.usage_date)
             .order_by(ApiUsageDailyRow.usage_date)
@@ -142,14 +201,18 @@ class SqlAlchemyApiUsageRepository:
             for row in rows
         ]
 
-    def platform_token_series_since(self, since: date) -> list[TokenDayPoint]:
+    def platform_token_series_since(
+        self,
+        since: date,
+        until: date | None = None,
+    ) -> list[TokenDayPoint]:
         rows = self._session.execute(
             select(
                 ApiUsageDailyRow.usage_date,
                 func.coalesce(func.sum(ApiUsageDailyRow.prompt_tokens), 0),
                 func.coalesce(func.sum(ApiUsageDailyRow.output_tokens), 0),
             )
-            .where(ApiUsageDailyRow.usage_date >= since)
+            .where(*_usage_date_filters(since, until))
             .group_by(ApiUsageDailyRow.usage_date)
             .order_by(ApiUsageDailyRow.usage_date)
         ).all()
@@ -161,6 +224,13 @@ class SqlAlchemyApiUsageRepository:
             )
             for row in rows
         ]
+
+
+def _usage_date_filters(since: date, until: date | None) -> tuple:
+    filters = [ApiUsageDailyRow.usage_date >= since]
+    if until is not None:
+        filters.append(ApiUsageDailyRow.usage_date <= until)
+    return tuple(filters)
 
 
 def _row_to_entry(row: ApiUsageDailyRow) -> ApiUsageDayEntry:

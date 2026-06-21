@@ -75,6 +75,10 @@ from chatbot.application.erpnext_catalog_sync_service import (
 from chatbot.application.quote_test_service import create_erpnext_quotation_for_test
 from chatbot.application.hook_prompt_composer import compose_hook_instructions
 from chatbot.application.monitoring_dashboard_service import MonitoringDashboardService
+from chatbot.application.monitoring_date_range import (
+    monitoring_query_string,
+    parse_monitoring_range,
+)
 from chatbot.application.monitoring_format import format_count, format_usd
 from chatbot.application.disk_usage_service import DiskUsageService, format_bytes
 from chatbot.application.draft_edit_service import DraftEditError, save_pending_reply_draft
@@ -1655,12 +1659,22 @@ def bot_detail(
         if not user_service.can_edit(user):
             raise HTTPException(status_code=403)
         is_admin = user.role == UserRole.ADMIN
+        monitoring_range = parse_monitoring_range(request.query_params)
         mon = MonitoringDashboardService(session, settings)
-        ctx.update(mon.bot_context(tenant, days=30, is_admin=is_admin))
+        ctx.update(
+            mon.bot_context(
+                tenant,
+                since=monitoring_range.since,
+                until=monitoring_range.until,
+                is_admin=is_admin,
+                usage_page=monitoring_range.usage_page,
+            )
+        )
         ctx["format_bytes"] = format_bytes
         ctx["format_count"] = format_count
         ctx["format_usd"] = format_usd
         ctx["is_admin"] = is_admin
+        ctx["monitoring_query_string"] = monitoring_query_string
         ctx["client_billing_defaults"] = {
             "input": settings.client_billing_input_per_million_usd,
             "output": settings.client_billing_output_per_million_usd,
@@ -1681,6 +1695,9 @@ def bot_save_client_billing(
     slug: str,
     client_billing_input: str = Form(""),
     client_billing_output: str = Form(""),
+    usage_from: str = Form(""),
+    usage_to: str = Form(""),
+    usage_page: str = Form(""),
     user: User = Depends(require_admin),
     tenant_service: TenantService = Depends(get_tenant_service),
     session: Session = Depends(get_session),
@@ -1708,7 +1725,16 @@ def bot_save_client_billing(
         output_per_million_usd=_parse_rate(client_billing_output),
     )
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=monitoring", status_code=303)
+    query_parts = ["tab=monitoring"]
+    if usage_from.strip() and usage_to.strip():
+        query_parts.append(f"usage_from={usage_from.strip()}")
+        query_parts.append(f"usage_to={usage_to.strip()}")
+    if usage_page.strip().isdigit() and int(usage_page.strip()) > 1:
+        query_parts.append(f"usage_page={int(usage_page.strip())}")
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}?{'&'.join(query_parts)}",
+        status_code=303,
+    )
 
 
 @router.post("/bots/{slug}/settings")
@@ -4347,10 +4373,14 @@ def monitoring_global(
 ):
     if user.role != UserRole.ADMIN:
         raise HTTPException(status_code=403)
-    usage_days = 30
+    monitoring_range = parse_monitoring_range(request.query_params)
     tenants = tenant_service.list_tenants()
     mon = MonitoringDashboardService(session, settings)
-    payload = mon.global_context(tenants, days=usage_days)
+    payload = mon.global_context(
+        tenants,
+        since=monitoring_range.since,
+        until=monitoring_range.until,
+    )
     return templates.TemplateResponse(
         request,
         "monitoring/list.html",
@@ -4358,7 +4388,9 @@ def monitoring_global(
             "user": user,
             "rows": payload["rows"],
             "host_disk": payload["host_disk"],
-            "usage_days": usage_days,
+            "usage_days": payload["usage_days"],
+            "usage_from": payload["usage_from"],
+            "usage_to": payload["usage_to"],
             "format_bytes": format_bytes,
             "format_count": format_count,
             "format_usd": format_usd,
@@ -4367,6 +4399,7 @@ def monitoring_global(
             "disk_host_chart_json": payload["disk_host_chart_json"],
             "disk_pie_chart_json": payload["disk_pie_chart_json"],
             "platform_internal_cost_usd": payload["platform_internal_cost_usd"],
+            "monitoring_query_string": monitoring_query_string,
             "title": "Monitoring",
         },
     )

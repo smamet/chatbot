@@ -3298,6 +3298,133 @@ def test_non_admin_cannot_open_global_monitoring(dashboard_env) -> None:
     assert r.status_code == 403
 
 
+def _seed_api_usage_rows(factory, tenant_id: int, rows: list[tuple]) -> None:
+    from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
+
+    with factory() as session:
+        repo = SqlAlchemyApiUsageRepository(session)
+        for usage_date, operation, model, prompt_tokens in rows:
+            repo.increment(
+                tenant_id=tenant_id,
+                usage_date=usage_date,
+                operation=operation,
+                model=model,
+                prompt_tokens=prompt_tokens,
+                output_tokens=0,
+                total_tokens=prompt_tokens,
+            )
+        session.commit()
+
+
+def test_bot_monitoring_shows_date_filter_and_defaults(dashboard_env) -> None:
+    client, admin, _, slug, *_ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=monitoring")
+    assert r.status_code == 200
+    assert 'name="usage_from"' in r.text
+    assert 'name="usage_to"' in r.text
+    assert "Last 30 days" in r.text
+    assert "monitoring-filter" in r.text
+
+
+def test_bot_monitoring_date_filter_limits_summary(dashboard_env) -> None:
+    from datetime import date
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    _seed_api_usage_rows(
+        factory,
+        tenant_id,
+        [
+            (date(2026, 1, 1), "chat", "gemini-2.5-flash", 100),
+            (date(2026, 1, 2), "chat", "gemini-2.5-flash", 999),
+        ],
+    )
+    _login(client, admin.email, "admin-pass")
+    r = client.get(
+        f"/dashboard/bots/{slug}?tab=monitoring&usage_from=2026-01-01&usage_to=2026-01-01"
+    )
+    assert r.status_code == 200
+    assert "2026-01-01 → 2026-01-01" in r.text
+    assert "100" in r.text
+    assert "999" not in r.text
+
+
+def test_bot_monitoring_rejects_invalid_date_range(dashboard_env) -> None:
+    client, admin, _, slug, *_ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.get(
+        f"/dashboard/bots/{slug}?tab=monitoring&usage_from=2026-01-10&usage_to=2026-01-01"
+    )
+    assert r.status_code == 422
+
+
+def test_bot_monitoring_paginates_daily_usage_table(dashboard_env) -> None:
+    from datetime import date
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    rows = [
+        (date(2026, 1, 1), f"op{i}", "gemini-2.5-flash", i + 1)
+        for i in range(51)
+    ]
+    _seed_api_usage_rows(factory, tenant_id, rows)
+    _login(client, admin.email, "admin-pass")
+    r = client.get(
+        f"/dashboard/bots/{slug}?tab=monitoring&usage_from=2026-01-01&usage_to=2026-01-01"
+    )
+    assert r.status_code == 200
+    assert "Showing 1–50 of 51 rows" in r.text
+    assert "Page 1 / 2" in r.text
+    assert "usage_page=2" in r.text
+    r2 = client.get(
+        f"/dashboard/bots/{slug}?tab=monitoring&usage_from=2026-01-01&usage_to=2026-01-01&usage_page=2"
+    )
+    assert r2.status_code == 200
+    assert "Showing 51–51 of 51 rows" in r2.text
+    assert "Previous" in r2.text
+
+
+def test_global_monitoring_date_filter(dashboard_env) -> None:
+    from datetime import date
+
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    _seed_api_usage_rows(
+        factory,
+        tenant_id,
+        [
+            (date(2026, 2, 1), "chat", "gemini-2.5-flash", 42),
+            (date(2026, 2, 2), "chat", "gemini-2.5-flash", 9000),
+        ],
+    )
+    _login(client, admin.email, "admin-pass")
+    r = client.get("/dashboard/monitoring?usage_from=2026-02-01&usage_to=2026-02-01")
+    assert r.status_code == 200
+    assert "2026-02-01 → 2026-02-01" in r.text
+    assert "42" in r.text
+    assert "9,000" not in r.text and "9000" not in r.text
+
+
+def test_client_billing_redirect_preserves_monitoring_filter(dashboard_env) -> None:
+    client, admin, _, slug, *_ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/monitoring/client-billing",
+        data={
+            "client_billing_input": "1.25",
+            "client_billing_output": "2.50",
+            "usage_from": "2026-03-01",
+            "usage_to": "2026-03-07",
+            "usage_page": "2",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    loc = r.headers["location"]
+    assert "tab=monitoring" in loc
+    assert "usage_from=2026-03-01" in loc
+    assert "usage_to=2026-03-07" in loc
+    assert "usage_page=2" in loc
+
+
 def test_validation_inbox_shows_thread_resolution_badge(dashboard_env) -> None:
     from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
     from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository

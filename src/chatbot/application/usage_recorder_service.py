@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
 from chatbot.domain.contracts.llm_client import LlmUsage
@@ -45,20 +45,62 @@ class UsageRecorderService:
                 model,
             )
 
-    def tenant_summary_since(self, tenant_id: int, since) -> ApiUsageSummary:
-        return self._repo.tenant_summary_since(tenant_id, since)
+    def tenant_summary_since(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date | None = None,
+    ) -> ApiUsageSummary:
+        return self._repo.tenant_summary_since(tenant_id, since, until)
 
-    def tenant_daily_since(self, tenant_id: int, since) -> list[ApiUsageDayEntry]:
-        return self._repo.tenant_daily_since(tenant_id, since)
+    def tenant_daily_since(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date | None = None,
+    ) -> list[ApiUsageDayEntry]:
+        return self._repo.tenant_daily_since(tenant_id, since, until)
 
-    def all_tenant_summaries_since(self, since) -> dict[int, ApiUsageSummary]:
-        return self._repo.all_tenant_summaries_since(since)
+    def tenant_daily_page(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date,
+        *,
+        offset: int,
+        limit: int,
+    ) -> list[ApiUsageDayEntry]:
+        return self._repo.tenant_daily_page(tenant_id, since, until, offset=offset, limit=limit)
 
-    def all_tenant_daily_since(self, since) -> dict[int, list[ApiUsageDayEntry]]:
-        return self._repo.all_tenant_daily_since(since)
+    def tenant_daily_count(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date,
+    ) -> int:
+        return self._repo.tenant_daily_count(tenant_id, since, until)
 
-    def tenant_token_series_since(self, tenant_id: int, since):
-        return self._repo.tenant_token_series_since(tenant_id, since)
+    def all_tenant_summaries_since(
+        self,
+        since: date,
+        until: date | None = None,
+    ) -> dict[int, ApiUsageSummary]:
+        return self._repo.all_tenant_summaries_since(since, until)
 
-    def platform_token_series_since(self, since):
-        return self._repo.platform_token_series_since(since)
+    def all_tenant_daily_since(
+        self,
+        since: date,
+        until: date | None = None,
+    ) -> dict[int, list[ApiUsageDayEntry]]:
+        return self._repo.all_tenant_daily_since(since, until)
+
+    def tenant_token_series_since(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date | None = None,
+    ):
+        return self._repo.tenant_token_series_since(tenant_id, since, until)
+
+    def platform_token_series_since(self, since: date, until: date | None = None):
+        return self._repo.platform_token_series_since(since, until)

@@ -1,20 +1,25 @@
 {% extends "base.html" %}
+{% from "macros/monitoring_filter.html" import monitoring_filter %}
 {% block body %}
 <div class="page-header">
   <h1>Monitoring</h1>
-  <p class="subtitle">API usage and disk usage across all bots (last {{ usage_days }} days)</p>
+  <p class="subtitle">API usage and disk usage across all bots ({{ usage_from }} → {{ usage_to }})</p>
+</div>
+
+<div class="card monitoring-filter-card">
+  {{ monitoring_filter(usage_from, usage_to, monitoring_query_string, '', '/dashboard/monitoring') }}
 </div>
 
 <div class="card" style="margin-bottom:1rem">
   <h2 class="card-title">Platform estimated cost (internal)</h2>
-  <p><strong>{{ format_usd(platform_internal_cost_usd) }}</strong> last {{ usage_days }} days</p>
+  <p><strong>{{ format_usd(platform_internal_cost_usd) }}</strong> for {{ usage_from }} → {{ usage_to }}</p>
   <p class="monitoring-disclaimer">Internal estimate from Google list prices. Not an invoice.</p>
 </div>
 
 <div class="monitoring-charts monitoring-charts--quad">
   <div class="card monitoring-chart-card">
     <h2 class="card-title">Daily tokens</h2>
-    <p class="monitoring-chart-subtitle">All bots — last {{ usage_days }} days</p>
+    <p class="monitoring-chart-subtitle">All bots — {{ usage_from }} → {{ usage_to }}</p>
     <div class="monitoring-chart-wrap"><canvas id="platform-token-chart"></canvas></div>
   </div>
   <div class="card monitoring-chart-card">
@@ -63,7 +68,7 @@
       <td class="tabular-nums">{{ format_usd(row.internal_cost.total_usd) }}</td>
       <td class="tabular-nums">{{ format_usd(row.client_cost.total_usd) }}</td>
       <td class="tabular-nums">{{ format_count(row.usage.call_count) }}</td>
-      <td><a href="/dashboard/bots/{{ row.tenant.slug }}?tab=monitoring">Details</a></td>
+      <td><a href="/dashboard/bots/{{ row.tenant.slug }}?{{ monitoring_query_string(since=usage_from, until=usage_to, tab='monitoring') }}">Details</a></td>
     </tr>
     {% else %}
     <tr><td colspan="9" class="empty-state">No bots</td></tr>

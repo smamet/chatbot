@@ -45,12 +45,17 @@ class SqlAlchemyDiskUsageRepository:
             return
         row.total_bytes = total_bytes
 
-    def tenant_series_since(self, tenant_id: int, since: date) -> list[DiskDayPoint]:
+    def tenant_series_since(
+        self,
+        tenant_id: int,
+        since: date,
+        until: date | None = None,
+    ) -> list[DiskDayPoint]:
         rows = self._session.scalars(
             select(DiskUsageDailyRow)
             .where(
                 DiskUsageDailyRow.tenant_id == tenant_id,
-                DiskUsageDailyRow.snapshot_date >= since,
+                *_snapshot_date_filters(since, until),
             )
             .order_by(DiskUsageDailyRow.snapshot_date)
         ).all()
@@ -59,7 +64,11 @@ class SqlAlchemyDiskUsageRepository:
             for row in rows
         ]
 
-    def platform_tenant_sum_series_since(self, since: date) -> list[DiskDayPoint]:
+    def platform_tenant_sum_series_since(
+        self,
+        since: date,
+        until: date | None = None,
+    ) -> list[DiskDayPoint]:
         rows = self._session.execute(
             select(
                 DiskUsageDailyRow.snapshot_date,
@@ -67,7 +76,7 @@ class SqlAlchemyDiskUsageRepository:
             )
             .where(
                 DiskUsageDailyRow.tenant_id.is_not(None),
-                DiskUsageDailyRow.snapshot_date >= since,
+                *_snapshot_date_filters(since, until),
             )
             .group_by(DiskUsageDailyRow.snapshot_date)
             .order_by(DiskUsageDailyRow.snapshot_date)
@@ -77,12 +86,16 @@ class SqlAlchemyDiskUsageRepository:
             for row in rows
         ]
 
-    def host_series_since(self, since: date) -> list[DiskDayPoint]:
+    def host_series_since(
+        self,
+        since: date,
+        until: date | None = None,
+    ) -> list[DiskDayPoint]:
         rows = self._session.scalars(
             select(DiskUsageDailyRow)
             .where(
                 DiskUsageDailyRow.tenant_id.is_(None),
-                DiskUsageDailyRow.snapshot_date >= since,
+                *_snapshot_date_filters(since, until),
             )
             .order_by(DiskUsageDailyRow.snapshot_date)
         ).all()
@@ -90,6 +103,13 @@ class SqlAlchemyDiskUsageRepository:
             DiskDayPoint(snapshot_date=row.snapshot_date, total_bytes=int(row.total_bytes))
             for row in rows
         ]
+
+
+def _snapshot_date_filters(since: date, until: date | None) -> tuple:
+    filters = [DiskUsageDailyRow.snapshot_date >= since]
+    if until is not None:
+        filters.append(DiskUsageDailyRow.snapshot_date <= until)
+    return tuple(filters)
 
 
 def today_utc() -> date:
