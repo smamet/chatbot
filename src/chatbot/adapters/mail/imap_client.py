@@ -11,6 +11,7 @@ from email.header import decode_header
 from typing import Callable, Iterator
 
 from chatbot.adapters.mail.xoauth2 import build_xoauth2_string
+from chatbot.application.email_body_sanitize import normalize_inbound_body_text
 
 
 class ImapError(RuntimeError):
@@ -100,7 +101,9 @@ def _body_text_from_message(msg: email.message.Message) -> str:
                 payload = part.get_payload(decode=True)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
-                    return payload.decode(charset, errors="replace").strip()
+                    return normalize_inbound_body_text(
+                        payload.decode(charset, errors="replace")
+                    )
         for part in msg.walk():
             if part.get_content_maintype() == "multipart":
                 continue
@@ -108,14 +111,15 @@ def _body_text_from_message(msg: email.message.Message) -> str:
                 payload = part.get_payload(decode=True)
                 if payload:
                     charset = part.get_content_charset() or "utf-8"
-                    text = payload.decode(charset, errors="replace")
-                    return re.sub(r"<[^>]+>", " ", text).strip()
+                    return normalize_inbound_body_text(
+                        payload.decode(charset, errors="replace")
+                    )
         return ""
     payload = msg.get_payload(decode=True)
     if not payload:
         return ""
     charset = msg.get_content_charset() or "utf-8"
-    return payload.decode(charset, errors="replace").strip()
+    return normalize_inbound_body_text(payload.decode(charset, errors="replace"))
 
 
 def _imap_use_ssl(config: dict) -> bool:

@@ -59,3 +59,13 @@ def test_html_to_plain_converts_lists() -> None:
     plain = html_to_plain("<p>Hi</p><ul><li>Alpha</li><li>Beta</li></ul>")
     assert "Alpha" in plain
     assert "Beta" in plain
+
+
+def test_html_to_plain_compacts_nested_block_gaps() -> None:
+    html = (
+        "<html><body><div><div><p>Line one</p></div>"
+        "<div><p>Line two</p></div></div></body></html>"
+    )
+    plain = html_to_plain(html)
+    assert plain == "Line one\nLine two"
+    assert "\n\n\n" not in plain

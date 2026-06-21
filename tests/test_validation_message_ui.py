@@ -41,3 +41,11 @@ def test_bubble_shows_sanitize_meta_when_clean_differs_from_raw() -> None:
     assert bubble.content_raw == "raw with extra"
     assert bubble.token_raw is not None
     assert bubble.reduction_pct is not None
+
+
+def test_bubble_from_content_converts_html_legacy_message() -> None:
+    html = "<html><body><p>Legacy quarantine text</p></body></html>"
+    bubble = bubble_from_content(role=MessageRole.USER, content=html)
+    assert bubble.content_clean == "Legacy quarantine text"
+    assert bubble.content_raw == html
+    assert bubble.token_raw is not None

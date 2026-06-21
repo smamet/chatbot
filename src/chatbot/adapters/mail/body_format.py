@@ -49,6 +49,12 @@ _EMAIL_HTML_ATTRS = {
 _CSS_SANITIZER = CSSSanitizer(allowed_css_properties=["color", "background-color"])
 
 
+def _compact_plain_text(text: str) -> str:
+    """Drop whitespace-only lines left over from HTML block/tag conversion."""
+    lines = [line.strip() for line in (text or "").splitlines()]
+    return "\n".join(line for line in lines if line)
+
+
 def normalize_markdown_lists(text: str) -> str:
     """Insert a blank line before list blocks when Python-Markdown would miss them."""
     lines = text.split("\n")
@@ -102,11 +108,17 @@ class _HtmlPlainTextParser(HTMLParser):
         super().__init__()
         self._parts: list[str] = []
         self._list_depth = 0
+        self._skip_depth = 0
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        if tag in {"p", "div", "h1", "h2", "h3", "h4", "blockquote"}:
-            if self._parts and not self._parts[-1].endswith("\n\n"):
-                self._parts.append("\n\n")
+        if tag in {"style", "script"}:
+            self._skip_depth += 1
+            return
+        if self._skip_depth:
+            return
+        if tag in {"p", "div", "h1", "h2", "h3", "h4", "blockquote", "tr"}:
+            if self._parts and not self._parts[-1].endswith("\n"):
+                self._parts.append("\n")
         elif tag == "br":
             self._parts.append("\n")
         elif tag == "li":
@@ -114,6 +126,11 @@ class _HtmlPlainTextParser(HTMLParser):
             self._list_depth += 1
 
     def handle_endtag(self, tag: str) -> None:
+        if tag in {"style", "script"}:
+            self._skip_depth = max(0, self._skip_depth - 1)
+            return
+        if self._skip_depth:
+            return
         if tag == "li":
             self._list_depth = max(0, self._list_depth - 1)
             self._parts.append("\n")
@@ -121,10 +138,12 @@ class _HtmlPlainTextParser(HTMLParser):
             self._parts.append("\n")
 
     def handle_data(self, data: str) -> None:
+        if self._skip_depth:
+            return
         self._parts.append(data)
 
     def get_text(self) -> str:
-        return "".join(self._parts).strip()
+        return _compact_plain_text("".join(self._parts))
 
 
 def html_to_plain(html: str) -> str:

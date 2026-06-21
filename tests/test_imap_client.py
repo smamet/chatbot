@@ -172,6 +172,23 @@ def test_decode_header_and_address() -> None:
     assert _body_text_from_message(email.message_from_string(msg.as_string())) == "Hello world"
 
 
+def test_body_text_from_message_plain_part_with_html_source() -> None:
+    msg = email.message_from_string(
+        "Content-Type: text/plain; charset=utf-8\n\n"
+        "<html><head><style>p{color:red}</style></head>"
+        "<body><p>Quarantine notice</p></body></html>"
+    )
+    assert _body_text_from_message(msg) == "Quarantine notice"
+
+
+def test_body_text_from_message_single_part_html() -> None:
+    msg = email.message_from_string(
+        "Content-Type: text/html; charset=utf-8\n\n"
+        "<html><body><p>Payment reminder</p></body></html>"
+    )
+    assert _body_text_from_message(msg) == "Payment reminder"
+
+
 @patch.object(ImapMailClient, "connect")
 @patch.object(ImapMailClient, "close")
 def test_imap_client_fetch_unseen(mock_close, mock_connect) -> None:

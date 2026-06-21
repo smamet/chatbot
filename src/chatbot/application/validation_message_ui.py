@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from chatbot.application.email_body_sanitize import prepare_email_body_new
+from chatbot.application.email_body_sanitize import looks_like_html, prepare_email_body_new
 from chatbot.application.email_text_tokens import estimate_text_tokens, reduction_percent
 from chatbot.domain.models.mail_draft import MailDraft
 from chatbot.domain.models.message import MessageRole
@@ -21,9 +21,11 @@ class ValidationMessageBubble:
 
 
 def clean_body_for_display(body_in: str, body_new: str = "") -> str:
+    if (body_in or "").strip():
+        return prepare_email_body_new(body_in)
     if (body_new or "").strip():
-        return body_new.strip()
-    return prepare_email_body_new(body_in)
+        return prepare_email_body_new(body_new)
+    return ""
 
 
 def _sanitize_meta(
@@ -67,8 +69,13 @@ def bubble_from_content(
     created_at: datetime | None = None,
     content_raw: str | None = None,
 ) -> ValidationMessageBubble:
-    content_clean = (content or "").strip()
-    content_raw, token_raw, reduction_pct = _sanitize_meta(content_raw, content_clean)
+    source = (content_raw or content or "").strip()
+    if looks_like_html(source):
+        content_clean = prepare_email_body_new(source)
+        content_raw, token_raw, reduction_pct = _sanitize_meta(source, content_clean)
+    else:
+        content_clean = (content or "").strip()
+        content_raw, token_raw, reduction_pct = _sanitize_meta(content_raw, content_clean)
     token_new = estimate_text_tokens(content_clean)
     return ValidationMessageBubble(
         role=role,
