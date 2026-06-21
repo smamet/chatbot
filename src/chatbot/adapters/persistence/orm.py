@@ -410,6 +410,9 @@ class TestChatSessionRow(Base):
     tenant_id: Mapped[int] = mapped_column(ForeignKey("tenants.id"), index=True)
     session_id: Mapped[str] = mapped_column(String(512))
     label: Mapped[str] = mapped_column(String(256))
+    created_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     last_quote_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
@@ -419,6 +422,7 @@ class TestChatSessionRow(Base):
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
     )
+    created_by_user: Mapped["UserRow | None"] = relationship()
 
 
 class ApiUsageDailyRow(Base):

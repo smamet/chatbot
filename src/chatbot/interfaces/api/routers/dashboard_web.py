@@ -800,20 +800,102 @@ def _parse_test_session_id(raw: str) -> str | None:
     return session_id
 
 
+_CLIENT_ADMIN_TEST_COOKIE_MAX_AGE = 60 * 60 * 24 * 365
+
+
+def _client_admin_test_session_cookie_name(slug: str) -> str:
+    return f"chatbot_test_anon_{slug}"
+
+
+def _client_admin_test_session_cookie_path(slug: str) -> str:
+    return f"/dashboard/bots/{slug}"
+
+
+def _resolve_client_admin_test_session(
+    request: Request,
+    slug: str,
+    *,
+    query_session: str = "",
+) -> tuple[str, str | None]:
+    cookie_name = _client_admin_test_session_cookie_name(slug)
+    stored = request.cookies.get(cookie_name, "").strip()
+    session_id = stored if stored.startswith("test:") else ""
+    parsed = _parse_test_session_id(query_session)
+    if parsed:
+        session_id = parsed
+    if not session_id:
+        session_id = f"test:{uuid.uuid4()}"
+    cookie_to_set = session_id if stored != session_id else None
+    return session_id, cookie_to_set
+
+
+def _apply_test_chat_cookie(response, slug: str, cookie_value: str | None) -> None:
+    path = _client_admin_test_session_cookie_path(slug)
+    if cookie_value:
+        response.set_cookie(
+            _client_admin_test_session_cookie_name(slug),
+            cookie_value,
+            httponly=True,
+            samesite="lax",
+            max_age=_CLIENT_ADMIN_TEST_COOKIE_MAX_AGE,
+            path=path,
+        )
+
+
+def _clear_client_admin_test_session_cookie(response, slug: str) -> None:
+    response.delete_cookie(
+        _client_admin_test_session_cookie_name(slug),
+        path=_client_admin_test_session_cookie_path(slug),
+    )
+
+
+def _enforce_test_chat_params_for_user(
+    user: User,
+    user_service: UserService,
+    request: Request,
+    slug: str,
+    *,
+    test_email: str,
+    test_phone: str,
+    test_session: str,
+    channel: str = "",
+) -> tuple[str, str, str, str]:
+    if user_service.can_use_full_test_chat(user):
+        return test_email, test_phone, test_session, channel
+    if test_email.strip() or test_phone.strip() or channel.strip():
+        raise HTTPException(
+            status_code=403,
+            detail="Anonymous test chat only (admin required for email/phone/channel)",
+        )
+    if test_session.strip() and not test_session.strip().startswith("test:"):
+        raise HTTPException(status_code=403, detail="Anonymous test chat only")
+    session_id, _ = _resolve_client_admin_test_session(
+        request,
+        slug,
+        query_session=test_session,
+    )
+    return "", "", session_id, ""
+
+
 def _is_trackable_test_session(session_id: str) -> bool:
     return session_id.startswith(("email:", "whatsapp:", "test:"))
 
 
-def _list_test_chat_sidebar_sessions(session: Session, tenant_id: int, *, limit: int = 50) -> list[str]:
-    """Dashboard test chats resumable from the chat tab (excludes legacy dashboard:*)."""
-    repo = SqlAlchemyConversationRepository(session, tenant_id)
-    ids = repo.list_session_ids(limit=limit * 3)
-    resumable = [
-        sid
-        for sid in ids
-        if sid.startswith(("test:", "email:", "whatsapp:"))
-    ]
-    return resumable[:limit]
+def _list_test_chat_sidebar_sessions(
+    session: Session, tenant_id: int, *, limit: int = 50
+) -> list[dict[str, str | None]]:
+    """Sessions registered via dashboard Test chat (see test_chat_sessions)."""
+    repo = TestChatSessionRepository(session, tenant_id)
+    items: list[dict[str, str | None]] = []
+    for row in repo.list_recent(limit=limit):
+        user = row.created_by_user
+        items.append(
+            {
+                "session_id": row.session_id,
+                "user_email": user.email if user is not None else None,
+            }
+        )
+    return items
 
 
 def _dashboard_chat_session_id(
@@ -1377,6 +1459,7 @@ def bot_detail(
         "connector_schemas": connector_schemas_for_template(),
         "connector_schemas_json": json.dumps(connector_schemas_for_template()),
         "connector_configs_json": json.dumps(_connector_configs_for_client(connectors)),
+        "process_since_default": format_for_datetime_local(process_since_now_iso()),
         "mail_connections": mail_connections,
         "mail_connections_json": json.dumps(
             [
@@ -1449,10 +1532,29 @@ def bot_detail(
             )
     elif tab == "chat":
         repo = SqlAlchemyConversationRepository(session, tenant.id)
-        require_identity = ctx["has_customer_integration"]
-        test_email = request.query_params.get("test_email", "").strip()
-        test_phone = request.query_params.get("test_phone", "").strip()
-        test_session = request.query_params.get("test_session", "").strip()
+        chat_full_test = user_service.can_use_full_test_chat(user)
+        ctx["chat_full_test"] = chat_full_test
+        if not chat_full_test:
+            q_email = request.query_params.get("test_email", "").strip()
+            q_phone = request.query_params.get("test_phone", "").strip()
+            q_session = request.query_params.get("test_session", "").strip()
+            if q_email or q_phone or (q_session and not q_session.startswith("test:")):
+                return RedirectResponse(
+                    url=f"/dashboard/bots/{slug}?tab=chat",
+                    status_code=303,
+                )
+            test_email = ""
+            test_phone = ""
+            test_session, cookie_to_set = _resolve_client_admin_test_session(
+                request, slug, query_session=q_session
+            )
+            if cookie_to_set:
+                ctx["_chat_set_cookie"] = cookie_to_set
+        else:
+            test_email = request.query_params.get("test_email", "").strip()
+            test_phone = request.query_params.get("test_phone", "").strip()
+            test_session = request.query_params.get("test_session", "").strip()
+        require_identity = ctx["has_customer_integration"] and chat_full_test
         test_sid = _dashboard_chat_session_id(
             user,
             test_email=test_email,
@@ -1461,6 +1563,7 @@ def bot_detail(
             require_identity=False,
         )
         ctx["chat_active_sid"] = test_sid
+        ctx["chat_can_clear"] = bool(test_sid and test_sid.startswith("test:"))
         ctx["chat_session_id"] = test_sid or "(new anonymous session)"
         ctx["chat_test_email"] = test_email
         ctx["chat_test_phone"] = test_phone
@@ -1479,7 +1582,12 @@ def bot_detail(
             ]
         )
         session_repo = TestChatSessionRepository(session, tenant.id)
-        ctx["test_chat_sidebar_sessions"] = _list_test_chat_sidebar_sessions(session, tenant.id)
+        if chat_full_test:
+            ctx["test_chat_sidebar_sessions"] = _list_test_chat_sidebar_sessions(
+                session, tenant.id
+            )
+        else:
+            ctx["test_chat_sidebar_sessions"] = []
         chat_quote_pdf: dict[str, str] | None = None
         session_row = session_repo.find(test_sid)
         if session_row and session_row.last_quote_name:
@@ -1498,7 +1606,7 @@ def bot_detail(
             for c in connectors
             if c.direction == ConnectorDirection.OUT and c.active
         ]
-        ctx["show_chat_channel_selector"] = bool(ctx["chat_outbound_connectors"])
+        ctx["show_chat_channel_selector"] = chat_full_test and bool(ctx["chat_outbound_connectors"])
     elif tab == "validation":
         vsub = request.query_params.get("vsub", "pending").strip() or "pending"
         if vsub not in ("pending", "approved", "rejected", "blacklist"):
@@ -1557,7 +1665,15 @@ def bot_detail(
             "input": settings.client_billing_input_per_million_usd,
             "output": settings.client_billing_output_per_million_usd,
         }
-    return templates.TemplateResponse(request, "bots/detail.html", ctx)
+    return _bot_detail_response(request, slug, ctx)
+
+
+def _bot_detail_response(request: Request, slug: str, ctx: dict):
+    cookie_value = ctx.pop("_chat_set_cookie", None)
+    response = templates.TemplateResponse(request, "bots/detail.html", ctx)
+    if cookie_value:
+        _apply_test_chat_cookie(response, slug, cookie_value)
+    return response
 
 
 @router.post("/bots/{slug}/monitoring/client-billing")
@@ -3856,6 +3972,15 @@ def bot_chat_test_reset(
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     reject_validation_only(user, user_service)
+    test_email, test_phone, test_session, _ = _enforce_test_chat_params_for_user(
+        user,
+        user_service,
+        request,
+        slug,
+        test_email=test_email,
+        test_phone=test_phone,
+        test_session=test_session,
+    )
     repo = SqlAlchemyConversationRepository(session, tenant.id)
     session_id = _dashboard_chat_session_id(
         user,
@@ -3866,6 +3991,11 @@ def bot_chat_test_reset(
     )
     if not session_id:
         raise HTTPException(status_code=400, detail="Missing test session")
+    if not session_id.startswith("test:"):
+        raise HTTPException(
+            status_code=403,
+            detail="Only anonymous test sessions can be cleared here",
+        )
     repo.clear_session(session_id)
     session_repo = TestChatSessionRepository(session, tenant.id)
     row = session_repo.find(session_id)
@@ -3878,18 +4008,25 @@ def bot_chat_test_reset(
                 pass
     session_repo.clear_quote(session_id)
     session.commit()
-    params = []
-    if test_email.strip():
-        params.append(f"test_email={test_email.strip()}")
-    if test_phone.strip():
-        params.append(f"test_phone={test_phone.strip()}")
-    query = f"?tab=chat{'&' + '&'.join(params) if params else ''}"
-    return RedirectResponse(url=f"/dashboard/bots/{slug}{query}", status_code=303)
+    if user_service.can_use_full_test_chat(user):
+        params = []
+        if test_email.strip():
+            params.append(f"test_email={test_email.strip()}")
+        if test_phone.strip():
+            params.append(f"test_phone={test_phone.strip()}")
+        query = f"?tab=chat{'&' + '&'.join(params) if params else ''}"
+    else:
+        query = "?tab=chat"
+    response = RedirectResponse(url=f"/dashboard/bots/{slug}{query}", status_code=303)
+    if not user_service.can_use_full_test_chat(user):
+        _clear_client_admin_test_session_cookie(response, slug)
+    return response
 
 
 @router.post("/bots/{slug}/chat-test/send", response_model=ChatTestSendOut)
 def bot_chat_test_send(
     request: Request,
+    response: Response,
     slug: str,
     message: str = Form(...),
     test_email: str = Form(""),
@@ -3907,6 +4044,16 @@ def bot_chat_test_send(
     reject_validation_only(user, user_service)
     if not message.strip():
         raise HTTPException(status_code=400, detail="Message is empty")
+    test_email, test_phone, test_session, channel = _enforce_test_chat_params_for_user(
+        user,
+        user_service,
+        request,
+        slug,
+        test_email=test_email,
+        test_phone=test_phone,
+        test_session=test_session,
+        channel=channel,
+    )
     try:
         session_id, result = _run_dashboard_chat(
             request,
@@ -3929,7 +4076,9 @@ def bot_chat_test_send(
         pdf_filename: str | None = None
         pdf_warning: str | None = None
         if _is_trackable_test_session(session_id):
-            TestChatSessionRepository(session, tenant.id).upsert(session_id)
+            TestChatSessionRepository(session, tenant.id).upsert(
+                session_id, created_by_user_id=user.id
+            )
         if _is_simulated_chat_channel(channel):
             status_message, queued, pending_reply_id, validation_url = (
                 _apply_simulated_channel_outbound(
@@ -3985,6 +4134,7 @@ def bot_chat_test_send(
                                 TestChatSessionRepository(session, tenant.id).upsert(
                                     session_id,
                                     last_quote_name=quote_name,
+                                    created_by_user_id=user.id,
                                 )
                         except QuoteFulfillmentError as exc:
                             status_message = str(exc)
@@ -4038,6 +4188,13 @@ def bot_chat_test_send(
             assistant_message = _chat_message_ui_dict(
                 recent[0], session=session, tenant_id=tenant.id, session_id=session_id
             )
+        if (
+            not user_service.can_use_full_test_chat(user)
+            and session_id.startswith("test:")
+            and request.cookies.get(_client_admin_test_session_cookie_name(slug), "").strip()
+            != session_id
+        ):
+            _apply_test_chat_cookie(response, slug, session_id)
         return ChatTestSendOut(
             reply=result.text,
             hook_type=hook_type,

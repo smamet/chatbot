@@ -302,6 +302,13 @@ def bot_flush_cmd(
         bool,
         typer.Option("--no-backup", help="Do not save a backup before flushing"),
     ] = False,
+    keep_monitoring: Annotated[
+        bool,
+        typer.Option(
+            "--keep-monitoring",
+            help="Keep api_usage_daily and disk_usage_daily rows for this bot",
+        ),
+    ] = False,
 ) -> None:
     """Clear all chats and operational logs for a bot; keep RAG, connectors, and config."""
     import sys
@@ -324,7 +331,11 @@ def bot_flush_cmd(
     with factory() as session:
         svc = TenantFlushService(session, settings=settings)
         try:
-            logs, backup_path = svc.flush(slug, backup=not no_backup)
+            logs, backup_path = svc.flush(
+                slug,
+                backup=not no_backup,
+                keep_monitoring=keep_monitoring,
+            )
         except TenantFlushError as exc:
             typer.echo(str(exc), err=True)
             raise typer.Exit(1) from exc

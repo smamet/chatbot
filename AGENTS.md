@@ -41,7 +41,7 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `work
 | `client_operator` | Assigned bots | **Validation only** — inbox, detail, history; full operator actions (edit, approve/reject, attachments) |
 
 - **Login home** (`client_operator`): one assigned bot → validation inbox; two or more → bot picker (**Open** → validation); none → empty list.
-- **Permissions**: `UserService.can_edit` (bot config) vs `can_validate` (validation mutations). Operators have `can_validate` but not `can_edit`.
+- **Permissions**: `UserService.can_edit` (bot config) vs `can_validate` (validation mutations). Operators have `can_validate` but not `can_edit`. **Test chat**: `UserService.can_use_full_test_chat` — admin only (identity email/phone, channel simulation, multi-session sidebar). `client_admin` gets anonymous test chat only (cookie-persisted `test:` session, messages loaded on tab open, minimal UI).
 - **CLI**: `./sail chatbot user-create … --role client_operator` (also `admin`, `client_admin`). Assign bots on dashboard **Users** → user detail (admin only).
 
 ### Add a tenant
@@ -61,9 +61,11 @@ Service: `src/chatbot/application/tenant_flush_service.py` (`TenantFlushService.
 ./sail chatbot bot-restore {slug} data/backups/{slug}/{timestamp} --yes
 ```
 
-Clears messages, `hook_events`, validation queue (`pending_replies` + edits + audit), orders, `mail_drafts`, `email_threads`, `outbound_email_messages`, `test_chat_sessions`, and runtime dirs `data/attachments/{slug}/`, `data/quotes/{slug}/`. **Does not** delete the tenant, connectors, integrations, `ingested_files`, LanceDB, `data/docs/` or `data/catalog/`, or `mail_imap_uids`. Token unchanged. Destructive — requires `--yes` without a TTY or slug confirmation on a TTY.
+Clears messages, `hook_events`, validation queue (`pending_replies` + edits + audit), orders, `mail_drafts`, `email_threads`, `outbound_email_messages`, `test_chat_sessions`, `mail_imap_uids`, tenant monitoring rows (`api_usage_daily`, `disk_usage_daily` for that bot only — not host snapshots), and runtime dirs `data/attachments/{slug}/`, `data/quotes/{slug}/`. **Does not** delete the tenant, connectors, integrations, `ingested_files`, LanceDB, `data/docs/` or `data/catalog/`. Token unchanged. Destructive — requires `--yes` without a TTY or slug confirmation on a TTY.
 
-**Backup (default on flush):** `data/backups/{slug}/{timestamp}/` with `manifest.json`, `operational.json`, and copies of attachment/quote dirs. `--no-backup` skips. `bot-restore` replaces current operational data with the backup (same slug + `tenant_id` only).
+**Backup (default on flush):** `data/backups/{slug}/{timestamp}/` with `manifest.json`, `operational.json`, and copies of attachment/quote dirs. `--no-backup` skips. `--keep-monitoring` skips `api_usage_daily` / tenant `disk_usage_daily` deletion. Monitoring is not restored from backup. `bot-restore` replaces current operational data with the backup (same slug + `tenant_id` only).
+
+**Test chat:** Admin — identity email/phone, channel simulation, multi-session sidebar (`test_chat_sessions`, shows dashboard user per session). `client_admin` — one anonymous `test:` session per browser (HttpOnly cookie per bot, not shared between users); no sidebar/identity/channel UI. Clear history only works for anonymous `test:` sessions (403 for `email:`/`whatsapp:`). Production-only conversations appear under **History** only.
 
 ### ERPNext catalog sync
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from sqlalchemy import func, select
@@ -15,6 +15,8 @@ from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegr
 from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
 from chatbot.adapters.persistence.mail_imap_uid_repository import SqlAlchemyMailImapUidRepository
 from chatbot.adapters.persistence.orm import (
+    ApiUsageDailyRow,
+    DiskUsageDailyRow,
     HookEventRow,
     IngestedFileRow,
     MailDraftRow,
@@ -152,6 +154,25 @@ def _seed_operational_data(test_settings, tenant) -> None:
                 content_hash="abc123",
             )
         )
+        session.add(
+            ApiUsageDailyRow(
+                tenant_id=tenant.id,
+                usage_date=date.today(),
+                operation="chat",
+                model="gemini-2.5-flash",
+                prompt_tokens=10,
+                output_tokens=5,
+                total_tokens=15,
+                call_count=1,
+            )
+        )
+        session.add(
+            DiskUsageDailyRow(
+                tenant_id=tenant.id,
+                snapshot_date=date.today(),
+                total_bytes=1024,
+            )
+        )
         session.commit()
 
 
@@ -187,7 +208,9 @@ def test_flush_removes_operational_data_keeps_rag_and_bot(test_settings, test_te
     assert any("removed" in line and "attachments" in line for line in logs)
     assert any("removed" in line and "quotes" in line for line in logs)
     assert any("kept ingested_files: 1" in line for line in logs)
-    assert any("kept mail_imap_uids: 1" in line for line in logs)
+    assert any("deleted mail_imap_uids:" in line for line in logs)
+    assert any("deleted api_usage_daily:" in line for line in logs)
+    assert any("deleted disk_usage_daily:" in line for line in logs)
 
     with factory() as session:
         assert session.get(TenantRow, tenant.id) is not None
@@ -199,7 +222,9 @@ def test_flush_removes_operational_data_keeps_rag_and_bot(test_settings, test_te
         assert _count(session, OrderRow, tenant.id) == 0
         assert _count(session, MailDraftRow, tenant.id) == 0
         assert _count(session, TestChatSessionRow, tenant.id) == 0
-        assert _count(session, MailImapUidRow, tenant.id) == 1
+        assert _count(session, MailImapUidRow, tenant.id) == 0
+        assert _count(session, ApiUsageDailyRow, tenant.id) == 0
+        assert _count(session, DiskUsageDailyRow, tenant.id) == 0
         assert _count(session, IngestedFileRow, tenant.id) == 1
         connectors = SqlAlchemyConnectorRepository(session).list_for_tenant(tenant.id)
         assert len(connectors) >= 1
@@ -256,7 +281,7 @@ def test_flush_and_restore_roundtrip(test_settings, test_tenant) -> None:
         assert _count(session, MailDraftRow, tenant.id) >= 1
         assert _count(session, TestChatSessionRow, tenant.id) >= 1
         assert _count(session, IngestedFileRow, tenant.id) == 1
-        assert _count(session, MailImapUidRow, tenant.id) == 1
+        assert _count(session, MailImapUidRow, tenant.id) == 0
 
     assert (test_settings.data_root / "attachments" / slug / "1" / "file.pdf").is_file()
     assert (test_settings.data_root / "quotes" / slug / "QTN-0001.pdf").is_file()
@@ -268,6 +293,25 @@ def test_flush_unknown_slug_raises(test_settings, test_tenant) -> None:
     with factory() as session:
         with pytest.raises(TenantFlushError, match="Unknown tenant slug"):
             TenantFlushService(session, settings=test_settings).flush("no-such-bot")
+
+
+def test_flush_keep_monitoring_preserves_usage_rows(test_settings, test_tenant) -> None:
+    tenant, _token = test_tenant
+    _seed_operational_data(test_settings, tenant)
+    engine = create_db_engine(test_settings, for_tests=True)
+    factory = session_factory(engine)
+    with factory() as session:
+        logs, _ = TenantFlushService(session, settings=test_settings).flush(
+            tenant.slug,
+            keep_monitoring=True,
+        )
+        session.commit()
+    assert any("kept api_usage_daily (keep-monitoring)" in line for line in logs)
+    assert any("kept disk_usage_daily (keep-monitoring)" in line for line in logs)
+    with factory() as session:
+        assert _count(session, ApiUsageDailyRow, tenant.id) == 1
+        assert _count(session, DiskUsageDailyRow, tenant.id) == 1
+        assert _count(session, MailImapUidRow, tenant.id) == 0
 
 
 def test_bot_flush_cli_requires_yes_without_tty(test_settings, test_tenant) -> None:

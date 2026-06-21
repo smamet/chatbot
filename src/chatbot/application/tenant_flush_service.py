@@ -10,7 +10,9 @@ from sqlalchemy import DateTime, delete, func, select
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.orm import (
+    ApiUsageDailyRow,
     ConnectorRow,
+    DiskUsageDailyRow,
     EmailThreadRow,
     HookEventRow,
     IngestedFileRow,
@@ -91,7 +93,13 @@ class TenantFlushService:
         self._settings = settings
         self._tenant_repo = SqlAlchemyTenantRepository(session)
 
-    def flush(self, slug: str, *, backup: bool = True) -> tuple[list[str], Path | None]:
+    def flush(
+        self,
+        slug: str,
+        *,
+        backup: bool = True,
+        keep_monitoring: bool = False,
+    ) -> tuple[list[str], Path | None]:
         tenant = self._tenant_repo.find_by_slug(slug)
         if tenant is None:
             raise TenantFlushError(f"Unknown tenant slug: {slug}")
@@ -114,6 +122,13 @@ class TenantFlushService:
         logs.append(self._delete_mail_drafts(tenant_id))
         logs.append(self._delete_email_threads(tenant_id))
         logs.append(self._delete_test_chat_sessions(tenant_id))
+        logs.append(self._delete_mail_imap_uids(tenant_id))
+        if keep_monitoring:
+            logs.append("kept api_usage_daily (keep-monitoring)")
+            logs.append("kept disk_usage_daily (keep-monitoring)")
+        else:
+            logs.append(self._delete_api_usage_daily(tenant_id))
+            logs.append(self._delete_disk_usage_daily(tenant_id))
         logs.extend(self._remove_runtime_dirs(slug))
         logs.extend(self._summarize_kept(tenant_id))
 
@@ -155,7 +170,7 @@ class TenantFlushService:
         payload = json.loads(operational_path.read_text(encoding="utf-8"))
         logs: list[str] = []
 
-        logs.extend(self.flush(slug, backup=False)[0])
+        logs.extend(self.flush(slug, backup=False, keep_monitoring=True)[0])
         logs.extend(self._insert_operational_rows(payload))
         logs.extend(self._restore_runtime_dirs(slug, backup_path))
 
@@ -313,6 +328,24 @@ class TenantFlushService:
         )
         return f"deleted test_chat_sessions: {n}"
 
+    def _delete_mail_imap_uids(self, tenant_id: int) -> str:
+        n = self._count_delete(
+            delete(MailImapUidRow).where(MailImapUidRow.tenant_id == tenant_id)
+        )
+        return f"deleted mail_imap_uids: {n}"
+
+    def _delete_api_usage_daily(self, tenant_id: int) -> str:
+        n = self._count_delete(
+            delete(ApiUsageDailyRow).where(ApiUsageDailyRow.tenant_id == tenant_id)
+        )
+        return f"deleted api_usage_daily: {n}"
+
+    def _delete_disk_usage_daily(self, tenant_id: int) -> str:
+        n = self._count_delete(
+            delete(DiskUsageDailyRow).where(DiskUsageDailyRow.tenant_id == tenant_id)
+        )
+        return f"deleted disk_usage_daily: {n}"
+
     def _remove_runtime_dirs(self, slug: str) -> list[str]:
         logs: list[str] = []
         for name in ("attachments", "quotes"):
@@ -336,16 +369,10 @@ class TenantFlushService:
                 IntegrationRow.tenant_id == tenant_id
             )
         )
-        imap_uids = self._session.scalar(
-            select(func.count()).select_from(MailImapUidRow).where(
-                MailImapUidRow.tenant_id == tenant_id
-            )
-        )
         tenant_ok = self._session.get(TenantRow, tenant_id) is not None
         return [
             f"kept tenant: {tenant_ok}",
             f"kept ingested_files: {ingested or 0}",
             f"kept connectors: {connectors or 0}",
             f"kept integrations: {integrations or 0}",
-            f"kept mail_imap_uids: {imap_uids or 0}",
         ]

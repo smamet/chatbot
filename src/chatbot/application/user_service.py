@@ -35,6 +35,10 @@ class UserService:
     def can_edit(self, user: User) -> bool:
         return user.role in (UserRole.ADMIN, UserRole.CLIENT_ADMIN)
 
+    def can_use_full_test_chat(self, user: User) -> bool:
+        """Admin-only: identity, channel simulation, and multi-session test chat."""
+        return user.role == UserRole.ADMIN
+
     def is_validation_only(self, user: User) -> bool:
         return user.role == UserRole.CLIENT_OPERATOR
 

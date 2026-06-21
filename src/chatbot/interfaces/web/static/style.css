@@ -1665,12 +1665,38 @@ a:hover {
   font-weight: 600;
 }
 
+.history-layout aside a .chat-sidebar-session {
+  display: block;
+}
+
+.history-layout aside a .chat-sidebar-user {
+  display: block;
+  margin-top: 2px;
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  word-break: break-all;
+}
+
+.history-layout aside a.active .chat-sidebar-user {
+  color: inherit;
+  opacity: 0.85;
+}
+
 .history-layout > div {
   background: var(--color-surface);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-lg);
   padding: var(--space-lg);
   box-shadow: var(--shadow-sm);
+}
+
+.history-layout.chat-test-layout--simple {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.history-layout.chat-test-layout--simple > .chat-panel {
+  grid-column: 1 / -1;
 }
 
 /* Chat */

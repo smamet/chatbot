@@ -21,6 +21,7 @@
   const resetTestSessionInput = document.getElementById("chat-reset-test-session");
   const resetForm = document.getElementById("chat-reset-form");
   const botSlug = panel.dataset.botSlug || "";
+  const anonymousOnly = panel.dataset.anonymousOnly === "true";
   const identityStorageKey = botSlug ? `chatbot:test-chat:${botSlug}` : "chatbot:test-chat";
   const testSessionStorageKey = botSlug ? `chatbot:test-session:${botSlug}` : "chatbot:test-session";
 
@@ -61,6 +62,11 @@
   }
 
   function anonymousTestSessionForSend() {
+    if (anonymousOnly) {
+      const fromServer = (panel.dataset.chatTestSession || "").trim();
+      if (fromServer.startsWith("test:")) return fromServer;
+      return getOrCreateAnonymousSessionId();
+    }
     const { email, phone } = identityValues();
     if (email || phone) return "";
     return getOrCreateAnonymousSessionId();
@@ -129,7 +135,11 @@
 
   function syncIdentityFields() {
     const { email, phone } = identityValues();
-    const testSession = email || phone ? "" : getOrCreateAnonymousSessionId();
+    const testSession = anonymousOnly
+      ? anonymousTestSessionForSend()
+      : email || phone
+        ? ""
+        : getOrCreateAnonymousSessionId();
     if (resetEmailInput) resetEmailInput.value = email;
     if (resetPhoneInput) resetPhoneInput.value = phone;
     if (resetTestSessionInput) resetTestSessionInput.value = testSession;
@@ -453,7 +463,11 @@
   if (sessionLabelEl && !sessionLabelEl.dataset.defaultSession) {
     sessionLabelEl.dataset.defaultSession = sessionLabelEl.textContent;
   }
-  initIdentityFields();
+  if (!anonymousOnly) {
+    initIdentityFields();
+  } else {
+    syncIdentityFields();
+  }
   loadInitial();
   loadInitialQuotePdf();
   scrollThread();

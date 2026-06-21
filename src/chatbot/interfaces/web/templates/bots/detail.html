@@ -571,7 +571,7 @@
   <div class="card">
     <h2 class="card-title">Add / update connector</h2>
     <p class="text-muted">Use <strong>Edit</strong> on a row to load that connector below, change settings (including <strong>Process emails since</strong> for inbound email), then <strong>Save connector</strong>. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).</p>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form" data-bot-slug="{{ tenant.slug }}">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form" data-bot-slug="{{ tenant.slug }}" data-process-since-default="{{ process_since_default }}">
       <div class="connector-flow" id="connector-flow" aria-hidden="false">
         <div class="connector-flow__node" id="flow-source">
           <span class="connector-flow__label">Source</span>
@@ -918,6 +918,17 @@
           applySavedValues(ctype, direction);
           if (ctype === 'email') {
             setFieldValue('auth_type', authType);
+          }
+          if (
+            ctype === 'email'
+            && direction === 'in'
+            && !connectorSavedMatchesForm()
+          ) {
+            const sinceEl = form.querySelector('[name="process_since"]');
+            const defaultSince = form.dataset.processSinceDefault || '';
+            if (sinceEl && !sinceEl.value && defaultSince) {
+              sinceEl.value = defaultSince;
+            }
           }
           updateGreenmailButton();
           updateConnectorOAuthUi();
@@ -1535,34 +1546,47 @@
 <script src="/static/message-bubbles.js"></script>
 
 {% elif tab == 'chat' %}
-<section class="history-layout chat-test-layout">
+<section class="history-layout chat-test-layout{% if not chat_full_test %} chat-test-layout--simple{% endif %}">
+  {% if chat_full_test %}
   <aside>
     <h2>Sessions</h2>
     <ul>
-    {% for sid in test_chat_sidebar_sessions %}
-      <li><a href="?{{ sid | session_test_chat_query }}"{% if sid == chat_active_sid %} class="active"{% endif %}>{{ sid | session_label }}</a></li>
+    {% for entry in test_chat_sidebar_sessions %}
+      <li>
+        <a href="?{{ entry.session_id | session_test_chat_query }}"{% if entry.session_id == chat_active_sid %} class="active"{% endif %}>
+          <span class="chat-sidebar-session">{{ entry.session_id | session_label }}</span>
+          {% if entry.user_email %}
+          <span class="chat-sidebar-user">{{ entry.user_email }}</span>
+          {% endif %}
+        </a>
+      </li>
     {% else %}
       <li class="text-muted">No sessions</li>
     {% endfor %}
     </ul>
   </aside>
+  {% endif %}
   <div class="chat-panel" id="chat-panel"
      data-bot-slug="{{ tenant.slug }}"
      data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send"
      data-validation-url="{{ chat_validation_url }}"
      data-require-identity="{{ 'true' if chat_require_identity else 'false' }}"
      data-dev-mode="{{ 'true' if chat_dev_mode else 'false' }}"
+     data-anonymous-only="{{ 'true' if not chat_full_test else 'false' }}"
      data-quote-pdf='{{ chat_quote_pdf_json|safe }}'
      data-chat-test-session="{{ chat_test_session }}">
   <div class="chat-header">
     <h2 class="card-title">Test chat</h2>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/chat-test/reset" class="no-loader" id="chat-reset-form" onsubmit="return confirm('Clear this test conversation?');">
+    {% if chat_can_clear %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/chat-test/reset" class="no-loader" id="chat-reset-form" onsubmit="return confirm('Clear this anonymous test conversation?');">
       <input type="hidden" name="test_email" id="chat-reset-email" value="{{ chat_test_email }}">
       <input type="hidden" name="test_phone" id="chat-reset-phone" value="{{ chat_test_phone }}">
       <input type="hidden" name="test_session" id="chat-reset-test-session" value="{{ chat_test_session }}">
       <button type="submit" class="btn-secondary btn-sm">Clear history</button>
     </form>
+    {% endif %}
   </div>
+  {% if chat_full_test %}
   {% if show_chat_channel_selector %}
   <div class="form-grid chat-channel-grid">
     <label>Simulate channel
@@ -1593,6 +1617,7 @@
   </div>
   <p class="text-muted field-hint">Test email is required when simulating <strong>email</strong>.</p>
   {% endif %}
+  {% endif %}
   <div class="chat-thread" id="chat-thread"></div>
   <script id="chat-initial" type="application/json">{{ chat_messages_json|safe }}</script>
   <form id="chat-form" class="no-loader">
@@ -1604,7 +1629,9 @@
     </div>
   </form>
   <p id="chat-hook-status" class="chat-hook-status" hidden></p>
+  {% if chat_full_test %}
   <p class="text-muted" style="margin-top:1rem">Session: <code id="chat-session-label">{{ chat_session_id }}</code></p>
+  {% endif %}
   {{ markdown_scripts() }}
   <script src="/static/message-bubbles.js"></script>
   <script src="/static/chat-test.js"></script>

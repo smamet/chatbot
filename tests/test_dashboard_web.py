@@ -1336,6 +1336,220 @@ def test_email_in_connector_sets_process_since_on_save(dashboard_env) -> None:
     assert "process_since" in r.text
 
 
+def test_connectors_page_exposes_process_since_default(dashboard_env) -> None:
+    client, admin, _, slug, _, _, _ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=connectors")
+    assert r.status_code == 200
+    assert 'data-process-since-default="' in r.text
+    assert 'name="process_since"' in r.text
+
+
+def test_chat_test_reset_rejects_production_session(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+        from chatbot.domain.models.message import ChatMessage, MessageRole
+
+        SqlAlchemyConversationRepository(session, tenant_id).append_message(
+            "email:foo@bar.com",
+            ChatMessage(role=MessageRole.USER, content="keep me"),
+        )
+        session.commit()
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/chat-test/reset",
+        data={"test_email": "foo@bar.com"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+    with factory() as session:
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+
+        messages = SqlAlchemyConversationRepository(session, tenant_id).list_messages(
+            "email:foo@bar.com"
+        )
+        assert len(messages) == 1
+        assert messages[0].content == "keep me"
+
+
+def test_chat_test_reset_rejects_identity_test_session_even_when_registered(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.test_chat_session_repository import (
+            TestChatSessionRepository,
+        )
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+        from chatbot.domain.models.message import ChatMessage, MessageRole
+
+        TestChatSessionRepository(session, tenant_id).upsert("email:foo@bar.com")
+        SqlAlchemyConversationRepository(session, tenant_id).append_message(
+            "email:foo@bar.com",
+            ChatMessage(role=MessageRole.USER, content="keep me"),
+        )
+        session.commit()
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/chat-test/reset",
+        data={"test_email": "foo@bar.com"},
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+
+def test_chat_sidebar_lists_test_chat_registry_not_prod_only(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+        from chatbot.adapters.persistence.test_chat_session_repository import (
+            TestChatSessionRepository,
+        )
+        from chatbot.domain.models.message import ChatMessage, MessageRole
+
+        repo = SqlAlchemyConversationRepository(session, tenant_id)
+        repo.append_message(
+            "email:foo@bar.com",
+            ChatMessage(role=MessageRole.USER, content="prod only"),
+        )
+        TestChatSessionRepository(session, tenant_id).upsert("test:abc-123")
+        TestChatSessionRepository(session, tenant_id).upsert("email:client@example.com")
+        session.commit()
+
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    assert r.status_code == 200
+    assert "test%3Aabc-123" in r.text or "test:abc-123" in r.text
+    assert "client@example.com" in r.text
+    assert "foo@bar.com" not in r.text
+
+
+def test_chat_sidebar_shows_dashboard_user_for_anonymous_session(dashboard_env) -> None:
+    client, admin, editor, slug, tenant_id, _, factory = dashboard_env
+    _login(client, editor.email, "edit-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    test_sid = _extract_chat_test_session(r.text)
+    r = client.post(
+        f"/dashboard/bots/{slug}/chat-test/send",
+        data={"message": "hello", "test_session": test_sid},
+    )
+    assert r.status_code == 200
+
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    assert r.status_code == 200
+    assert "Anonymous test" in r.text
+    assert editor.email in r.text
+    assert f"test_session={test_sid.replace(':', '%3A')}" in r.text or test_sid in r.text
+
+    with factory() as session:
+        from chatbot.adapters.persistence.test_chat_session_repository import (
+            TestChatSessionRepository,
+        )
+
+        row = TestChatSessionRepository(session, tenant_id).find(test_sid)
+        assert row is not None
+        assert row.created_by_user_id == editor.id
+
+
+def _extract_chat_test_session(html: str) -> str:
+    import re
+
+    m = re.search(r'data-chat-test-session="(test:[^"]+)"', html)
+    assert m, "expected data-chat-test-session on chat panel"
+    return m.group(1)
+
+
+def test_client_admin_test_chat_minimal_ui(dashboard_env) -> None:
+    client, _, editor, slug, *_ = dashboard_env
+    _login(client, editor.email, "edit-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    assert r.status_code == 200
+    assert "chat-test-layout--simple" in r.text
+    assert 'data-anonymous-only="true"' in r.text
+    assert 'id="chat-test-email"' not in r.text
+    assert 'id="chat-test-channel"' not in r.text
+    assert "chat-session-label" not in r.text
+    chat_section = r.text.split('class="history-layout chat-test-layout', 1)[1][:800]
+    assert "Sessions" not in chat_section
+    assert "chatbot_test_anon_" in (r.headers.get("set-cookie") or "")
+
+
+def test_client_admin_test_chat_persists_messages(dashboard_env) -> None:
+    client, _, editor, slug, tenant_id, _, factory = dashboard_env
+    _login(client, editor.email, "edit-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    test_sid = _extract_chat_test_session(r.text)
+    r = client.post(
+        f"/dashboard/bots/{slug}/chat-test/send",
+        data={"message": "hello", "test_session": test_sid},
+    )
+    assert r.status_code == 200
+    r2 = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    assert r2.status_code == 200
+    assert _extract_chat_test_session(r2.text) == test_sid
+    assert "hello" in r2.text
+    assert "echo:hello" in r2.text
+    with factory() as session:
+        from chatbot.adapters.persistence.conversation_repository import (
+            SqlAlchemyConversationRepository,
+        )
+
+        msgs = SqlAlchemyConversationRepository(session, tenant_id).list_messages(test_sid)
+        assert len(msgs) == 2
+
+
+def test_client_admin_test_chat_rejects_identity_and_channel(dashboard_env) -> None:
+    client, _, editor, slug, *_ = dashboard_env
+    _login(client, editor.email, "edit-pass")
+    r = client.get(
+        f"/dashboard/bots/{slug}?tab=chat&test_email=client@example.com",
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"].endswith("?tab=chat")
+    r = client.post(
+        f"/dashboard/bots/{slug}/chat-test/send",
+        data={"message": "hi", "test_email": "client@example.com"},
+    )
+    assert r.status_code == 403
+    r = client.post(
+        f"/dashboard/bots/{slug}/chat-test/send",
+        data={"message": "hi", "channel": "email"},
+    )
+    assert r.status_code == 403
+
+
+def test_client_admin_test_chat_reset_clears_cookie(dashboard_env) -> None:
+    client, _, editor, slug, *_ = dashboard_env
+    _login(client, editor.email, "edit-pass")
+    r = client.get(f"/dashboard/bots/{slug}?tab=chat")
+    test_sid = _extract_chat_test_session(r.text)
+    client.post(
+        f"/dashboard/bots/{slug}/chat-test/send",
+        data={"message": "hello", "test_session": test_sid},
+    )
+    r = client.post(
+        f"/dashboard/bots/{slug}/chat-test/reset",
+        data={"test_session": test_sid},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    set_cookie = r.headers.get("set-cookie") or ""
+    assert "chatbot_test_anon_" in set_cookie
+    assert "Max-Age=0" in set_cookie or '=""' in set_cookie
+
+
 @patch("chatbot.application.connector_test_service.ImapMailClient")
 def test_connector_test_endpoint_imap(mock_imap_cls, dashboard_env) -> None:
     client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
