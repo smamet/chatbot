@@ -14,6 +14,7 @@ from chatbot.adapters.mail.imap_client import (
     _body_text_from_message,
     _decode_header_value,
     _extract_email_address,
+    _extract_email_addresses,
     _imap_use_ssl,
     imap_client,
 )
@@ -167,9 +168,27 @@ def test_imap_use_ssl_by_port() -> None:
 
 def test_decode_header_and_address() -> None:
     assert _extract_email_address("Alice <alice@example.com>") == "alice@example.com"
+    assert _extract_email_addresses(
+        "Client <client@example.com>, Support <support@example.com>"
+    ) == ("client@example.com", "support@example.com")
     msg = StdEmailMessage()
     msg.set_content("Hello world")
     assert _body_text_from_message(email.message_from_string(msg.as_string())) == "Hello world"
+
+
+def test_imap_client_parses_to_and_cc_addresses() -> None:
+    client = ImapMailClient({"imap_host": "h", "imap_port": "3143", "username": "u", "password": "p"})
+    msg = StdEmailMessage()
+    msg["From"] = "client@example.com"
+    msg["To"] = "Primary <primary@example.com>"
+    msg["Cc"] = "Bot <bot@test.local>, Observer <observer@example.com>"
+    msg["Subject"] = "FYI"
+    msg.set_content("Hello")
+    mail = client._parse_fetched_mail("1", [(b"1 (BODY[] {..}", msg.as_bytes())])
+    assert mail is not None
+    assert mail.to_addr == "primary@example.com"
+    assert mail.to_addrs == ("primary@example.com",)
+    assert mail.cc_addrs == ("bot@test.local", "observer@example.com")
 
 
 def test_body_text_from_message_plain_part_with_html_source() -> None:

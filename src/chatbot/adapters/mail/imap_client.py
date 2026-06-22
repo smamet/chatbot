@@ -30,6 +30,8 @@ class IncomingMail:
     in_reply_to: str = ""
     references: tuple[str, ...] = ()
     body_html: str | None = None
+    to_addrs: tuple[str, ...] = ()
+    cc_addrs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +59,16 @@ def _decode_header_value(value: str | None) -> str:
 def _extract_email_address(header_value: str) -> str:
     parsed = email.utils.parseaddr(header_value)
     return (parsed[1] or header_value).strip().lower()
+
+
+def _extract_email_addresses(header_value: str) -> tuple[str, ...]:
+    if not header_value:
+        return ()
+    return tuple(
+        addr.strip().lower()
+        for _name, addr in email.utils.getaddresses([header_value])
+        if addr and "@" in addr
+    )
 
 
 def _extract_body_html(msg: email.message.Message) -> str | None:
@@ -192,7 +204,11 @@ class ImapMailClient:
             return None
         msg = email.message_from_bytes(raw)
         from_addr = _extract_email_address(_decode_header_value(msg.get("From")))
-        to_addr = _extract_email_address(_decode_header_value(msg.get("To")))
+        to_header = _decode_header_value(msg.get("To"))
+        cc_header = _decode_header_value(msg.get("Cc"))
+        to_addrs = _extract_email_addresses(to_header)
+        cc_addrs = _extract_email_addresses(cc_header)
+        to_addr = to_addrs[0] if to_addrs else _extract_email_address(to_header)
         subject = _decode_header_value(msg.get("Subject"))
         body = _body_text_from_message(msg)
         body_html = _extract_body_html(msg)
@@ -223,6 +239,8 @@ class ImapMailClient:
             in_reply_to=in_reply_to,
             references=references,
             body_html=body_html,
+            to_addrs=to_addrs,
+            cc_addrs=cc_addrs,
         )
 
     def _parse_fetched_preview(self, uid: str, msg_data) -> InboxPreviewMessage | None:

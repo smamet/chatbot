@@ -73,13 +73,23 @@ def mail_env(tmp_path, monkeypatch):
     reset_settings_cache_for_tests()
 
 
-def _mail(uid: str, from_addr: str = "client@example.com") -> IncomingMail:
+def _mail(
+    uid: str,
+    from_addr: str = "client@example.com",
+    *,
+    to_addr: str = "bot@test.local",
+    to_addrs: tuple[str, ...] | None = None,
+    cc_addrs: tuple[str, ...] = (),
+) -> IncomingMail:
+    primary = to_addrs if to_addrs is not None else ((to_addr,) if to_addr else ())
     return IncomingMail(
         uid=uid,
         from_addr=from_addr,
-        to_addr="bot@test.local",
+        to_addr=to_addr,
         subject="Test",
         body_text="Hello",
+        to_addrs=primary,
+        cc_addrs=cc_addrs,
     )
 
 
@@ -295,3 +305,134 @@ def test_run_once_persists_process_since_for_existing_connector(mock_imap_ctx, m
         conn = ConnectorService(SqlAlchemyConnectorRepository(session)).get(in_id)
         assert conn is not None
         assert parse_process_since(conn.config) is not None
+
+
+def test_is_cc_only_defaults_to_enabled() -> None:
+    mail = _mail("1", to_addr="client@example.com", cc_addrs=("bot@test.local",))
+    assert mail_listener._is_cc_only(mail, {}, "bot@test.local") is True
+
+
+def test_is_cc_only_disabled_when_config_off() -> None:
+    mail = _mail("1", to_addr="client@example.com", cc_addrs=("bot@test.local",))
+    assert mail_listener._is_cc_only(mail, {"skip_cc_only": False}, "bot@test.local") is False
+
+
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_skips_cc_only_mail_by_default(mock_imap_ctx, mail_env) -> None:
+    factory, settings, tenant_id, _, _ = mail_env
+    imap = MagicMock()
+    imap.fetch_pending.return_value = [
+        _mail(
+            "cc-1",
+            to_addr="client@example.com",
+            to_addrs=("client@example.com",),
+            cc_addrs=("bot@test.local",),
+        )
+    ]
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+
+    with patch("chatbot.mail.listener.build_chat_service_for_worker") as mock_build:
+        n = mail_listener.run_once(factory, settings)
+        mock_build.assert_not_called()
+
+    assert n == 0
+    with factory() as session:
+        uid_repo = SqlAlchemyMailImapUidRepository(session, tenant_id=tenant_id)
+        draft_repo = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id)
+        assert uid_repo.exists_by_uid("cc-1")
+        assert not draft_repo.exists_by_uid("cc-1")
+
+
+@patch("chatbot.mail.listener.queue_after_chat")
+@patch("chatbot.mail.listener.build_chat_service_for_worker")
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_processes_mail_when_mailbox_in_to(
+    mock_imap_ctx, mock_build_chat, mock_queue, mail_env
+) -> None:
+    factory, settings, tenant_id, _, _ = mail_env
+    imap = MagicMock()
+    imap.fetch_pending.return_value = [
+        _mail(
+            "to-1",
+            to_addr="bot@test.local",
+            to_addrs=("bot@test.local", "client@example.com"),
+        )
+    ]
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+    mock_build_chat.return_value.handle_user_message.return_value = SimpleNamespace(
+        text="reply",
+        hook_type=None,
+        hook_payload_json=None,
+        hook_event_id=None,
+    )
+    mock_queue.return_value = ("queued", None)
+
+    n = mail_listener.run_once(factory, settings)
+    assert n == 1
+
+
+@patch("chatbot.mail.listener.queue_after_chat")
+@patch("chatbot.mail.listener.build_chat_service_for_worker")
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_processes_cc_only_when_filter_disabled(
+    mock_imap_ctx, mock_build_chat, mock_queue, mail_env
+) -> None:
+    factory, settings, tenant_id, in_id, _ = mail_env
+    with factory() as session:
+        repo = SqlAlchemyConnectorRepository(session)
+        existing = repo.find_by_id(in_id)
+        assert existing is not None
+        cfg = dict(existing.config)
+        cfg["skip_cc_only"] = False
+        repo.update(in_id, config=cfg)
+        session.commit()
+
+    imap = MagicMock()
+    imap.fetch_pending.return_value = [
+        _mail(
+            "cc-2",
+            to_addr="client@example.com",
+            to_addrs=("client@example.com",),
+            cc_addrs=("bot@test.local",),
+        )
+    ]
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+    mock_build_chat.return_value.handle_user_message.return_value = SimpleNamespace(
+        text="reply",
+        hook_type=None,
+        hook_payload_json=None,
+        hook_event_id=None,
+    )
+    mock_queue.return_value = ("queued", None)
+
+    n = mail_listener.run_once(factory, settings)
+    assert n == 1
+
+
+@patch("chatbot.mail.listener.queue_after_chat")
+@patch("chatbot.mail.listener.build_chat_service_for_worker")
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_processes_mail_when_mailbox_in_to_and_cc(
+    mock_imap_ctx, mock_build_chat, mock_queue, mail_env
+) -> None:
+    factory, settings, tenant_id, _, _ = mail_env
+    imap = MagicMock()
+    imap.fetch_pending.return_value = [
+        _mail(
+            "both-1",
+            to_addr="bot@test.local",
+            to_addrs=("bot@test.local",),
+            cc_addrs=("bot@test.local", "client@example.com"),
+        )
+    ]
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+    mock_build_chat.return_value.handle_user_message.return_value = SimpleNamespace(
+        text="reply",
+        hook_type=None,
+        hook_payload_json=None,
+        hook_event_id=None,
+    )
+    mock_queue.return_value = ("queued", None)
+
+    n = mail_listener.run_once(factory, settings)
+    assert n == 1

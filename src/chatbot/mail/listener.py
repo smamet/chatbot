@@ -63,6 +63,19 @@ def _is_sender_blocked(from_addr: str, config) -> bool:
     return (from_addr or "").strip().lower() in blocked
 
 
+def _is_cc_only(mail: IncomingMail, connector_config: dict, mailbox_addr: str) -> bool:
+    """Return True when skip_cc_only is on and the mailbox is not a primary To recipient."""
+    if not connector_config.get("skip_cc_only", True):
+        return False
+    mailbox = (mailbox_addr or "").strip().lower()
+    if not mailbox:
+        return False
+    primary = set(mail.to_addrs) if mail.to_addrs else (
+        {mail.to_addr} if mail.to_addr else set()
+    )
+    return mailbox not in primary
+
+
 def _process_one_mail(
     session: Session,
     *,
@@ -88,6 +101,11 @@ def _process_one_mail(
 
     if _is_sender_blocked(mail.from_addr, tenant.config):
         uid_repo.record_blacklisted(mail.uid, received_at=mail.received_at)
+        return False
+
+    mailbox_addr = str(in_connector.config.get("username", ""))
+    if _is_cc_only(mail, in_connector.config, mailbox_addr):
+        uid_repo.record_skipped(mail.uid, received_at=mail.received_at)
         return False
 
     chat_body = prepare_email_body_new(mail.body_text)

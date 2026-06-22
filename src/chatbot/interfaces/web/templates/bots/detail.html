@@ -708,6 +708,12 @@
           return dirInput.value === 'out' ? 'out' : 'in';
         }
 
+        function isChecked(value, defaultVal) {
+          if (value === true || value === false) return value;
+          const raw = String(value ?? defaultVal ?? '').toLowerCase();
+          return ['1', 'true', 'on', 'yes'].includes(raw);
+        }
+
         function setDirection(value) {
           selectedAuthType = null;
           dirInput.value = value;
@@ -917,6 +923,13 @@
             container.appendChild(label);
           }
           applySavedValues(ctype, direction);
+          for (const field of fields) {
+            if (field.input_type !== 'checkbox') continue;
+            const cfg = recordFor(ctype, direction).config || {};
+            if (!Object.prototype.hasOwnProperty.call(cfg, field.key)) {
+              setFieldValue(field.key, isChecked(null, field.default));
+            }
+          }
           if (ctype === 'email') {
             setFieldValue('auth_type', authType);
           }
@@ -963,7 +976,7 @@
           const el = form.querySelector('[name="' + name + '"]');
           if (!el) return;
           if (el.type === 'checkbox') {
-            el.checked = !!value;
+            el.checked = isChecked(value, '');
           } else {
             el.value = value;
           }

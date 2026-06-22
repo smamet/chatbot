@@ -34,6 +34,7 @@ class ConnectorField:
     input_type: str = "text"
     required: bool = False
     placeholder: str = ""
+    default: str = ""
     directions: tuple[str, ...] = (ConnectorDirection.IN.value, ConnectorDirection.OUT.value)
     secret: bool = False
     providers: tuple[str, ...] | None = None
@@ -228,6 +229,17 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
             directions=(ConnectorDirection.IN.value,),
         ),
         ConnectorField(
+            key="skip_cc_only",
+            label="Ignore emails where I'm only in CC/BCC",
+            help=(
+                "When enabled, emails where this mailbox is not the primary recipient (To) "
+                "are silently ignored."
+            ),
+            input_type="checkbox",
+            default="true",
+            directions=(ConnectorDirection.IN.value,),
+        ),
+        ConnectorField(
             key="outbound_provider",
             label="Send via",
             help="Choose one outbound delivery method. Only fields for the selected provider are shown below.",
@@ -404,6 +416,7 @@ def connector_schemas_for_template() -> dict[str, list[dict]]:
                 "input_type": field.input_type,
                 "required": field.required,
                 "placeholder": field.placeholder or field.key,
+                "default": field.default,
                 "directions": list(field.directions),
                 "providers": list(field.providers) if field.providers else None,
                 "options": [{"value": v, "label": lbl} for v, lbl in field.options]
