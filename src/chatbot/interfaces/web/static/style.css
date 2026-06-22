@@ -1266,6 +1266,11 @@ textarea {
   cursor: wait;
 }
 
+.validation-approve-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .validation-revert-link {
   display: inline-flex;
   align-items: center;

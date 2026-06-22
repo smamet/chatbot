@@ -90,7 +90,7 @@ Clears messages, `hook_events`, validation queue (`pending_replies` + edits + au
 - **Audit**: draft edits → `pending_reply_edits` (diff, `edited_by`); approve/reject/regenerate/reject-blacklist/attachments → `pending_reply_audit_events`; terminal replies store `resolved_by` / `resolved_at` on `pending_replies`. Service: `validation_audit_service.py`.
 - **Message bubbles** (clean/raw + token footer + **Show raw** toggle): validation detail, **History** tab, **Test chat** — shared helpers in `validation_message_ui.py`, macro `message_bubble.html`, JS `message-bubbles.js`.
 - Intended operator role: `client_operator`.
-- Email replies: WYSIWYG draft + drag-and-drop attachments on the detail page (`pending_replies.attachments_json`).
+- Email replies: WYSIWYG draft + drag-and-drop attachments on the detail page (`pending_replies.attachments_json`). **Approve & send** is blocked until **Save draft** (UI disables the button when the editor is dirty; server rejects approve if submitted `draft_html`/`draft_subject` do not match the stored draft).
 - User uploads: `data/attachments/{slug}/{reply_id}/` via `store_outbound_attachment()` in `quote_pdf_storage.py`.
 - Quote PDFs: `data/quotes/{slug}/` (ERPNext); merged with manual attachments on approve.
 - Cleanup: `delete_attachment_files()` on approve/reject (no TTL timer).

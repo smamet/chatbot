@@ -82,6 +82,20 @@ def draft_edit_text_diff(before_html: str, after_html: str) -> str:
     return "\n".join(lines) + "\n"
 
 
+def submitted_draft_matches_stored(
+    reply: PendingReply,
+    draft_html: str,
+    draft_subject: str | None = None,
+) -> bool:
+    sanitized = normalize_email_draft_html(sanitize_email_html(draft_html))
+    if sanitized != (reply.draft_html or ""):
+        return False
+    if draft_subject is not None:
+        if draft_subject.strip() != (reply.draft_subject or "").strip():
+            return False
+    return True
+
+
 def save_pending_reply_draft(
     session: Session,
     *,

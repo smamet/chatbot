@@ -283,7 +283,7 @@
         {% if quote_pdf_stale.erpnext_url %}
         <a class="btn-secondary btn-sm" href="{{ quote_pdf_stale.erpnext_url }}" target="_blank" rel="noopener">Open in ERPNext</a>
         {% endif %}
-        <button type="submit" class="btn-primary btn-sm" name="confirm_stale_pdf" value="1" data-loading="Sending…">Proceed &amp; send</button>
+        <button type="submit" class="btn-primary btn-sm validation-approve-btn" name="confirm_stale_pdf" value="1" data-loading="Sending…">Proceed &amp; send</button>
       </div>
     </div>
     {% endif %}
@@ -316,7 +316,7 @@
     {% if can_validate %}
     <div class="form-actions form-actions--compact validation-detail-actions validation-detail-actions--embedded">
       {% if not quote_pdf_stale.stale %}
-      <button type="submit" class="btn-primary" data-loading="Sending…">Approve &amp; send</button>
+      <button type="submit" class="btn-primary validation-approve-btn" data-loading="Sending…">Approve &amp; send</button>
       {% endif %}
       <button type="submit"
               class="btn-secondary btn-sm"
@@ -337,7 +337,7 @@
 {% elif can_validate %}
 <div class="validation-detail-actions card">
   <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/approve" class="inline-form">
-    <button type="submit" class="btn-primary" data-loading="Sending…">Approve &amp; send</button>
+    <button type="submit" class="btn-primary validation-approve-btn" data-loading="Sending…">Approve &amp; send</button>
   </form>
   <form method="post" action="/dashboard/bots/{{ tenant.slug }}/validation/{{ reply.id }}/reject" class="inline-form">
     <button type="submit" class="btn-secondary btn-sm">Reject</button>

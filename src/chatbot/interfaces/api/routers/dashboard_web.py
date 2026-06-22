@@ -81,7 +81,11 @@ from chatbot.application.monitoring_date_range import (
 )
 from chatbot.application.monitoring_format import format_count, format_usd
 from chatbot.application.disk_usage_service import DiskUsageService, format_bytes
-from chatbot.application.draft_edit_service import DraftEditError, save_pending_reply_draft
+from chatbot.application.draft_edit_service import (
+    DraftEditError,
+    save_pending_reply_draft,
+    submitted_draft_matches_stored,
+)
 from chatbot.application.outbound_orchestrator import erpnext_integration_for_tenant, queue_after_chat
 from chatbot.application.progress_log import ProgressLog
 from chatbot.application.product_resolver import resolved_lines_from_json, resolved_lines_to_json
@@ -3566,14 +3570,16 @@ async def approve_validation_reply(
     config = connector.config if connector else {}
     form = await request.form()
     if reply.channel == ConnectorType.EMAIL.value:
-        reply = _persist_validation_email_draft_from_form(
-            session,
-            tenant_id=tenant.id,
-            reply=reply,
-            form=form,
-            edited_by=user.email,
-            outbound_config=_outbound_email_config(session, tenant.id),
-        )
+        draft_in_form = "draft_html" in form or "draft_subject" in form
+        if draft_in_form and not submitted_draft_matches_stored(
+            reply,
+            str(form.get("draft_html", "")),
+            str(form.get("draft_subject", "")) if "draft_subject" in form else None,
+        ):
+            request.session["validation_error"] = (
+                "Save the draft before approving and sending."
+            )
+            return RedirectResponse(url=_validation_detail_url(slug, reply_id), status_code=303)
     resolved_json = _merge_resolved_selection(form, reply)
     if (
         reply.fulfillment_kind == FulfillmentKind.ERPNEXT_QUOTE

@@ -202,6 +202,7 @@ def approve_pending_reply(
 ) -> PendingReply | None:
     outbound_config = config
     threading = None
+    send_subject = reply.draft_subject
     if reply.channel == ConnectorType.EMAIL.value:
         connector = SqlAlchemyConnectorRepository(session).find_by_id(reply.connector_id)
         if connector is not None:
@@ -212,6 +213,16 @@ def approve_pending_reply(
                 settings=settings,
                 force_oauth_refresh=True,
             )
+        inbound = inbound_for_pending_reply(session, reply.tenant_id, reply)
+        send_subject = resolve_email_subject(
+            draft_subject=coalesce_stored_email_subject(
+                stored_draft_subject=reply.draft_subject,
+                connector_config=outbound_config,
+                inbound_subject=inbound.get("subject"),
+            ),
+            connector_config=outbound_config,
+            inbound_subject=inbound.get("subject") or None,
+        )
         threading = resolve_threading_for_reply(
             session,
             tenant_id=reply.tenant_id,
@@ -225,7 +236,7 @@ def approve_pending_reply(
         settings=settings,
         attachments=attachments,
         body_html=reply.draft_html,
-        subject=reply.draft_subject,
+        subject=send_subject,
         threading=threading,
     )
     if reply.channel == ConnectorType.EMAIL.value and message_id and reply.thread_id is not None:

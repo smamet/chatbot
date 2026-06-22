@@ -2814,7 +2814,6 @@ def test_approve_email_uses_re_subject_when_connector_default_empty(dashboard_en
     with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
         r = client.post(
             f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
-            data={"draft_subject": ""},
             follow_redirects=False,
         )
     assert r.status_code == 303
@@ -2822,7 +2821,7 @@ def test_approve_email_uses_re_subject_when_connector_default_empty(dashboard_en
     assert send_mock.call_args.kwargs["subject"] == "Re: Pricing request"
 
 
-def test_approve_email_uses_custom_subject_from_form(dashboard_env) -> None:
+def test_approve_email_uses_custom_subject_after_save(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
         from chatbot.adapters.persistence.pending_reply_repository import (
@@ -2849,15 +2848,21 @@ def test_approve_email_uses_custom_subject_from_form(dashboard_env) -> None:
             channel="email",
             recipient_id="client@example.com",
             draft_text="Body",
+            draft_html="<p>Body</p>",
         )
         session.commit()
         reply_id = pending.id
 
     _login(client, admin.email, "admin-pass")
+    save = client.post(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/save",
+        data={"draft_html": "<p>Body</p>", "draft_subject": "Manual subject line"},
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
     with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
         r = client.post(
             f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
-            data={"draft_subject": "Manual subject line"},
             follow_redirects=False,
         )
     assert r.status_code == 303
@@ -2865,7 +2870,60 @@ def test_approve_email_uses_custom_subject_from_form(dashboard_env) -> None:
     assert send_mock.call_args.kwargs["subject"] == "Manual subject line"
 
 
-def test_approve_email_uses_draft_html_from_form_without_save(dashboard_env) -> None:
+def test_approve_rejects_unsaved_draft_html(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+        from chatbot.domain.models.pending_reply import PendingReplyStatus
+
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL,
+            mode=ConnectorMode.VALIDATION,
+            config={
+                "outbound_provider": "smtp",
+                "smtp_host": "mailpit",
+                "smtp_port": "1025",
+                "from_addr": "bot@test.local",
+            },
+        )
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id="email:client@example.com",
+            channel="email",
+            recipient_id="client@example.com",
+            draft_text="Ancien texte",
+            draft_html="<p>Ancien texte</p>",
+        )
+        session.commit()
+        reply_id = pending.id
+
+    edited_html = "<p>VDtec est spécialisée dans les systèmes de sécurité.</p>"
+    _login(client, admin.email, "admin-pass")
+    with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
+        r = client.post(
+            f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
+            data={"draft_html": edited_html, "draft_subject": "Rép. : Question"},
+            follow_redirects=False,
+        )
+    assert r.status_code == 303
+    assert r.headers["location"].endswith(f"/validation/{reply_id}")
+    send_mock.assert_not_called()
+    detail = client.get(r.headers["location"])
+    assert detail.status_code == 200
+    assert "Save the draft before approving and sending." in detail.text
+    with factory() as session:
+        reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
+        assert reply is not None
+        assert reply.status == PendingReplyStatus.PENDING
+        assert reply.draft_html == "<p>Ancien texte</p>"
+
+
+def test_approve_email_sends_saved_draft_html(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
         from chatbot.adapters.persistence.pending_reply_repository import (
@@ -2898,10 +2956,15 @@ def test_approve_email_uses_draft_html_from_form_without_save(dashboard_env) -> 
 
     edited_html = "<p>VDtec est spécialisée dans les systèmes de sécurité.</p>"
     _login(client, admin.email, "admin-pass")
+    save = client.post(
+        f"/dashboard/bots/{slug}/validation/{reply_id}/save",
+        data={"draft_html": edited_html, "draft_subject": "Rép. : Question"},
+        follow_redirects=False,
+    )
+    assert save.status_code == 303
     with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
         r = client.post(
             f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
-            data={"draft_html": edited_html, "draft_subject": "Rép. : Question"},
             follow_redirects=False,
         )
     assert r.status_code == 303

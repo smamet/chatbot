@@ -11,11 +11,17 @@
     });
   }
 
-  const validationActionFormsSelector =
-    ".validation-save-form, form[action*='/validation/'][action*='/approve'], form[action*='/validation/'][action*='/reject']:not(.validation-reject-blacklist-form)";
+  const validationSaveFormSelector = ".validation-save-form";
+  const validationApproveFormSelector =
+    "form[action*='/validation/'][action*='/approve']";
+  const validationDraftSyncFormsSelector =
+    ".validation-save-form, form[action*='/validation/'][action*='/reject']:not(.validation-reject-blacklist-form)";
 
   const validationUnsavedMessage =
     "Vous avez des modifications non enregistrées dans le brouillon. Quitter cette page sans enregistrer ?";
+  const validationApproveBlockedMessage =
+    "Save the draft before approving and sending.";
+  const validationApproveDisabledTitle = validationApproveBlockedMessage;
 
   let validationDraftDirty = false;
   let validationDraftBaseline = { html: "", subject: "" };
@@ -85,6 +91,7 @@
     validationDraftDirty = false;
     clearValidationEditorSnapshot(editorEl);
     syncSaveButtonAppearance();
+    syncApproveButtonsState(editorEl);
   }
 
   function updateValidationDraftDirty(editorEl) {
@@ -97,6 +104,23 @@
       html !== validationDraftBaseline.html ||
       subject !== validationDraftBaseline.subject;
     syncSaveButtonAppearance();
+    syncApproveButtonsState(editorEl);
+    if (!validationDraftDirty) {
+      showEditorActionError(editorEl, "");
+    }
+  }
+
+  function syncApproveButtonsState(editorEl) {
+    const disabled = validationDraftDirty;
+    document.querySelectorAll(".validation-approve-btn").forEach((btn) => {
+      btn.disabled = disabled;
+      btn.setAttribute("aria-disabled", disabled ? "true" : "false");
+      if (disabled) {
+        btn.title = validationApproveDisabledTitle;
+      } else {
+        btn.removeAttribute("title");
+      }
+    });
   }
 
   function showEditorActionError(editorEl, message) {
@@ -159,12 +183,22 @@
       updateValidationDraftDirty(editorEl);
     });
 
-    document.querySelectorAll(validationActionFormsSelector).forEach((form) => {
+    document.querySelectorAll(validationSaveFormSelector).forEach((form) => {
       form.addEventListener("submit", () => {
         syncValidationDraftToForms();
         captureValidationDraftBaseline(editorEl);
       });
     });
+
+    document.querySelectorAll(validationApproveFormSelector).forEach((form) => {
+      form.addEventListener("submit", (event) => {
+        if (!validationDraftDirty) return;
+        event.preventDefault();
+        showEditorActionError(editorEl, validationApproveBlockedMessage);
+      });
+    });
+
+    syncApproveButtonsState(editorEl);
 
     window.addEventListener("beforeunload", (event) => {
       if (!validationDraftDirty) return;
@@ -179,7 +213,7 @@
     const quill = editorEl?.querySelector(".validation-quill")?.__quill;
     if (!quill) return;
     const html = getQuillHtml(quill);
-    document.querySelectorAll(validationActionFormsSelector).forEach((form) => {
+    document.querySelectorAll(validationDraftSyncFormsSelector).forEach((form) => {
       let hidden = form.querySelector('input[name="draft_html"]');
       if (!hidden) {
         hidden = document.createElement("input");
@@ -196,7 +230,7 @@
     if (!subjectEl) return;
     const value = subjectEl.value;
     document
-      .querySelectorAll(validationActionFormsSelector)
+      .querySelectorAll(validationDraftSyncFormsSelector)
       .forEach((form) => {
         let hidden = form.querySelector('input[name="draft_subject"]');
         if (hidden && hidden !== subjectEl) {
@@ -222,7 +256,7 @@
     const hasEditor = Boolean(document.querySelector(".validation-editor"));
     const hasSubject = Boolean(document.querySelector(".validation-draft-subject"));
     if (!hasEditor && !hasSubject) return;
-    document.querySelectorAll(validationActionFormsSelector).forEach((form) => {
+    document.querySelectorAll(validationDraftSyncFormsSelector).forEach((form) => {
       form.addEventListener("submit", syncValidationDraftToForms);
     });
   }
