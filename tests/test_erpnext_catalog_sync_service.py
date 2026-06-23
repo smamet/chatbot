@@ -7,6 +7,8 @@ from chatbot.adapters.erpnext.client import ErpNextClient
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.adapters.persistence.tenant_paths import safe_catalog_filename, tenant_catalog_dir
 from chatbot.application.erpnext_catalog_sync_service import (
+    build_catalog_price_map,
+    catalog_invoice_price_fallback,
     catalog_price_list,
     catalog_rag_index_plan,
     catalog_sync_due,
@@ -157,8 +159,69 @@ def test_fetch_price_list_rates_empty_name() -> None:
 def test_catalog_price_list_defaults_and_empty() -> None:
     assert catalog_price_list({}) == "Standard Selling"
     assert catalog_price_list({"catalog_price_list": "Custom"}) == "Custom"
-    assert catalog_price_list({"catalog_price_list": ""}) == ""
-    assert catalog_price_list({"catalog_price_list": "  "}) == ""
+    assert catalog_price_list({"catalog_price_list": ""}) == "Standard Selling"
+    assert catalog_price_list({"catalog_price_list": "  "}) == "Standard Selling"
+
+
+def test_catalog_invoice_price_fallback_defaults_false() -> None:
+    assert catalog_invoice_price_fallback({}) is False
+    assert catalog_invoice_price_fallback({"catalog_invoice_price_fallback": True}) is True
+    assert catalog_invoice_price_fallback({"catalog_invoice_price_fallback": "true"}) is True
+    assert catalog_invoice_price_fallback({"catalog_invoice_price_fallback": False}) is False
+    assert catalog_invoice_price_fallback({"catalog_invoice_price_fallback": "false"}) is False
+
+
+def test_build_catalog_price_map_merges_invoice_fallback() -> None:
+    client = MagicMock()
+    client.fetch_price_list_rates.return_value = {
+        "A": {"rate": 10.0, "price_list": "Standard Selling"},
+    }
+    client.fetch_latest_invoice_rates.return_value = {
+        "B": {"rate": 99.0, "price_list": "last invoice"},
+    }
+    items = [
+        {"item_code": "A", "standard_rate": 0},
+        {"item_code": "B", "standard_rate": 0},
+        {"item_code": "C", "standard_rate": 5},
+    ]
+    prices = build_catalog_price_map(items, erp_client=client, config={})
+    assert prices["A"]["rate"] == 10.0
+    assert prices["B"]["rate"] == 99.0
+    assert "C" not in prices
+    client.fetch_latest_invoice_rates.assert_called_once_with(item_codes={"B"})
+
+
+def test_build_catalog_price_map_skips_invoice_when_disabled() -> None:
+    client = MagicMock()
+    client.fetch_price_list_rates.return_value = {}
+    items = [{"item_code": "B", "standard_rate": 0}]
+    prices = build_catalog_price_map(
+        items,
+        erp_client=client,
+        config={"catalog_invoice_price_fallback": False},
+    )
+    assert prices == {}
+    client.fetch_latest_invoice_rates.assert_not_called()
+
+
+def test_render_item_markdown_uses_last_invoice_price() -> None:
+    md = render_item_markdown(
+        {
+            "item_code": "X-1",
+            "item_name": "Widget",
+            "standard_rate": 0,
+            "stock_uom": "Nos",
+        },
+        stock_qty=None,
+        sync_date="2026-06-09 12:00 UTC",
+        include_stock=False,
+        price_entry={
+            "rate": 2500.0,
+            "currency": "MUR",
+            "price_list": "last invoice",
+        },
+    )
+    assert "Price: 2500 MUR (last invoice)" in md
 
 
 def test_render_item_markdown_uses_price_list_over_zero_standard_rate() -> None:
@@ -525,7 +588,7 @@ def test_sync_erpnext_catalog_skips_rag_when_no_file_changes(
     mock_ingest.assert_not_called()
 
 
-def test_sync_skips_price_fetch_when_price_list_blank(
+def test_sync_uses_standard_selling_when_price_list_blank(
     test_settings: SettingsForTests,
     test_tenant,
 ) -> None:
@@ -535,6 +598,8 @@ def test_sync_skips_price_fetch_when_price_list_blank(
         {"item_code": "ITEM-1", "item_name": "One", "standard_rate": 5, "stock_uom": "Nos"}
     ]
     client.fetch_stock_totals.return_value = {}
+    client.fetch_price_list_rates.return_value = {}
+    client.fetch_latest_invoice_rates.return_value = {}
 
     with patch.object(IngestSyncService, "ingest_paths_batched", return_value=[]), patch(
         "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
@@ -552,7 +617,7 @@ def test_sync_skips_price_fetch_when_price_list_blank(
             )
         engine.dispose()
 
-    client.fetch_price_list_rates.assert_not_called()
+    client.fetch_price_list_rates.assert_called_once_with("Standard Selling")
 
 
 def test_reconcile_catalog_rag_skips_ingest_when_no_paths(

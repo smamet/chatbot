@@ -153,9 +153,16 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
         IntegrationField(
             key="catalog_price_list",
             label="Catalog price list",
-            help="ERPNext selling price list for catalog RAG (e.g. Standard Selling). Leave blank to use Item standard rate only.",
+            help="ERPNext selling price list for catalog RAG (e.g. Standard Selling). Defaults to Standard Selling when blank.",
             placeholder="Standard Selling",
             default="Standard Selling",
+        ),
+        IntegrationField(
+            key="catalog_invoice_price_fallback",
+            label="Invoice price fallback (catalog sync)",
+            help="When syncing the catalog to RAG: if Item Price and standard rate are missing, use the latest submitted Sales Invoice line rate. Off by default.",
+            input_type="checkbox",
+            default="false",
         ),
     ],
     IntegrationType.QUICKBOOKS.value: [

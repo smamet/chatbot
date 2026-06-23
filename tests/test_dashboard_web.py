@@ -2518,6 +2518,128 @@ def test_sync_catalog_endpoint_starts_background_job(dashboard_env) -> None:
     mock_run.assert_called_once()
 
 
+def test_catalog_inspector_page_requires_integration(dashboard_env) -> None:
+    client, admin, _, slug, *_ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.get(f"/dashboard/bots/{slug}/integrations/erpnext/catalog")
+    assert r.status_code == 404
+
+
+def test_catalog_inspector_page_and_data(dashboard_env) -> None:
+    client, admin, _, slug, _, data, _ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    _save_erpnext_integration(client, slug)
+    catalog_dir = data / "catalog" / slug
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    (catalog_dir / "ITEM-1.md").write_text(
+        "# One\n\n- Item code: ITEM-1\n- Price: 10\n",
+        encoding="utf-8",
+    )
+    page = client.get(f"/dashboard/bots/{slug}/integrations/erpnext/catalog")
+    assert page.status_code == 200
+    assert "Catalog price inspector" in page.text
+
+    with patch(
+        "chatbot.interfaces.api.routers.dashboard_web.build_inspector_page"
+    ) as mock_build:
+        from chatbot.application.catalog_inspector_service import InspectorPage, InspectorRow
+
+        mock_build.return_value = InspectorPage(
+            rows=[
+                InspectorRow(
+                    item_code="ITEM-1",
+                    name="One",
+                    description="",
+                    description_truncated="",
+                    rag_price_display="10",
+                    rag_source="standard_rate",
+                    item_price_display="—",
+                    standard_rate_display="—",
+                    invoice_price_display="—",
+                    mismatch=False,
+                    expected_source=None,
+                )
+            ],
+            total=1,
+            page=1,
+            page_size=50,
+            total_pages=1,
+            stats={"total": 1, "with_rag_price": 1, "without_rag_price": 0, "mismatches": 0},
+            invoice_cache_at=None,
+            invoice_cache_count=0,
+            price_list_name="Standard Selling",
+            invoice_fallback_enabled=False,
+        )
+        r = client.get(f"/dashboard/bots/{slug}/integrations/erpnext/catalog/data")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["rows"][0]["item_code"] == "ITEM-1"
+
+    with patch(
+        "chatbot.interfaces.api.routers.dashboard_web.build_inspector_page"
+    ) as mock_build:
+        mock_build.return_value = InspectorPage(
+            rows=[],
+            total=0,
+            page=1,
+            page_size=50,
+            total_pages=1,
+            stats={"total": 0, "with_rag_price": 0, "without_rag_price": 0, "mismatches": 0},
+            invoice_cache_at=None,
+            invoice_cache_count=0,
+            price_list_name="Standard Selling",
+            invoice_fallback_enabled=False,
+        )
+        r = client.get(
+            f"/dashboard/bots/{slug}/integrations/erpnext/catalog/data?price_filter=without"
+        )
+    assert r.status_code == 200
+    mock_build.assert_called_once()
+    assert mock_build.call_args.kwargs["price_filter"] == "without"
+
+    with patch(
+        "chatbot.interfaces.api.routers.dashboard_web.build_inspector_page"
+    ) as mock_build:
+        mock_build.return_value = InspectorPage(
+            rows=[],
+            total=0,
+            page=1,
+            page_size=50,
+            total_pages=1,
+            stats={"total": 0, "with_rag_price": 0, "without_rag_price": 0, "mismatches": 0},
+            invoice_cache_at=None,
+            invoice_cache_count=0,
+            price_list_name="Standard Selling",
+            invoice_fallback_enabled=False,
+        )
+        r = client.get(
+            f"/dashboard/bots/{slug}/integrations/erpnext/catalog/data?mismatch_filter=mismatch"
+        )
+    assert r.status_code == 200
+    mock_build.assert_called_once()
+    assert mock_build.call_args.kwargs["mismatch_filter"] == "mismatch"
+
+
+def test_catalog_inspector_refresh_invoices(dashboard_env) -> None:
+    client, admin, _, slug, _, data, _ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    _save_erpnext_integration(client, slug)
+    with patch(
+        "chatbot.interfaces.api.routers.dashboard_web.fetch_and_cache_invoice_rates"
+    ) as mock_refresh:
+        from chatbot.application.catalog_inspector_service import InvoicePriceCache
+
+        mock_refresh.return_value = InvoicePriceCache(
+            cached_at="2026-06-23T12:00:00+00:00",
+            rates={"A": {"rate": 1.0}},
+        )
+        r = client.post(f"/dashboard/bots/{slug}/integrations/erpnext/catalog/refresh-invoices")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert r.json()["count"] == 1
+
+
 def test_purge_catalog_endpoint(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")

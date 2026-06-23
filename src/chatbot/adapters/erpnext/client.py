@@ -436,6 +436,64 @@ class ErpNextClient:
             }
         return prices
 
+    def fetch_latest_invoice_rates(
+        self,
+        item_codes: set[str] | None = None,
+        *,
+        page_length: int = 100,
+        max_invoices: int = 2000,
+    ) -> dict[str, dict[str, Any]]:
+        needed = set(item_codes) if item_codes is not None else None
+        if needed is not None and not needed:
+            return {}
+        found: dict[str, dict[str, Any]] = {}
+        scanned = 0
+        start = 0
+        page_size = max(1, page_length)
+        while scanned < max_invoices:
+            invoices = self._list_resource(
+                "Sales Invoice",
+                filters=[["docstatus", "=", 1]],
+                fields=["name", "posting_date"],
+                limit=page_size,
+                limit_start=start,
+                order_by="posting_date desc, creation desc",
+            )
+            if not invoices:
+                break
+            for inv in invoices:
+                scanned += 1
+                if scanned > max_invoices:
+                    break
+                name = str(inv.get("name", "")).strip()
+                if not name:
+                    continue
+                doc = self._get_resource("Sales Invoice", name)
+                currency = doc.get("currency")
+                for line in doc.get("items") or []:
+                    if not isinstance(line, dict):
+                        continue
+                    code = str(line.get("item_code", "")).strip()
+                    if not code or code in found:
+                        continue
+                    if needed is not None and code not in needed:
+                        continue
+                    rate = _positive_rate(line.get("rate"))
+                    if rate is None:
+                        continue
+                    found[code] = {
+                        "rate": rate,
+                        "currency": currency,
+                        "uom": line.get("uom"),
+                        "price_list": "last invoice",
+                    }
+                if needed is not None and needed.issubset(found):
+                    return found
+            if len(invoices) < page_size:
+                break
+            start += page_size
+        return found
+
     def find_customer(self, *, email: str | None = None, phone: str | None = None) -> str | None:
         contact = self._find_contact(email=email, phone=phone)
         if not contact:

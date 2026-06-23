@@ -166,6 +166,10 @@ def catalog_rag_sync_cmd(
         bool,
         typer.Option("--all", help="Force full catalog RAG reconcile after ERP sync"),
     ] = False,
+    files_only: Annotated[
+        bool,
+        typer.Option("--files-only", help="Fetch ERPNext catalog markdown only; skip RAG ingest"),
+    ] = False,
 ) -> None:
     """Fetch ERPNext catalog and reconcile RAG (same as dashboard Sync catalog now)."""
     from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
@@ -192,7 +196,9 @@ def catalog_rag_sync_cmd(
 
         catalog_root = tenant_catalog_dir(settings, slug)
         plan = catalog_rag_index_plan(session, tenant.id, catalog_root)
-        embed_total = len(list(catalog_root.glob("*.md"))) if all_files else len(plan.needs_embed)
+        embed_total = 0 if files_only else (
+            len(list(catalog_root.glob("*.md"))) if all_files else len(plan.needs_embed)
+        )
 
         with _catalog_rag_progress(disable=embed_total == 0) as progress:
             task_id = progress.add_task("Embedding catalog", total=max(embed_total, 1))
@@ -203,7 +209,8 @@ def catalog_rag_sync_cmd(
                 tenant_slug=slug,
                 config=integration.config,
                 force_rag_reconcile=all_files,
-                on_file_done=_catalog_rag_on_file_done(progress, task_id),
+                skip_rag_ingest=files_only,
+                on_file_done=_catalog_rag_on_file_done(progress, task_id) if not files_only else None,
                 commit_each_batch=True,
             )
         session.commit()

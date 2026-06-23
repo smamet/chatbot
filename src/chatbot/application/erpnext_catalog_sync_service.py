@@ -73,9 +73,45 @@ def catalog_include_stock(config: dict[str, Any]) -> bool:
 
 
 def catalog_price_list(config: dict[str, Any]) -> str:
-    if "catalog_price_list" not in config:
-        return "Standard Selling"
-    return str(config.get("catalog_price_list", "")).strip()
+    raw = config.get("catalog_price_list", "Standard Selling")
+    name = str(raw).strip()
+    return name or "Standard Selling"
+
+
+def catalog_invoice_price_fallback(config: dict[str, Any]) -> bool:
+    value = config.get("catalog_invoice_price_fallback")
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "on", "yes")
+
+
+def build_catalog_price_map(
+    items: list[dict[str, Any]],
+    *,
+    erp_client: ErpNextClient,
+    config: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    price_by_code = erp_client.fetch_price_list_rates(catalog_price_list(config))
+    if not catalog_invoice_price_fallback(config):
+        return price_by_code
+    missing: set[str] = set()
+    for item in items:
+        code = str(item.get("item_code", "")).strip()
+        if not code or code in price_by_code:
+            continue
+        if _positive_rate(item.get("standard_rate")) is not None:
+            continue
+        missing.add(code)
+    if not missing:
+        return price_by_code
+    invoice_rates = erp_client.fetch_latest_invoice_rates(item_codes=missing)
+    if not invoice_rates:
+        return price_by_code
+    merged = dict(price_by_code)
+    merged.update(invoice_rates)
+    return merged
 
 
 def resolve_catalog_price(
@@ -327,6 +363,7 @@ def sync_erpnext_catalog_for_tenant(
     batch_size: int = 100,
     pause_seconds: float = 0.0,
     force_rag_reconcile: bool = False,
+    skip_rag_ingest: bool = False,
     on_file_done: Callable[[Path, str], None] | None = None,
     commit_each_batch: bool = False,
 ) -> CatalogSyncResult:
@@ -337,10 +374,7 @@ def sync_erpnext_catalog_for_tenant(
     try:
         items = erp_client.list_catalog_items()
         stock_totals = erp_client.fetch_stock_totals() if include_stock else {}
-        price_list_name = catalog_price_list(config)
-        price_by_code = (
-            erp_client.fetch_price_list_rates(price_list_name) if price_list_name else {}
-        )
+        price_by_code = build_catalog_price_map(items, erp_client=erp_client, config=config)
     except Exception as exc:
         return CatalogSyncResult(ok=False, message=str(exc))
 
@@ -354,32 +388,36 @@ def sync_erpnext_catalog_for_tenant(
         sync_date=sync_date,
     )
     paths_to_reindex = file_result.changed_paths
-    try:
-        rag_logs = reconcile_catalog_rag(
-            session,
-            settings=settings,
-            tenant_id=tenant_id,
-            slug=tenant_slug,
-            paths_to_reindex=paths_to_reindex,
-            reconcile_all=force_rag_reconcile,
-            batch_size=batch_size,
-            pause_seconds=pause_seconds,
-            on_file_done=on_file_done,
-            commit_each_batch=commit_each_batch,
-        )
-    except Exception as exc:
-        return CatalogSyncResult(
-            ok=False,
-            message=str(exc),
-            item_count=len(items),
-            files_written=file_result.written,
-            files_removed=file_result.removed,
-            logs=file_result.logs,
-        )
+    rag_logs: list[str] = []
+    if not skip_rag_ingest:
+        try:
+            rag_logs = reconcile_catalog_rag(
+                session,
+                settings=settings,
+                tenant_id=tenant_id,
+                slug=tenant_slug,
+                paths_to_reindex=paths_to_reindex,
+                reconcile_all=force_rag_reconcile,
+                batch_size=batch_size,
+                pause_seconds=pause_seconds,
+                on_file_done=on_file_done,
+                commit_each_batch=commit_each_batch,
+            )
+        except Exception as exc:
+            return CatalogSyncResult(
+                ok=False,
+                message=str(exc),
+                item_count=len(items),
+                files_written=file_result.written,
+                files_removed=file_result.removed,
+                logs=file_result.logs,
+            )
 
     rag_indexed = sum(1 for line in rag_logs if line.startswith("ingested "))
     message = f"Catalog synced: {len(items)} items"
-    if file_result.written == 0 and file_result.removed == 0 and not force_rag_reconcile:
+    if skip_rag_ingest:
+        message += " (RAG ingest skipped)"
+    elif file_result.written == 0 and file_result.removed == 0 and not force_rag_reconcile:
         message += " (no file changes, RAG ingest skipped)"
     elif rag_indexed:
         message += f" ({rag_indexed} files re-indexed)"

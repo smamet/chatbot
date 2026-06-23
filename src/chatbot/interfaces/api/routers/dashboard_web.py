@@ -27,7 +27,7 @@ from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEve
 from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
 from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir
+from chatbot.adapters.persistence.tenant_paths import tenant_catalog_dir, tenant_docs_dir
 from chatbot.adapters.persistence.test_chat_session_repository import TestChatSessionRepository
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.bot_bundle_service import (
@@ -62,6 +62,11 @@ from chatbot.application.validation_regenerate_service import (
 from chatbot.application.validation_translate_service import (
     ValidationTranslateError,
     translate_pending_reply_draft,
+)
+from chatbot.application.catalog_inspector_service import (
+    build_inspector_page,
+    fetch_and_cache_invoice_rates,
+    inspector_page_to_dict,
 )
 from chatbot.application.customer_access_gate import build_channel_session_id, resolve_manual_identity
 from chatbot.application.customer_provisioning_service import create_erpnext_customer_for_test
@@ -3118,6 +3123,112 @@ def purge_erpnext_catalog(
     )
     session.commit()
     return JSONResponse({"ok": True, "message": "Catalog files and RAG vectors purged.", "logs": logs})
+
+
+def _active_erpnext_integration(session: Session, tenant_id: int) -> Integration:
+    integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
+        tenant_id,
+        type=IntegrationType.ERPNEXT,
+    )
+    if integration is None:
+        raise HTTPException(status_code=404, detail="Active ERPNext integration required")
+    return integration
+
+
+@router.get("/bots/{slug}/integrations/erpnext/catalog")
+def erpnext_catalog_inspector_page(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    _active_erpnext_integration(session, tenant.id)
+    return templates.TemplateResponse(
+        request,
+        "bots/erpnext_catalog_inspector.html",
+        {
+            "user": user,
+            "tenant": tenant,
+            "title": f"Catalog prices — {tenant.name}",
+        },
+    )
+
+
+@router.get("/bots/{slug}/integrations/erpnext/catalog/data")
+def erpnext_catalog_inspector_data(
+    slug: str,
+    q: str = "",
+    price_filter: str = "all",
+    mismatch_filter: str = "all",
+    page: int = 1,
+    page_size: int = 50,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    integration = _active_erpnext_integration(session, tenant.id)
+    catalog_dir = tenant_catalog_dir(settings, tenant.slug)
+    client = ErpNextClient(integration.config)
+    try:
+        result = build_inspector_page(
+            catalog_dir,
+            client=client,
+            config=integration.config,
+            query=q,
+            price_filter=price_filter,
+            mismatch_filter=mismatch_filter,
+            page=page,
+            page_size=max(1, min(page_size, 200)),
+        )
+    except Exception as exc:
+        logger.exception("Catalog inspector failed for %s", slug)
+        return JSONResponse(
+            {"ok": False, "message": str(exc), "error": "inspector_failed"},
+            status_code=502,
+        )
+    payload = inspector_page_to_dict(result)
+    payload["ok"] = True
+    return JSONResponse(payload)
+
+
+@router.post("/bots/{slug}/integrations/erpnext/catalog/refresh-invoices")
+def erpnext_catalog_refresh_invoices(
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    integration = _active_erpnext_integration(session, tenant.id)
+    catalog_dir = tenant_catalog_dir(settings, tenant.slug)
+    client = ErpNextClient(integration.config)
+    try:
+        cache = fetch_and_cache_invoice_rates(catalog_dir, client)
+    except Exception as exc:
+        logger.exception("Invoice price cache refresh failed for %s", slug)
+        return JSONResponse(
+            {"ok": False, "message": str(exc), "error": "invoice_cache_failed"},
+            status_code=502,
+        )
+    return JSONResponse(
+        {
+            "ok": True,
+            "cached_at": cache.cached_at,
+            "count": len(cache.rates),
+            "message": f"Cached {len(cache.rates)} invoice prices.",
+        }
+    )
 
 
 @router.get("/bots/{slug}/integrations/erpnext/quotation-pdf/{quote_name}")

@@ -499,6 +499,45 @@ def test_find_customer_returns_none_on_http_error() -> None:
         assert client.find_customer(email="missing@example.com") is None
 
 
+def test_fetch_latest_invoice_rates_uses_newest_invoice_first() -> None:
+    client = ErpNextClient(_config())
+
+    def fake_list(
+        doctype: str,
+        *,
+        filters: list[list[str]],
+        fields: list[str],
+        limit: int,
+        order_by: str = "modified desc",
+        limit_start: int = 0,
+    ) -> list[dict]:
+        assert doctype == "Sales Invoice"
+        return [{"name": "SINV-NEW"}, {"name": "SINV-OLD"}]
+
+    def fake_get_resource(doctype: str, name: str) -> dict:
+        if name == "SINV-NEW":
+            return {
+                "currency": "MUR",
+                "items": [
+                    {"item_code": "A", "rate": 0, "uom": "Nos"},
+                    {"item_code": "B", "rate": 500, "uom": "Nos"},
+                ],
+            }
+        return {
+            "currency": "MUR",
+            "items": [{"item_code": "A", "rate": 100, "uom": "Nos"}],
+        }
+
+    with patch.object(client, "_list_resource", side_effect=fake_list), patch.object(
+        client, "_get_resource", side_effect=fake_get_resource
+    ):
+        rates = client.fetch_latest_invoice_rates(item_codes={"A", "B"})
+
+    assert rates["A"]["rate"] == 100.0
+    assert rates["B"]["rate"] == 500.0
+    assert rates["B"]["price_list"] == "last invoice"
+
+
 def test_download_quotation_pdf_uses_print_template_endpoint() -> None:
     client = ErpNextClient(_config())
     calls: list[tuple[str, dict[str, str] | None]] = []

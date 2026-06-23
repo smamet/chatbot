@@ -1157,6 +1157,8 @@
             <div><dt>Last error</dt><dd class="integration-catalog-last-error">—</dd></div>
           </dl>
           <button type="button" class="btn-secondary btn-sm integration-catalog-sync-btn" data-slug="{{ tenant.slug }}">Sync catalog now</button>
+          <a href="/dashboard/bots/{{ tenant.slug }}/integrations/erpnext/catalog"
+             class="btn-secondary btn-sm">Inspect catalog prices</a>
           <button type="button" class="btn-danger btn-sm integration-catalog-purge-btn" data-slug="{{ tenant.slug }}">Purge catalog files</button>
           <pre class="integration-catalog-sync-result integration-test-result" hidden></pre>
         </div>

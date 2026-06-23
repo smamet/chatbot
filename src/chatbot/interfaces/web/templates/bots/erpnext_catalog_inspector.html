@@ -1,0 +1,288 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>Catalog price inspector</h1>
+  <p class="subtitle">
+    <code>{{ tenant.slug }}</code> — compare RAG snapshot (local <code>.md</code> files) with live ERPNext prices.
+    The table loads automatically when you open this page.
+  </p>
+  <div class="form-actions form-actions--compact">
+    <a href="/dashboard/bots/{{ tenant.slug }}?tab=integrations&amp;integration_type=erpnext" class="btn-secondary btn-sm">← Back to integrations</a>
+  </div>
+</div>
+
+<div class="card card--flat catalog-inspector-toolbar">
+  <div class="catalog-inspector-search">
+    <label for="catalog-inspector-q">Search</label>
+    <input type="search" id="catalog-inspector-q" class="input" placeholder="Item code, name, description…" autocomplete="off">
+  </div>
+  <div class="catalog-inspector-price-filter">
+    <label for="catalog-inspector-price-filter">RAG price</label>
+    <select id="catalog-inspector-price-filter" class="input">
+      <option value="all">All products</option>
+      <option value="with">With price</option>
+      <option value="without">No price</option>
+    </select>
+  </div>
+  <div class="catalog-inspector-mismatch-filter">
+    <label for="catalog-inspector-mismatch-filter">RAG vs ERPNext</label>
+    <select id="catalog-inspector-mismatch-filter" class="input">
+      <option value="all">All products</option>
+      <option value="mismatch">Mismatches only</option>
+      <option value="aligned">Aligned only</option>
+    </select>
+  </div>
+  <div class="catalog-inspector-stats" id="catalog-inspector-stats" aria-live="polite"></div>
+  <div class="catalog-inspector-invoice-actions">
+    <span id="catalog-inspector-invoice-meta" class="field-hint"></span>
+    <button type="button" class="btn-secondary btn-sm" id="catalog-inspector-invoices-btn">Load invoice prices</button>
+  </div>
+</div>
+
+<div id="catalog-inspector-error" class="integration-test-result err" hidden></div>
+
+<div class="table-wrap">
+  <table class="data-table validation-table catalog-inspector-table">
+    <thead>
+      <tr>
+        <th>Product</th>
+        <th>Description</th>
+        <th>RAG price</th>
+        <th>RAG source</th>
+        <th id="catalog-inspector-price-list-header">Item price</th>
+        <th>Standard rate</th>
+        <th>Last invoice</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody id="catalog-inspector-tbody">
+      <tr><td colspan="8" class="empty-state">Loading…</td></tr>
+    </tbody>
+  </table>
+</div>
+
+<nav class="catalog-inspector-pagination" id="catalog-inspector-pagination" aria-label="Catalog pagination"></nav>
+
+<script>
+(function () {
+  const slug = {{ tenant.slug|tojson }};
+  const base = '/dashboard/bots/' + slug + '/integrations/erpnext/catalog';
+  const qInput = document.getElementById('catalog-inspector-q');
+  const priceFilterInput = document.getElementById('catalog-inspector-price-filter');
+  const mismatchFilterInput = document.getElementById('catalog-inspector-mismatch-filter');
+  const tbody = document.getElementById('catalog-inspector-tbody');
+  const statsEl = document.getElementById('catalog-inspector-stats');
+  const paginationEl = document.getElementById('catalog-inspector-pagination');
+  const errorEl = document.getElementById('catalog-inspector-error');
+  const invoiceMetaEl = document.getElementById('catalog-inspector-invoice-meta');
+  const invoicesBtn = document.getElementById('catalog-inspector-invoices-btn');
+  const priceListHeader = document.getElementById('catalog-inspector-price-list-header');
+  let currentPage = 1;
+  let searchTimer = null;
+  let loadRequestId = 0;
+
+  function toggleDescriptionRow(row) {
+    const panelId = row.getAttribute('data-panel');
+    if (!panelId) return;
+    const panel = document.getElementById(panelId);
+    if (!panel) return;
+    const open = !row.classList.contains('is-open');
+    row.classList.toggle('is-open', open);
+    if (open) {
+      panel.removeAttribute('hidden');
+    } else {
+      panel.setAttribute('hidden', '');
+    }
+    row.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+
+  tbody.addEventListener('click', (event) => {
+    const row = event.target.closest('tr.validation-row[data-panel]');
+    if (!row || !tbody.contains(row)) return;
+    if (event.target.closest('a, button, input, form')) return;
+    toggleDescriptionRow(row);
+  });
+
+  tbody.addEventListener('keydown', (event) => {
+    const row = event.target.closest('tr.validation-row[data-panel]');
+    if (!row || !tbody.contains(row)) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    toggleDescriptionRow(row);
+  });
+
+  function showTableLoading(message) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">' + escapeHtml(message) + '</td></tr>';
+  }
+
+  function escapeHtml(text) {
+    return String(text || '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  function formatCacheDate(iso) {
+    if (!iso) return '';
+    try {
+      return new Date(iso).toLocaleString();
+    } catch (_) {
+      return iso;
+    }
+  }
+
+  function updateInvoiceControls(cacheAt, cacheCount) {
+    if (cacheAt) {
+      invoiceMetaEl.textContent = 'Invoice prices updated: ' + formatCacheDate(cacheAt) + ' (' + cacheCount + ' items)';
+      invoicesBtn.textContent = 'Refresh invoice prices';
+    } else {
+      invoiceMetaEl.textContent = 'Invoice prices not loaded yet.';
+      invoicesBtn.textContent = 'Load invoice prices';
+    }
+  }
+
+  function renderRows(rows) {
+    if (!rows.length) {
+      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No products match your filters.</td></tr>';
+      return;
+    }
+    tbody.innerHTML = rows.map((row, index) => {
+      const panelId = 'catalog-desc-' + index;
+      const mismatchClass = row.mismatch ? ' catalog-inspector-row--mismatch' : '';
+      const hasLongDesc = row.description && row.description.length > row.description_truncated.length;
+      return (
+        '<tr class="validation-row catalog-inspector-row' + mismatchClass + '"' +
+        (hasLongDesc ? ' data-panel="' + panelId + '" tabindex="0" role="button" aria-expanded="false" aria-controls="' + panelId + '"' : '') + '>' +
+        '<td><strong>' + escapeHtml(row.name) + '</strong><br><code class="text-muted">' + escapeHtml(row.item_code) + '</code></td>' +
+        '<td>' + escapeHtml(row.description_truncated || '—') + '</td>' +
+        '<td>' + escapeHtml(row.rag_price_display) + '</td>' +
+        '<td>' + escapeHtml(row.rag_source || (row.rag_price_display === 'not available' ? '—' : 'standard_rate')) + '</td>' +
+        '<td>' + escapeHtml(row.item_price_display) + '</td>' +
+        '<td>' + escapeHtml(row.standard_rate_display) + '</td>' +
+        '<td>' + escapeHtml(row.invoice_price_display) + '</td>' +
+        '<td class="validation-row-chevron" aria-hidden="true">' + (hasLongDesc ? '▶' : '') + '</td>' +
+        '</tr>' +
+        (hasLongDesc
+          ? '<tr id="' + panelId + '" class="validation-expand-row" hidden><td colspan="8"><div class="validation-panel"><h4>Description</h4><pre class="validation-message-body">' + escapeHtml(row.description) + '</pre></div></td></tr>'
+          : '')
+      );
+    }).join('');
+  }
+
+  function renderPagination(page, totalPages) {
+    if (totalPages <= 1) {
+      paginationEl.innerHTML = '';
+      return;
+    }
+    const parts = [];
+    if (page > 1) {
+      parts.push('<button type="button" class="btn-secondary btn-sm" data-page="' + (page - 1) + '">Previous</button>');
+    }
+    parts.push('<span class="field-hint">Page ' + page + ' / ' + totalPages + '</span>');
+    if (page < totalPages) {
+      parts.push('<button type="button" class="btn-secondary btn-sm" data-page="' + (page + 1) + '">Next</button>');
+    }
+    paginationEl.innerHTML = parts.join(' ');
+    paginationEl.querySelectorAll('button[data-page]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        currentPage = parseInt(btn.getAttribute('data-page'), 10) || 1;
+        loadData();
+      });
+    });
+  }
+
+  function renderStats(stats, priceListName, invoiceFallback) {
+    if (!stats) {
+      statsEl.textContent = '';
+      return;
+    }
+    const fallbackLabel = invoiceFallback ? 'invoice fallback on' : 'invoice fallback off';
+    statsEl.textContent =
+      stats.total + ' products · ' +
+      stats.with_rag_price + ' with RAG price · ' +
+      stats.mismatches + ' mismatches · ' +
+      'price list: ' + priceListName + ' · ' + fallbackLabel;
+    priceListHeader.textContent = 'Item price (' + priceListName + ')';
+  }
+
+  async function loadData() {
+    const requestId = ++loadRequestId;
+    errorEl.hidden = true;
+    showTableLoading('Loading RAG snapshot and live ERPNext prices…');
+    const params = new URLSearchParams();
+    const q = qInput.value.trim();
+    if (q) params.set('q', q);
+    const priceFilter = priceFilterInput.value || 'all';
+    if (priceFilter !== 'all') params.set('price_filter', priceFilter);
+    const mismatchFilter = mismatchFilterInput.value || 'all';
+    if (mismatchFilter !== 'all') params.set('mismatch_filter', mismatchFilter);
+    params.set('page', String(currentPage));
+    try {
+      const response = await fetch(base + '/data?' + params.toString(), {
+        headers: { Accept: 'application/json' },
+      });
+      const payload = await response.json();
+      if (requestId !== loadRequestId) return;
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.message || 'Failed to load catalog data');
+      }
+      renderRows(payload.rows || []);
+      renderPagination(payload.page || 1, payload.total_pages || 1);
+      renderStats(payload.stats, payload.price_list_name || 'Standard Selling', payload.invoice_fallback_enabled);
+      updateInvoiceControls(payload.invoice_cache_at, payload.invoice_cache_count || 0);
+    } catch (err) {
+      if (requestId !== loadRequestId) return;
+      errorEl.textContent = err.message || String(err);
+      errorEl.hidden = false;
+      showTableLoading('Could not load catalog data.');
+    }
+  }
+
+  async function refreshInvoices() {
+    const requestId = ++loadRequestId;
+    invoicesBtn.disabled = true;
+    errorEl.hidden = true;
+    showTableLoading('Scanning submitted invoices…');
+    try {
+      const response = await fetch(base + '/refresh-invoices', { method: 'POST' });
+      const payload = await response.json();
+      if (requestId !== loadRequestId) return;
+      if (!response.ok || !payload.ok) {
+        throw new Error(payload.message || 'Invoice price refresh failed');
+      }
+      await loadData();
+    } catch (err) {
+      if (requestId !== loadRequestId) return;
+      errorEl.textContent = err.message || String(err);
+      errorEl.hidden = false;
+      showTableLoading('Invoice price scan failed.');
+    } finally {
+      invoicesBtn.disabled = false;
+    }
+  }
+
+  qInput.addEventListener('input', () => {
+    clearTimeout(searchTimer);
+    searchTimer = setTimeout(() => {
+      currentPage = 1;
+      loadData();
+    }, 300);
+  });
+
+  priceFilterInput.addEventListener('change', () => {
+    currentPage = 1;
+    loadData();
+  });
+
+  mismatchFilterInput.addEventListener('change', () => {
+    currentPage = 1;
+    loadData();
+  });
+
+  invoicesBtn.addEventListener('click', refreshInvoices);
+
+  loadData();
+})();
+</script>
+{% endblock %}

@@ -594,6 +594,14 @@ textarea {
   background: #f8fafc;
 }
 
+.validation-expand-row[hidden] {
+  display: none;
+}
+
+.catalog-inspector-table .validation-expand-row:not([hidden]) {
+  display: table-row;
+}
+
 .validation-panel {
   padding: var(--space-md) var(--space-lg) var(--space-lg);
 }
@@ -2207,6 +2215,10 @@ form.is-submitting {
   color: var(--color-text-muted);
 }
 
+.field-hint[hidden] {
+  display: none !important;
+}
+
 #connector-mode-wrap[hidden] {
   display: none !important;
 }
@@ -2844,4 +2856,51 @@ button.is-loading,
 .data-table--compact th {
   padding-top: 0.5rem;
   padding-bottom: 0.5rem;
+}
+
+.catalog-inspector-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: var(--space-lg);
+}
+
+.catalog-inspector-search {
+  flex: 1 1 240px;
+}
+
+.catalog-inspector-price-filter,
+.catalog-inspector-mismatch-filter {
+  flex: 0 1 180px;
+}
+
+.catalog-inspector-price-filter .input,
+.catalog-inspector-mismatch-filter .input {
+  width: 100%;
+}
+
+.catalog-inspector-stats {
+  flex: 1 1 320px;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.catalog-inspector-invoice-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
+.catalog-inspector-pagination {
+  display: flex;
+  gap: var(--space-sm);
+  align-items: center;
+  margin-top: var(--space-md);
+}
+
+.catalog-inspector-row--mismatch td {
+  background: color-mix(in srgb, var(--danger) 8%, transparent);
 }

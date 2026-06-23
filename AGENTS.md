@@ -71,7 +71,7 @@ Clears messages, `hook_events`, validation queue (`pending_replies` + edits + au
 
 - Service: `src/chatbot/application/erpnext_catalog_sync_service.py`; client pagination in `ErpNextClient.list_catalog_items` / `fetch_stock_totals` / `fetch_price_list_rates`.
 - Worker: `python -m chatbot.interfaces.worker_catalog` (`--once` for a single poll). Poll interval: `CATALOG_POLL_SECONDS`; per-bot interval: `catalog_sync_interval_minutes` in integration config.
-- `catalog_price_list`: absent → `Standard Selling`; empty string → Item Price skipped (standard_rate only). Never emit price `0.0` in markdown.
+- `catalog_price_list`: defaults to `Standard Selling` (blank/absent included). Price resolution: Item Price → `standard_rate` → latest invoice `rate` (only when `catalog_invoice_price_fallback` is enabled; **off by default**) → `not available`. Never emit price `0.0` in markdown.
 - Do not call document `reconcile_root` on `data/catalog/` or vice versa — separate roots, separate `IngestSyncService` runs.
 - Metadata keys (`catalog_last_*`) are outside the integration schema; `_merge_integration_config` preserves them on dashboard save. Worker re-reads config before writing metadata.
 - **CLI (same pipeline as dashboard/worker):**
@@ -80,7 +80,9 @@ Clears messages, `hook_events`, validation queue (`pending_replies` + edits + au
   ./sail chatbot catalog-rag rebuild {slug} --dry-run
   ./sail chatbot catalog-rag rebuild {slug} --all     # force full catalog scan (unchanged skip embed)
   ./sail chatbot catalog-rag sync {slug}              # ERPNext fetch + RAG reconcile
+  ./sail chatbot catalog-rag sync {slug} --files-only # ERPNext fetch only (no RAG ingest)
   ```
+- **Catalog price inspector** (dashboard): Integrations → ERPNext → Catalog RAG sync → **Inspect catalog prices**. Compares RAG snapshot markdown vs live ERPNext Item Price / `standard_rate`; invoice column loads on demand into `data/catalog/{slug}/.invoice-price-cache.json` (timestamp shown, refresh button). Mismatch rows highlighted when RAG rate ≠ expected resolution for the bot config.
 - `catalog_rag_index_plan()` → `needs_embed` / `already_indexed` (content hash vs `ingested_files`). `reconcile_catalog_rag(..., on_file_done, commit_each_batch)` — auto `commit_each_batch` when >50 files.
 - **Embedding:** `GeminiEmbedder.embed_texts()` — no fixed RPM throttle; retry 429 (`Retry-After` or 30×2ⁿ s, max 120) and 503 (5×2ⁿ s, max 30). Env: `EMBED_RETRY_MAX`, `EMBED_RETRY_BASE_429_SECONDS`, `EMBED_RETRY_BASE_503_SECONDS`. SDK HTTP retry disabled (`attempts=1`); app loop owns backoff.
 
