@@ -18,7 +18,7 @@ from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepos
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.ingest_service import file_content_hash
 from chatbot.application.fx_rate_service import FxRateService
-from chatbot.application.sync_service import IngestSyncService
+from chatbot.application.sync_service import IngestSyncService, _is_path_under_root
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.application.usage_metering import metered_embedder
 from chatbot.application.tenant_service import TenantService
@@ -606,16 +606,20 @@ def _purge_catalog_rag_vectors(
     tenant_slug: str,
 ) -> list[str]:
     catalog_dir = tenant_catalog_dir(settings, tenant_slug)
-    embedder = GeminiEmbedder()
     vector_store = LanceVectorStore(settings.lancedb_root / tenant_slug)
-    sync = IngestSyncService(
-        settings=settings,
-        embedder=embedder,
-        vector_store=vector_store,
-        session=session,
-        tenant_id=tenant_id,
+    vector_store.delete_by_source_path_prefix(f"{catalog_dir.resolve()}/")
+    rows = list(
+        session.scalars(
+            select(IngestedFileRow).where(IngestedFileRow.tenant_id == tenant_id)
+        ).all()
     )
-    return sync.purge_under_root(catalog_dir)
+    under = [row for row in rows if _is_path_under_root(row.path, catalog_dir)]
+    for row in under:
+        session.delete(row)
+    session.flush()
+    if under:
+        return [f"purged index: {len(under)} paths under {catalog_dir}"]
+    return ["no ingested paths under catalog"]
 
 
 def purge_catalog_files_and_rag(
@@ -626,12 +630,7 @@ def purge_catalog_files_and_rag(
     tenant_slug: str,
 ) -> list[str]:
     catalog_dir = tenant_catalog_dir(settings, tenant_slug)
-    logs = _purge_catalog_rag_vectors(
-        session,
-        settings=settings,
-        tenant_id=tenant_id,
-        tenant_slug=tenant_slug,
-    )
+    logs: list[str] = []
     removed = 0
     if catalog_dir.is_dir():
         for path in catalog_dir.glob("*.md"):
@@ -641,6 +640,14 @@ def purge_catalog_files_and_rag(
             except OSError:
                 logs.append(f"failed to delete: {path}")
     logs.append(f"removed {removed} catalog markdown files")
+    logs.extend(
+        _purge_catalog_rag_vectors(
+            session,
+            settings=settings,
+            tenant_id=tenant_id,
+            tenant_slug=tenant_slug,
+        )
+    )
     return logs
 
 

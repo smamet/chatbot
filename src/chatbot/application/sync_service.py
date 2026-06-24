@@ -92,10 +92,11 @@ class IngestSyncService:
             ).all()
         )
         under = [r for r in rows if _is_path_under_root(r.path, root)]
-        for row in under:
-            self._store.delete_by_source_path(row.path)
-            self._session.delete(row)
-            logs.append(f"purged index: {row.path}")
+        if under:
+            self._store.delete_by_source_path_prefix(f"{root}/")
+            for row in under:
+                self._session.delete(row)
+            logs.append(f"purged index: {len(under)} paths under {root}")
         self._session.flush()
         if not under:
             logs.append("no ingested paths under root")

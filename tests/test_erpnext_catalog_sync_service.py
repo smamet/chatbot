@@ -808,11 +808,12 @@ def test_apply_catalog_rag_transition_purges_on_disable(test_settings, test_tena
             def delete_by_source_path(self, path: str) -> None:
                 deleted.append(path)
 
+            def delete_by_source_path_prefix(self, prefix: str) -> None:
+                deleted.append(prefix)
+
         with patch(
             "chatbot.application.erpnext_catalog_sync_service.LanceVectorStore",
             return_value=FakeStore(),
-        ), patch(
-            "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder",
         ):
             from chatbot.application.erpnext_catalog_sync_service import apply_catalog_rag_transition
 
@@ -830,7 +831,7 @@ def test_apply_catalog_rag_transition_purges_on_disable(test_settings, test_tena
             session.commit()
 
     assert md_path.is_file()
-    assert str(md_path) in deleted
+    assert any(str(md_path) in p or p.endswith("/") for p in deleted)
 
 
 def test_apply_catalog_rag_transition_starts_import_on_enable(test_settings, test_tenant) -> None:

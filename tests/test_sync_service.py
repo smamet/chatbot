@@ -27,6 +27,9 @@ class _FakeVectorStore:
     def delete_by_source_path(self, source_path: str) -> None:
         self.deleted_paths.append(source_path)
 
+    def delete_by_source_path_prefix(self, prefix: str) -> None:
+        self.deleted_paths.append(prefix)
+
     def clear_all(self) -> None:
         self.cleared = True
 
@@ -152,7 +155,7 @@ def test_reconcile_fresh_purges_root_only_and_ingests(sync_session) -> None:
     svc._ingest.ingest_path = Mock(return_value=["ingest-stub"])
     logs = svc.reconcile_root(docs_root, fresh=True)
     assert not store.cleared
-    assert docs_path in store.deleted_paths
+    assert any(docs_path in p or p == f"{docs_root.resolve()}/" for p in store.deleted_paths)
     assert catalog_path not in store.deleted_paths
     assert any("purged index" in line for line in logs)
     assert "ingest-stub" in logs
@@ -300,6 +303,9 @@ def test_purge_under_root_removes_vectors_keeps_files(
         def delete_by_source_path(self, path: str) -> None:
             deleted_paths.append(path)
 
+        def delete_by_source_path_prefix(self, prefix: str) -> None:
+            deleted_paths.append(prefix)
+
         def optimize(self, *, cleanup_older_than=None) -> str | None:
             return None
 
@@ -328,5 +334,5 @@ def test_purge_under_root_removes_vectors_keeps_files(
         session.commit()
 
     assert md_path.is_file()
-    assert str(md_path) in deleted_paths
+    assert any(str(md_path) in p or p.endswith("/") for p in deleted_paths)
     assert any("purged index" in line for line in logs)

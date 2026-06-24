@@ -668,3 +668,54 @@ def test_submit_quotation_retries_after_timestamp_mismatch() -> None:
     ):
         assert client.submit_quotation("QTN-0003") is None
 
+
+def test_probe_invoice_prices_reports_permission_error() -> None:
+    client = ErpNextClient(_config())
+    response = MagicMock()
+    response.status_code = 403
+    response.json.return_value = {"message": "Not permitted"}
+    err = __import__("httpx").HTTPStatusError(
+        "forbidden",
+        request=MagicMock(),
+        response=response,
+    )
+    with patch("chatbot.adapters.erpnext.client.httpx.Client") as mock_client:
+        mock_client.return_value.__enter__.return_value.get.side_effect = err
+        result = client.probe_invoice_prices()
+    assert result["ok"] is False
+    assert result["http_status"] == 403
+    assert "Not permitted" in result["error"]
+
+
+def test_probe_invoice_prices_success() -> None:
+    client = ErpNextClient(_config())
+    list_payload = {"data": [{"name": "SINV-0001", "posting_date": "2026-01-01"}]}
+    detail_payload = {
+        "data": {
+            "name": "SINV-0001",
+            "currency": "MUR",
+            "items": [{"item_code": "ITEM-A", "rate": 100.0}],
+        }
+    }
+
+    def fake_get(url, *, headers, params=None):
+        response = MagicMock()
+        response.raise_for_status = MagicMock()
+        if params is not None:
+            response.json.return_value = list_payload
+        else:
+            response.json.return_value = detail_payload
+        return response
+
+    with patch("chatbot.adapters.erpnext.client.httpx.Client") as mock_client:
+        mock_client.return_value.__enter__.return_value.get.side_effect = fake_get
+        with patch.object(
+            client,
+            "fetch_latest_invoice_rates",
+            return_value={"ITEM-A": {"rate": 100.0, "currency": "MUR", "price_list": "last invoice"}},
+        ):
+            result = client.probe_invoice_prices()
+    assert result["ok"] is True
+    assert result["rates_found"] == 1
+    assert result["sample_item_codes"] == ["ITEM-A"]
+

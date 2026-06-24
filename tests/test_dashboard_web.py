@@ -2651,6 +2651,26 @@ def test_catalog_inspector_refresh_invoices(dashboard_env) -> None:
     assert r.json()["count"] == 1
 
 
+def test_erpnext_invoice_price_test_endpoint(dashboard_env) -> None:
+    client, admin, _, slug, _, _data, _ = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    _save_erpnext_integration(client, slug)
+    with patch("chatbot.interfaces.api.routers.dashboard_web.ErpNextClient") as mock_cls:
+        mock_cls.return_value.probe_invoice_prices.return_value = {
+            "ok": True,
+            "message": "Sales Invoice API OK — 2 item rate(s) from up to 25 invoices.",
+            "rates_found": 2,
+            "sample_item_codes": ["A", "B"],
+            "preview": "Sales Invoice list: OK\nRates found (scan ≤25 invoices): 2",
+        }
+        r = client.post(f"/dashboard/bots/{slug}/integrations/erpnext/test-invoice-prices")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is True
+    assert body["rates_found"] == 2
+    mock_cls.return_value.probe_invoice_prices.assert_called_once()
+
+
 def test_purge_catalog_endpoint(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")

@@ -346,6 +346,39 @@
     });
   });
 
+  document.querySelectorAll(".integration-invoice-price-test-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const resultEl = document.querySelector(".integration-invoice-price-test-result");
+      if (!resultEl) return;
+      const slug = btn.dataset.slug;
+      btn.disabled = true;
+      resultEl.hidden = false;
+      resultEl.className = "integration-invoice-price-test-result integration-test-result";
+      resultEl.textContent = "Testing invoice access…";
+      try {
+        const res = await fetch(
+          `/dashboard/bots/${slug}/integrations/erpnext/test-invoice-prices`,
+          { method: "POST", credentials: "same-origin" },
+        );
+        const data = await res.json().catch(() => ({}));
+        resultEl.classList.add(data.ok ? "ok" : "err");
+        const lines = [data.preview || data.message || ""];
+        if (data.error && !data.ok) {
+          lines.push(String(data.error));
+        }
+        if (data.http_status) {
+          lines.push(`HTTP ${data.http_status}`);
+        }
+        resultEl.textContent = lines.filter(Boolean).join("\n");
+      } catch (err) {
+        resultEl.classList.add("err");
+        resultEl.textContent = String(err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  });
+
   document.querySelectorAll(".integration-catalog-purge-btn").forEach((btn) => {
     btn.addEventListener("click", async () => {
       if (!confirm("Delete all catalog markdown files and remove them from RAG?")) return;
@@ -361,7 +394,12 @@
           method: "POST",
           credentials: "same-origin",
         });
-        const data = await res.json();
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          resultEl.classList.add("err");
+          resultEl.textContent = data.message || data.detail || data.error || `HTTP ${res.status}`;
+          return;
+        }
         resultEl.classList.add(data.ok ? "ok" : "err");
         resultEl.textContent = data.message || data.error || "Done";
         if (data.ok) {

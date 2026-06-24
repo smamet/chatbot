@@ -494,6 +494,112 @@ class ErpNextClient:
             start += page_size
         return found
 
+    def probe_invoice_prices(self, *, max_invoices: int = 25) -> dict[str, Any]:
+        """Diagnose Sales Invoice API access for catalog invoice pricing."""
+        if not self._base_url or not self._api_key or not self._api_secret:
+            return {
+                "ok": False,
+                "message": "ERPNext URL, API key and secret are required.",
+                "error": "missing_credentials",
+            }
+        capped = max(1, min(max_invoices, 200))
+        list_url = urljoin(f"{self._base_url}/", "/api/resource/Sales Invoice")
+        list_params: dict[str, str] = {
+            "filters": self._filters_json([["docstatus", "=", 1]]),
+            "fields": json.dumps(["name", "posting_date"]),
+            "limit_page_length": "1",
+            "order_by": "posting_date desc, creation desc",
+        }
+        try:
+            with httpx.Client(timeout=self._timeout) as http:
+                response = http.get(list_url, headers=self._headers(), params=list_params)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            return {
+                "ok": False,
+                "message": "Cannot list submitted Sales Invoices — check API user permissions.",
+                "error": self._parse_erpnext_error(exc),
+                "http_status": exc.response.status_code,
+            }
+        except httpx.HTTPError as exc:
+            return {
+                "ok": False,
+                "message": "Network error while listing Sales Invoices.",
+                "error": str(exc),
+            }
+        rows = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            return {
+                "ok": False,
+                "message": "Unexpected ERPNext response when listing Sales Invoice.",
+                "error": "invalid_response",
+            }
+        if not rows:
+            return {
+                "ok": True,
+                "message": "Sales Invoice API reachable but no submitted invoices found.",
+                "invoice_list_access": True,
+                "rates_found": 0,
+                "invoices_scanned": 0,
+                "sample_item_codes": [],
+                "preview": "List access OK — 0 submitted invoices in ERPNext.",
+            }
+
+        first_name = str(rows[0].get("name", "")).strip()
+        if first_name:
+            detail_url = urljoin(
+                f"{self._base_url}/",
+                f"/api/resource/Sales Invoice/{quote(first_name, safe='')}",
+            )
+            try:
+                with httpx.Client(timeout=self._timeout) as http:
+                    response = http.get(detail_url, headers=self._headers())
+                    response.raise_for_status()
+                    doc = response.json().get("data")
+            except httpx.HTTPStatusError as exc:
+                return {
+                    "ok": False,
+                    "message": f"Can list invoices but cannot read detail for {first_name}.",
+                    "error": self._parse_erpnext_error(exc),
+                    "http_status": exc.response.status_code,
+                    "invoice_list_access": True,
+                }
+            except httpx.HTTPError as exc:
+                return {
+                    "ok": False,
+                    "message": f"Network error reading Sales Invoice {first_name}.",
+                    "error": str(exc),
+                    "invoice_list_access": True,
+                }
+            if not isinstance(doc, dict) or not doc.get("items"):
+                return {
+                    "ok": False,
+                    "message": f"Sales Invoice {first_name} returned no line items.",
+                    "error": "empty_invoice_items",
+                    "invoice_list_access": True,
+                }
+
+        rates = self.fetch_latest_invoice_rates(max_invoices=capped)
+        sample = list(rates.keys())[:5]
+        preview_lines = [
+            f"Sales Invoice list: OK",
+            f"Rates found (scan ≤{capped} invoices): {len(rates)}",
+        ]
+        if sample:
+            preview_lines.append(f"Sample items: {', '.join(sample)}")
+        return {
+            "ok": True,
+            "message": (
+                f"Sales Invoice API OK — {len(rates)} item rate(s) from up to {capped} invoices."
+            ),
+            "invoice_list_access": True,
+            "rates_found": len(rates),
+            "invoices_scanned": capped,
+            "sample_item_codes": sample,
+            "preview": "\n".join(preview_lines),
+        }
+
     def find_customer(self, *, email: str | None = None, phone: str | None = None) -> str | None:
         contact = self._find_contact(email=email, phone=phone)
         if not contact:

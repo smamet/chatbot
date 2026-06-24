@@ -3132,6 +3132,35 @@ def purge_erpnext_catalog(
     return JSONResponse({"ok": True, "message": "Catalog files and RAG vectors purged.", "logs": logs})
 
 
+@router.post("/bots/{slug}/integrations/erpnext/test-invoice-prices")
+def test_erpnext_invoice_prices(
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    try:
+        integration = _active_erpnext_integration(session, tenant.id)
+    except HTTPException as exc:
+        return JSONResponse(
+            {"ok": False, "message": str(exc.detail), "error": "integration_inactive"},
+            status_code=exc.status_code,
+        )
+    client = ErpNextClient(integration.config)
+    try:
+        result = client.probe_invoice_prices()
+    except Exception as exc:
+        logger.exception("ERPNext invoice price test failed for %s", slug)
+        return JSONResponse(
+            {"ok": False, "message": "Invoice price test failed.", "error": str(exc)},
+            status_code=502,
+        )
+    return JSONResponse(result)
+
+
 def _active_erpnext_integration(session: Session, tenant_id: int) -> Integration:
     integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
         tenant_id,

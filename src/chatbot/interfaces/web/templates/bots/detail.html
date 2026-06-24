@@ -1163,6 +1163,15 @@
           <pre class="integration-catalog-sync-result integration-test-result" hidden></pre>
         </div>
       </details>
+
+      <details class="integration-test integration-invoice-price-test" id="integration-invoice-price-test-panel" hidden>
+        <summary>Test invoice prices</summary>
+        <div class="integration-test__body">
+          <p class="field-hint">Checks read access to submitted <strong>Sales Invoice</strong> documents (used by <strong>Use highest catalog price</strong> and the catalog price inspector). Save the integration first — the API user needs permission to read Sales Invoice.</p>
+          <button type="button" class="btn-secondary btn-sm integration-invoice-price-test-btn" data-slug="{{ tenant.slug }}">Run invoice test</button>
+          <pre class="integration-invoice-price-test-result integration-test-result" hidden></pre>
+        </div>
+      </details>
     </div>
 
     <script type="application/json" id="integration-schemas-data">{{ integration_schemas_json|safe }}</script>
@@ -1317,6 +1326,7 @@
           syncCustomerCreatePanel(type);
           syncQuotationCreatePanel(type);
           syncCatalogSyncPanel(type);
+          syncInvoicePriceTestPanel(type);
           container.querySelector('input[name="allow_create_customer"]')?.addEventListener('change', () => {
             syncCustomerCreatePanel(type);
           });
@@ -1340,6 +1350,11 @@
           if (lastSync) lastSync.textContent = cfg.catalog_last_sync_at || '—';
           if (itemCount) itemCount.textContent = cfg.catalog_last_item_count ?? '—';
           if (lastError) lastError.textContent = cfg.catalog_last_error || '—';
+        }
+
+        function syncInvoicePriceTestPanel(type) {
+          const panel = document.getElementById('integration-invoice-price-test-panel');
+          if (panel) panel.hidden = type !== 'erpnext';
         }
 
         function syncCustomerCreatePanel(type) {

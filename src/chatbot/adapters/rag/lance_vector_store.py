@@ -27,6 +27,14 @@ class LanceVectorStore:
         safe = source_path.replace("'", "''")
         tbl.delete(f"source_path == '{safe}'")
 
+    def delete_by_source_path_prefix(self, prefix: str) -> None:
+        if not self._table_exists():
+            return
+        normalized = str(prefix).rstrip("/") + "/"
+        tbl = self._db.open_table(self._TABLE)
+        safe = normalized.replace("'", "''")
+        tbl.delete(f"starts_with(source_path, '{safe}')")
+
     def clear_all(self) -> None:
         if self._table_exists():
             self._db.drop_table(self._TABLE)
