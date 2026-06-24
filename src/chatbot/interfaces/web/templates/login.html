@@ -20,6 +20,10 @@
     {% if error %}<p class="error">{{ error }}</p>{% endif %}
     <label>Email <input type="email" name="email" required autocomplete="email"></label>
     <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
+    <div class="checkbox-row login-remember-row">
+      <input type="checkbox" name="remember_me" id="remember-me" value="on">
+      <label for="remember-me">Remember me</label>
+    </div>
     <button type="submit" class="btn-primary" data-loading="Signing in…">Sign in</button>
   </form>
 </body>

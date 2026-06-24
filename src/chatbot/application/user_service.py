@@ -46,11 +46,12 @@ class UserService:
         return user.role in (UserRole.ADMIN, UserRole.CLIENT_ADMIN, UserRole.CLIENT_OPERATOR)
 
     def dashboard_home_url(self, user: User, tenants: list[Tenant]) -> str:
-        if user.role != UserRole.CLIENT_OPERATOR:
-            return "/dashboard/bots"
         allowed = self.filter_tenants(user, tenants)
         if len(allowed) == 1:
-            return f"/dashboard/bots/{allowed[0].slug}?tab=validation"
+            slug = allowed[0].slug
+            if user.role == UserRole.CLIENT_OPERATOR:
+                return f"/dashboard/bots/{slug}?tab=validation"
+            return f"/dashboard/bots/{slug}"
         return "/dashboard/bots"
 
     def get_by_id(self, user_id: int) -> User | None:
@@ -66,7 +67,10 @@ class UserService:
         return self._repo.create(email=email, password=password, role=role)
 
     def set_password(self, email: str, password: str) -> User | None:
-        return self._repo.set_password(email, password)
+        user = self._repo.set_password(email, password)
+        if user is not None:
+            self._repo.clear_remember_token_hash(user.id)
+        return user
 
     def tenant_ids_for_user(self, user_id: int) -> list[int]:
         return self._repo.tenant_ids_for_user(user_id)

@@ -4,7 +4,9 @@ from fastapi import Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.user_repository import SqlAlchemyUserRepository
+from chatbot.application.remember_me_service import REMEMBER_COOKIE_NAME, RememberMeService
 from chatbot.application.user_service import UserService
+from chatbot.config.settings import Settings, get_settings
 from chatbot.domain.models.user import User, UserRole
 from chatbot.interfaces.api.deps import get_session
 
@@ -13,18 +15,33 @@ def get_user_service(session: Session = Depends(get_session)) -> UserService:
     return UserService(SqlAlchemyUserRepository(session))
 
 
+def get_remember_me_service(session: Session = Depends(get_session)) -> RememberMeService:
+    return RememberMeService(SqlAlchemyUserRepository(session), settings=get_settings())
+
+
 def get_optional_user(
     request: Request,
     user_service: UserService = Depends(get_user_service),
+    remember_service: RememberMeService = Depends(get_remember_me_service),
 ) -> User | None:
     raw = request.session.get("user_id")
-    if raw is None:
+    if raw is not None:
+        try:
+            user_id = int(raw)
+        except (TypeError, ValueError):
+            user_id = None
+        else:
+            user = user_service.get_by_id(user_id)
+            if user is not None:
+                return user
+
+    signed = request.cookies.get(REMEMBER_COOKIE_NAME)
+    if not signed:
         return None
-    try:
-        user_id = int(raw)
-    except (TypeError, ValueError):
-        return None
-    return user_service.get_by_id(user_id)
+    user = remember_service.authenticate_cookie(signed)
+    if user is not None:
+        request.session["user_id"] = user.id
+    return user
 
 
 def require_user(user: User | None = Depends(get_optional_user)) -> User:

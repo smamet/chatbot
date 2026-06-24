@@ -26,6 +26,8 @@ class Settings(BaseSettings):
         default="http://127.0.0.1:8025", validation_alias="DEV_MAILPIT_WEB_URL"
     )
     session_secret: str = Field(default="change-me-session", validation_alias="SESSION_SECRET")
+    session_max_age_days: int = Field(default=14, validation_alias="SESSION_MAX_AGE_DAYS")
+    remember_me_max_age_days: int = Field(default=400, validation_alias="REMEMBER_ME_MAX_AGE_DAYS")
 
     admin_token: str = Field(default="", validation_alias="ADMIN_TOKEN")
     app_secret_key: str = Field(default="", validation_alias="APP_SECRET_KEY")

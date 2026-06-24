@@ -5,7 +5,6 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Request
-from fastapi.responses import RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -86,7 +85,11 @@ def create_app() -> FastAPI:
     settings = get_settings()
     app = FastAPI(title="Multi-tenant chatbot", lifespan=lifespan)
     register_exception_handlers(app)
-    app.add_middleware(SessionMiddleware, secret_key=settings.session_secret)
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.session_secret,
+        max_age=max(1, settings.session_max_age_days) * 24 * 60 * 60,
+    )
     if _STATIC.is_dir():
         app.mount("/static", StaticFiles(directory=str(_STATIC)), name="static")
 
@@ -98,14 +101,6 @@ def create_app() -> FastAPI:
     @app.get("/healthz")
     def healthz() -> dict[str, str]:
         return {"status": "ok"}
-
-    @app.get("/")
-    def root() -> RedirectResponse:
-        return RedirectResponse(url="/auth/login", status_code=302)
-
-    @app.get("/dashboard")
-    def dashboard_root() -> RedirectResponse:
-        return RedirectResponse(url="/dashboard/bots", status_code=302)
 
     app.include_router(auth_web.router)
     app.include_router(dashboard_web.router)

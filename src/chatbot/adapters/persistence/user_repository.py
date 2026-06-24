@@ -126,3 +126,25 @@ class SqlAlchemyUserRepository:
         self._session.flush()
         self._session.refresh(row)
         return _row_to_user(row)
+
+    def set_remember_token_hash(self, user_id: int, token_hash: str) -> None:
+        row = self._session.get(UserRow, user_id)
+        if row is None:
+            return
+        row.remember_token_hash = token_hash
+        row.updated_at = datetime.now(UTC)
+        self._session.flush()
+
+    def clear_remember_token_hash(self, user_id: int) -> None:
+        row = self._session.get(UserRow, user_id)
+        if row is None:
+            return
+        row.remember_token_hash = None
+        row.updated_at = datetime.now(UTC)
+        self._session.flush()
+
+    def get_remember_token_hash(self, user_id: int) -> str | None:
+        row = self._session.get(UserRow, user_id)
+        if row is None:
+            return None
+        return row.remember_token_hash

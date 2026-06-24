@@ -2487,6 +2487,17 @@ pre.log,
   padding: 0.65rem;
 }
 
+.login-remember-row {
+  margin-top: var(--space-sm);
+  margin-bottom: 0;
+}
+
+.login-remember-row label {
+  font-size: 0.875rem;
+  color: var(--text-muted);
+  font-weight: 400;
+}
+
 /* Legacy compat */
 .actions {
   margin: 0 0 var(--space-lg);

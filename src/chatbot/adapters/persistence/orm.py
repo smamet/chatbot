@@ -134,6 +134,7 @@ class UserRow(Base):
     password_hash: Mapped[str] = mapped_column(String(256))
     role: Mapped[str] = mapped_column(String(32))
     active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    remember_token_hash: Mapped[str | None] = mapped_column(String(256), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC)
     )
