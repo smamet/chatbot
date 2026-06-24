@@ -2904,3 +2904,8 @@ button.is-loading,
 .catalog-inspector-row--mismatch td {
   background: color-mix(in srgb, var(--danger) 8%, transparent);
 }
+
+.catalog-inspector-price {
+  cursor: help;
+  border-bottom: 1px dotted var(--color-text-muted);
+}

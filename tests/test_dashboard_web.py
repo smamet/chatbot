@@ -2549,8 +2549,10 @@ def test_catalog_inspector_page_and_data(dashboard_env) -> None:
                 InspectorRow(
                     item_code="ITEM-1",
                     name="One",
+                    md_filename="ITEM-1.md",
                     description="",
                     description_truncated="",
+                    description_expandable=False,
                     rag_price_display="10",
                     rag_source="standard_rate",
                     item_price_display="—",

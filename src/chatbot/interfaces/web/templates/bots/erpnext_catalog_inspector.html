@@ -48,7 +48,6 @@
         <th>Product</th>
         <th>Description</th>
         <th>RAG price</th>
-        <th>RAG source</th>
         <th id="catalog-inspector-price-list-header">Item price</th>
         <th>Standard rate</th>
         <th>Last invoice</th>
@@ -56,7 +55,7 @@
       </tr>
     </thead>
     <tbody id="catalog-inspector-tbody">
-      <tr><td colspan="8" class="empty-state">Loading…</td></tr>
+      <tr><td colspan="7" class="empty-state">Loading…</td></tr>
     </tbody>
   </table>
 </div>
@@ -112,7 +111,7 @@
   });
 
   function showTableLoading(message) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty-state">' + escapeHtml(message) + '</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" class="empty-state">' + escapeHtml(message) + '</td></tr>';
   }
 
   function escapeHtml(text) {
@@ -121,6 +120,18 @@
       .replace(/</g, '&lt;')
       .replace(/>/g, '&gt;')
       .replace(/"/g, '&quot;');
+  }
+
+  function escapeAttr(text) {
+    return escapeHtml(text).replace(/'/g, '&#39;');
+  }
+
+  function priceCell(amount, source) {
+    const label = String(amount || '—');
+    if (!source || label === '—' || label === 'not available') {
+      return escapeHtml(label);
+    }
+    return '<span class="catalog-inspector-price" title="' + escapeAttr(source) + '">' + escapeHtml(label) + '</span>';
   }
 
   function formatCacheDate(iso) {
@@ -144,27 +155,28 @@
 
   function renderRows(rows) {
     if (!rows.length) {
-      tbody.innerHTML = '<tr><td colspan="8" class="empty-state">No products match your filters.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" class="empty-state">No products match your filters.</td></tr>';
       return;
     }
     tbody.innerHTML = rows.map((row, index) => {
       const panelId = 'catalog-desc-' + index;
       const mismatchClass = row.mismatch ? ' catalog-inspector-row--mismatch' : '';
-      const hasLongDesc = row.description && row.description.length > row.description_truncated.length;
+      const hasLongDesc = Boolean(row.description_expandable);
+      const descPreview = row.description_truncated || '—';
       return (
         '<tr class="validation-row catalog-inspector-row' + mismatchClass + '"' +
         (hasLongDesc ? ' data-panel="' + panelId + '" tabindex="0" role="button" aria-expanded="false" aria-controls="' + panelId + '"' : '') + '>' +
-        '<td><strong>' + escapeHtml(row.name) + '</strong><br><code class="text-muted">' + escapeHtml(row.item_code) + '</code></td>' +
-        '<td>' + escapeHtml(row.description_truncated || '—') + '</td>' +
-        '<td>' + escapeHtml(row.rag_price_display) + '</td>' +
-        '<td>' + escapeHtml(row.rag_source || (row.rag_price_display === 'not available' ? '—' : 'standard_rate')) + '</td>' +
-        '<td>' + escapeHtml(row.item_price_display) + '</td>' +
+        '<td><strong>' + escapeHtml(row.name) + '</strong><br>' +
+        '<code class="text-muted" title="Local RAG file (data/catalog/' + escapeAttr(slug) + '/)">' + escapeHtml(row.md_filename || (row.item_code + '.md')) + '</code></td>' +
+        '<td>' + escapeHtml(descPreview) + '</td>' +
+        '<td>' + priceCell(row.rag_price_amount || row.rag_price_display, row.rag_price_source || row.rag_source) + '</td>' +
+        '<td>' + priceCell(row.item_price_amount || row.item_price_display, row.item_price_source) + '</td>' +
         '<td>' + escapeHtml(row.standard_rate_display) + '</td>' +
         '<td>' + escapeHtml(row.invoice_price_display) + '</td>' +
         '<td class="validation-row-chevron" aria-hidden="true">' + (hasLongDesc ? '▶' : '') + '</td>' +
         '</tr>' +
         (hasLongDesc
-          ? '<tr id="' + panelId + '" class="validation-expand-row" hidden><td colspan="8"><div class="validation-panel"><h4>Description</h4><pre class="validation-message-body">' + escapeHtml(row.description) + '</pre></div></td></tr>'
+          ? '<tr id="' + panelId + '" class="validation-expand-row" hidden><td colspan="7"><div class="validation-panel"><h4>Description</h4><pre class="validation-message-body">' + escapeHtml(row.description) + '</pre></div></td></tr>'
           : '')
       );
     }).join('');

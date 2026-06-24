@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from chatbot.adapters.erpnext.client import ErpNextClient, _positive_rate
+from chatbot.adapters.persistence.tenant_paths import safe_catalog_filename
 from chatbot.application.erpnext_catalog_sync_service import (
     catalog_invoice_price_fallback,
     catalog_price_list,
@@ -42,8 +43,10 @@ class RagCatalogRow:
 class InspectorRow:
     item_code: str
     name: str
+    md_filename: str
     description: str
     description_truncated: str
+    description_expandable: bool
     rag_price_display: str
     rag_source: str | None
     item_price_display: str
@@ -215,6 +218,38 @@ def _truncate(text: str, limit: int = DESCRIPTION_TRUNCATE) -> str:
     return text[: limit - 1].rstrip() + "…"
 
 
+def _plain_text(text: str) -> str:
+    without_tags = re.sub(r"<[^>]+>", " ", text)
+    return " ".join(without_tags.split()).strip()
+
+
+def _description_for_table(_name: str, description: str) -> str:
+    plain = _plain_text(description)
+    if not plain:
+        return ""
+    return _truncate(plain)
+
+
+def _price_amount(display: str) -> str:
+    if not display or display in ("—", "not available"):
+        return display
+    match = re.match(r"^(.+?)\s+\(([^)]+)\)\s*$", display)
+    if match:
+        return match.group(1).strip()
+    return display
+
+
+def _price_source_label(display: str, explicit: str | None = None) -> str | None:
+    if explicit:
+        return explicit
+    if not display:
+        return None
+    match = re.match(r"^(.+?)\s+\(([^)]+)\)\s*$", display)
+    if match:
+        return match.group(2).strip()
+    return None
+
+
 def _expected_price_entry(
     item_code: str,
     *,
@@ -293,12 +328,17 @@ def merge_inspector_rows(
         mismatch = not _rates_match(rag.price_rate, expected_rate)
         if rag.price_display == "not available" and expected_display == "not available":
             mismatch = False
+        description_preview = _description_for_table(rag.name, rag.description)
+        plain_description = _plain_text(rag.description)
+        expandable = len(plain_description) > DESCRIPTION_TRUNCATE
         merged.append(
             InspectorRow(
                 item_code=code,
                 name=rag.name,
+                md_filename=f"{safe_catalog_filename(code)}.md",
                 description=rag.description,
-                description_truncated=_truncate(rag.description),
+                description_truncated=description_preview,
+                description_expandable=expandable,
                 rag_price_display=rag.price_display,
                 rag_source=rag.price_source,
                 item_price_display=item_price_display,
@@ -446,11 +486,17 @@ def inspector_row_to_dict(row: InspectorRow) -> dict[str, Any]:
     return {
         "item_code": row.item_code,
         "name": row.name,
+        "md_filename": row.md_filename,
         "description": row.description,
         "description_truncated": row.description_truncated,
+        "description_expandable": row.description_expandable,
         "rag_price_display": row.rag_price_display,
+        "rag_price_amount": _price_amount(row.rag_price_display),
+        "rag_price_source": _price_source_label(row.rag_price_display, row.rag_source),
         "rag_source": row.rag_source,
         "item_price_display": row.item_price_display,
+        "item_price_amount": _price_amount(row.item_price_display),
+        "item_price_source": _price_source_label(row.item_price_display),
         "standard_rate_display": row.standard_rate_display,
         "invoice_price_display": row.invoice_price_display,
         "mismatch": row.mismatch,

@@ -8,6 +8,10 @@ import pytest
 
 from chatbot.application.catalog_inspector_service import (
     RagCatalogRow,
+    _description_for_table,
+    _plain_text,
+    _price_amount,
+    _price_source_label,
     build_inspector_page,
     filter_by_rag_price,
     filter_rows,
@@ -117,8 +121,10 @@ def test_filter_rows_matches_description() -> None:
         InspectorRow(
             item_code="A",
             name="Alpha",
+            md_filename="A.md",
             description="special keyword here",
             description_truncated="special…",
+            description_expandable=True,
             rag_price_display="10",
             rag_source=None,
             item_price_display="—",
@@ -130,8 +136,10 @@ def test_filter_rows_matches_description() -> None:
         InspectorRow(
             item_code="B",
             name="Beta",
+            md_filename="B.md",
             description="other",
             description_truncated="other",
+            description_expandable=False,
             rag_price_display="20",
             rag_source=None,
             item_price_display="—",
@@ -156,8 +164,10 @@ def _inspector_row(
     return InspectorRow(
         item_code=item_code,
         name=item_code,
+        md_filename=f"{item_code}.md",
         description="",
         description_truncated="",
+        description_expandable=False,
         rag_price_display=rag_price_display,
         rag_source=None,
         item_price_display="—",
@@ -186,8 +196,10 @@ def _inspector_row_mismatch(item_code: str, *, mismatch: bool) -> "InspectorRow"
     return InspectorRow(
         item_code=item_code,
         name=item_code,
+        md_filename=f"{item_code}.md",
         description="",
         description_truncated="",
+        description_expandable=False,
         rag_price_display="10",
         rag_source=None,
         item_price_display="—",
@@ -208,6 +220,49 @@ def test_filter_by_mismatch() -> None:
     assert [row.item_code for row in filter_by_mismatch(rows, "aligned")] == ["B"]
     assert [row.item_code for row in filter_by_mismatch(rows, "all")] == ["A", "B", "C"]
     assert normalize_mismatch_filter("invalid") == "all"
+
+
+def test_price_amount_strips_source_suffix() -> None:
+    assert _price_amount("1200 MUR (Standard Selling)") == "1200 MUR"
+    assert _price_source_label("1200 MUR (Standard Selling)") == "Standard Selling"
+    assert _price_amount("not available") == "not available"
+
+
+def test_description_for_table_strips_html_and_duplicate_title() -> None:
+    html = "<div>1 E2ads v5 (2 vCPUs, 16 GB RAM) x 730 Hours</div>"
+    preview = _description_for_table("1 E2ads v5", html)
+    assert preview.startswith("1 E2ads v5 (2 vCPUs")
+    assert "<div>" not in preview
+    assert _description_for_table("AXIS Q6358-LE", "AXIS Q6358-LE") == "AXIS Q6358-LE"
+    assert _description_for_table("Widget", "Widget details") == "Widget details"
+    dynamic = _description_for_table(
+        "1 Dynamic IP Addresses",
+        "<div>1 Dynamic IP Addresses, 1 Static IP Addresses, 0 Remaps</div>",
+    )
+    assert dynamic.startswith("1 Dynamic IP Addresses, 1 Static")
+
+
+def test_merge_inspector_sets_md_filename() -> None:
+    rag_rows = {
+        "W-1": RagCatalogRow(
+            item_code="W-1",
+            name="Widget",
+            description="Widget details",
+            price_display="10 MUR (Standard Selling)",
+            price_source="Standard Selling",
+            price_rate=10.0,
+            price_currency="MUR",
+        )
+    }
+    rows = merge_inspector_rows(
+        rag_rows,
+        item_prices={},
+        standard_rates={},
+        invoice_cache=None,
+        config={},
+    )
+    assert rows[0].md_filename == "W-1.md"
+    assert rows[0].description_truncated == "Widget details"
 
 
 def test_invoice_cache_roundtrip(tmp_path: Path) -> None:
