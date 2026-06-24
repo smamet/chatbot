@@ -10,6 +10,8 @@ from chatbot.application.erpnext_catalog_sync_service import (
     build_catalog_price_map,
     catalog_invoice_price_fallback,
     catalog_price_list,
+    catalog_use_highest_price,
+    pick_catalog_price_entry,
     catalog_rag_index_plan,
     catalog_sync_due,
     catalog_sync_enabled,
@@ -166,9 +168,42 @@ def test_catalog_price_list_defaults_and_empty() -> None:
 def test_catalog_invoice_price_fallback_defaults_false() -> None:
     assert catalog_invoice_price_fallback({}) is False
     assert catalog_invoice_price_fallback({"catalog_invoice_price_fallback": True}) is True
-    assert catalog_invoice_price_fallback({"catalog_invoice_price_fallback": "true"}) is True
-    assert catalog_invoice_price_fallback({"catalog_invoice_price_fallback": False}) is False
+    assert catalog_invoice_price_fallback({"catalog_use_highest_price": True}) is False
     assert catalog_invoice_price_fallback({"catalog_invoice_price_fallback": "false"}) is False
+
+
+def test_catalog_use_highest_price_defaults_false() -> None:
+    assert catalog_use_highest_price({}) is False
+    assert catalog_use_highest_price({"catalog_use_highest_price": True}) is True
+
+
+def test_pick_catalog_price_entry_same_currency_picks_higher() -> None:
+    item = {"rate": 175.0, "currency": "MUR", "price_list": "Standard Selling"}
+    invoice = {"rate": 2492.0, "currency": "USD", "price_list": "last invoice"}
+    fx = MagicMock()
+    fx.convert.side_effect = lambda amount, src, dst: (
+        amount if src == dst else (amount * 50.0 if src == "USD" and dst == "MUR" else None)
+    )
+    picked = pick_catalog_price_entry(
+        item_price_entry=item,
+        invoice_entry=invoice,
+        standard_rate=None,
+        fx=fx,
+        compare_base="MUR",
+    )
+    assert picked is invoice
+
+
+def test_pick_catalog_price_entry_single_candidate() -> None:
+    item = {"rate": 10.0, "currency": "MUR", "price_list": "Standard Selling"}
+    picked = pick_catalog_price_entry(
+        item_price_entry=item,
+        invoice_entry=None,
+        standard_rate=None,
+        fx=None,
+        compare_base="MUR",
+    )
+    assert picked is item
 
 
 def test_build_catalog_price_map_merges_invoice_fallback() -> None:
@@ -184,7 +219,11 @@ def test_build_catalog_price_map_merges_invoice_fallback() -> None:
         {"item_code": "B", "standard_rate": 0},
         {"item_code": "C", "standard_rate": 5},
     ]
-    prices = build_catalog_price_map(items, erp_client=client, config={})
+    prices = build_catalog_price_map(
+        items,
+        erp_client=client,
+        config={"catalog_invoice_price_fallback": True},
+    )
     assert prices["A"]["rate"] == 10.0
     assert prices["B"]["rate"] == 99.0
     assert "C" not in prices
@@ -202,6 +241,27 @@ def test_build_catalog_price_map_skips_invoice_when_disabled() -> None:
     )
     assert prices == {}
     client.fetch_latest_invoice_rates.assert_not_called()
+
+
+def test_build_catalog_price_map_highest_price_mode() -> None:
+    client = MagicMock()
+    client.fetch_price_list_rates.return_value = {
+        "A": {"rate": 100.0, "currency": "MUR", "price_list": "Standard Selling"},
+    }
+    client.fetch_latest_invoice_rates.return_value = {
+        "A": {"rate": 200.0, "currency": "MUR", "price_list": "last invoice"},
+    }
+    items = [{"item_code": "A", "standard_rate": 0}]
+    fx = MagicMock()
+    fx.convert.return_value = None
+    prices = build_catalog_price_map(
+        items,
+        erp_client=client,
+        config={"catalog_use_highest_price": True},
+        fx=fx,
+    )
+    assert prices["A"]["rate"] == 200.0
+    client.fetch_latest_invoice_rates.assert_called_once_with()
 
 
 def test_render_item_markdown_uses_last_invoice_price() -> None:

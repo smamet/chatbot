@@ -9,6 +9,7 @@ import pytest
 from chatbot.application.catalog_inspector_service import (
     RagCatalogRow,
     _description_for_table,
+    _format_converted_hint,
     _plain_text,
     _price_amount,
     _price_source_label,
@@ -51,7 +52,7 @@ def test_parse_catalog_markdown_item_price() -> None:
     assert row.description == "A useful widget for testing."
     assert row.price_rate == 1500.0
     assert row.price_source == "Standard Selling"
-    assert "1500 MUR" in row.price_display
+    assert "1,500 MUR" in row.price_display
 
 
 def test_parse_catalog_markdown_standard_rate_and_not_available() -> None:
@@ -130,6 +131,9 @@ def test_filter_rows_matches_description() -> None:
             item_price_display="—",
             standard_rate_display="—",
             invoice_price_display="—",
+            rag_price_converted_display=None,
+            item_price_converted_display=None,
+            invoice_price_converted_display=None,
             mismatch=False,
             expected_source=None,
         ),
@@ -145,6 +149,9 @@ def test_filter_rows_matches_description() -> None:
             item_price_display="—",
             standard_rate_display="—",
             invoice_price_display="—",
+            rag_price_converted_display=None,
+            item_price_converted_display=None,
+            invoice_price_converted_display=None,
             mismatch=False,
             expected_source=None,
         ),
@@ -173,6 +180,9 @@ def _inspector_row(
         item_price_display="—",
         standard_rate_display="—",
         invoice_price_display="—",
+        rag_price_converted_display=None,
+        item_price_converted_display=None,
+        invoice_price_converted_display=None,
         mismatch=False,
         expected_source=None,
     )
@@ -205,6 +215,9 @@ def _inspector_row_mismatch(item_code: str, *, mismatch: bool) -> "InspectorRow"
         item_price_display="—",
         standard_rate_display="—",
         invoice_price_display="—",
+        rag_price_converted_display=None,
+        item_price_converted_display=None,
+        invoice_price_converted_display=None,
         mismatch=mismatch,
         expected_source=None,
     )
@@ -240,6 +253,67 @@ def test_description_for_table_strips_html_and_duplicate_title() -> None:
         "<div>1 Dynamic IP Addresses, 1 Static IP Addresses, 0 Remaps</div>",
     )
     assert dynamic.startswith("1 Dynamic IP Addresses, 1 Static")
+
+
+def test_format_numeric_amount_uses_thousands_separator() -> None:
+    from chatbot.application.catalog_inspector_service import _format_numeric_amount
+
+    assert _format_numeric_amount(2492.01) == "2,492.01"
+    assert _format_numeric_amount(119270.47) == "119,270.47"
+    assert _format_numeric_amount(1500.0) == "1,500"
+
+
+def test_format_converted_hint_skips_same_currency() -> None:
+    from unittest.mock import MagicMock
+
+    fx = MagicMock()
+    assert _format_converted_hint(100.0, "MUR", fx=fx, compare_base="MUR") is None
+    fx.convert.assert_not_called()
+
+
+def test_format_converted_hint_shows_target_amount() -> None:
+    from unittest.mock import MagicMock
+
+    fx = MagicMock()
+    fx.convert.return_value = 115000.0
+    hint = _format_converted_hint(2492.01, "USD", fx=fx, compare_base="MUR")
+    assert hint == "≈ 115,000 MUR"
+    fx.convert.assert_called_once_with(2492.01, "USD", "MUR")
+
+
+def test_merge_inspector_shows_fx_conversion_for_usd() -> None:
+    from unittest.mock import MagicMock
+
+    from chatbot.application.catalog_inspector_service import InvoicePriceCache
+
+    fx = MagicMock()
+    fx.convert.return_value = 115000.0
+    rag_rows = {
+        "W-1": RagCatalogRow(
+            item_code="W-1",
+            name="Widget",
+            description="",
+            price_display="2492.01 USD (last invoice)",
+            price_source="last invoice",
+            price_rate=2492.01,
+            price_currency="USD",
+        )
+    }
+    invoice_cache = InvoicePriceCache(
+        cached_at="2026-06-24T12:00:00+00:00",
+        rates={"W-1": {"rate": 2492.01, "currency": "USD"}},
+    )
+    rows = merge_inspector_rows(
+        rag_rows,
+        item_prices={},
+        standard_rates={},
+        invoice_cache=invoice_cache,
+        config={"catalog_price_compare_currency": "MUR"},
+        fx=fx,
+    )
+    assert rows[0].rag_price_converted_display == "≈ 115,000 MUR"
+    assert rows[0].invoice_price_converted_display == "≈ 115,000 MUR"
+    assert rows[0].item_price_converted_display is None
 
 
 def test_merge_inspector_sets_md_filename() -> None:
@@ -296,3 +370,32 @@ def test_build_inspector_page_with_mocked_erp(tmp_path: Path) -> None:
     assert page.total == 1
     assert page.rows[0].item_code == "W-1"
     assert page.rows[0].mismatch is False
+
+
+def test_expected_price_entry_highest_price_picks_invoice() -> None:
+    from unittest.mock import MagicMock
+
+    from chatbot.application.catalog_inspector_service import (
+        InvoicePriceCache,
+        _expected_price_entry,
+    )
+
+    item_prices = {
+        "A": {"rate": 100.0, "currency": "MUR", "price_list": "Standard Selling"},
+    }
+    invoice_cache = InvoicePriceCache(
+        cached_at="2026-06-24T12:00:00+00:00",
+        rates={"A": {"rate": 200.0, "currency": "MUR"}},
+    )
+    fx = MagicMock()
+    fx.convert.return_value = None
+    display, source, rate = _expected_price_entry(
+        "A",
+        item_prices=item_prices,
+        standard_rates={},
+        invoice_cache=invoice_cache,
+        config={"catalog_use_highest_price": True},
+        fx=fx,
+    )
+    assert rate == 200.0
+    assert source == "last invoice"

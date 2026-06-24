@@ -71,7 +71,7 @@ Clears messages, `hook_events`, validation queue (`pending_replies` + edits + au
 
 - Service: `src/chatbot/application/erpnext_catalog_sync_service.py`; client pagination in `ErpNextClient.list_catalog_items` / `fetch_stock_totals` / `fetch_price_list_rates`.
 - Worker: `python -m chatbot.interfaces.worker_catalog` (`--once` for a single poll). Poll interval: `CATALOG_POLL_SECONDS`; per-bot interval: `catalog_sync_interval_minutes` in integration config.
-- `catalog_price_list`: defaults to `Standard Selling` (blank/absent included). Price resolution: Item Price → `standard_rate` → latest invoice `rate` (only when `catalog_invoice_price_fallback` is enabled; **off by default**) → `not available`. Never emit price `0.0` in markdown.
+- `catalog_price_list`: defaults to `Standard Selling` (blank/absent included). Default price resolution: Item Price → `standard_rate` → latest invoice `rate` (only when `catalog_invoice_price_fallback` is enabled; **off by default**) → `not available`. When `catalog_use_highest_price` is enabled: compare Item Price vs latest invoice per item (FX conversion via `FxRateService`, USD pivot cache `data/.fx-rates-cache.json`, 24 h TTL, Frankfurter + open.er-api fallback), keep the higher amount in compare currency (default MUR). Ignores invoice fallback. Never emit price `0.0` in markdown.
 - Do not call document `reconcile_root` on `data/catalog/` or vice versa — separate roots, separate `IngestSyncService` runs.
 - Metadata keys (`catalog_last_*`) are outside the integration schema; `_merge_integration_config` preserves them on dashboard save. Worker re-reads config before writing metadata.
 - **CLI (same pipeline as dashboard/worker):**

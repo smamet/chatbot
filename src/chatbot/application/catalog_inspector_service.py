@@ -11,9 +11,13 @@ from chatbot.adapters.erpnext.client import ErpNextClient, _positive_rate
 from chatbot.adapters.persistence.tenant_paths import safe_catalog_filename
 from chatbot.application.erpnext_catalog_sync_service import (
     catalog_invoice_price_fallback,
+    catalog_price_compare_currency,
     catalog_price_list,
+    catalog_use_highest_price,
+    pick_catalog_price_entry,
     resolve_catalog_price,
 )
+from chatbot.application.fx_rate_service import FxRateService
 
 _PRICE_LINE = re.compile(r"^- Price:\s*(.+)$", re.MULTILINE)
 _ITEM_CODE_LINE = re.compile(r"^- Item code:\s*(.+)$", re.MULTILINE)
@@ -52,6 +56,9 @@ class InspectorRow:
     item_price_display: str
     standard_rate_display: str
     invoice_price_display: str
+    rag_price_converted_display: str | None
+    item_price_converted_display: str | None
+    invoice_price_converted_display: str | None
     mismatch: bool
     expected_source: str | None
 
@@ -74,14 +81,43 @@ class InspectorPage:
     invoice_cache_count: int
     price_list_name: str
     invoice_fallback_enabled: bool
+    highest_price_enabled: bool
+    compare_currency: str
+
+
+def _format_numeric_amount(rate: float, *, max_decimals: int = 2) -> str:
+    rounded = round(float(rate), max_decimals)
+    if abs(rounded - round(rounded)) < 1e-9:
+        return f"{int(round(rounded)):,}"
+    return f"{rounded:,.{max_decimals}f}".rstrip("0").rstrip(".")
 
 
 def _format_amount(rate: float | None, currency: str | None = None) -> str:
     if rate is None:
         return "—"
-    amount = int(rate) if rate == int(rate) else rate
+    amount = _format_numeric_amount(rate)
     currency_text = str(currency or "").strip()
-    return f"{amount} {currency_text}".strip() if currency_text else str(amount)
+    return f"{amount} {currency_text}".strip() if currency_text else amount
+
+
+def _format_converted_hint(
+    rate: float | None,
+    currency: str | None,
+    *,
+    fx: FxRateService | None,
+    compare_base: str,
+) -> str | None:
+    if rate is None or fx is None:
+        return None
+    source_ccy = str(currency or "").strip().upper()
+    target_ccy = str(compare_base or "MUR").strip().upper() or "MUR"
+    if not source_ccy or source_ccy == target_ccy:
+        return None
+    converted = fx.convert(rate, source_ccy, target_ccy)
+    if converted is None:
+        return None
+    amount = f"{int(round(converted)):,}"
+    return f"≈ {amount} {target_ccy}"
 
 
 def _parse_price_line(raw: str) -> tuple[str, str | None, float | None, str | None]:
@@ -250,6 +286,23 @@ def _price_source_label(display: str, explicit: str | None = None) -> str | None
     return None
 
 
+def _invoice_entry_from_cache(
+    invoice_cache: InvoicePriceCache | None,
+    item_code: str,
+) -> dict[str, Any] | None:
+    if not invoice_cache or item_code not in invoice_cache.rates:
+        return None
+    cached = invoice_cache.rates[item_code]
+    rate = _positive_rate(cached.get("rate"))
+    if rate is None:
+        return None
+    return {
+        "rate": rate,
+        "currency": cached.get("currency"),
+        "price_list": "last invoice",
+    }
+
+
 def _expected_price_entry(
     item_code: str,
     *,
@@ -257,19 +310,26 @@ def _expected_price_entry(
     standard_rates: dict[str, float],
     invoice_cache: InvoicePriceCache | None,
     config: dict[str, Any],
+    fx: FxRateService | None = None,
 ) -> tuple[str, str | None, float | None]:
     item_stub = {"item_code": item_code, "standard_rate": standard_rates.get(item_code)}
-    price_entry = item_prices.get(item_code)
-    if price_entry is None and catalog_invoice_price_fallback(config):
-        cached = (invoice_cache.rates.get(item_code) if invoice_cache else None) or None
-        if cached:
-            rate = _positive_rate(cached.get("rate"))
-            if rate is not None:
-                price_entry = {
-                    "rate": rate,
-                    "currency": cached.get("currency"),
-                    "price_list": "last invoice",
-                }
+    item_price = item_prices.get(item_code)
+    invoice_entry = _invoice_entry_from_cache(invoice_cache, item_code)
+    price_entry: dict[str, Any] | None
+    if catalog_use_highest_price(config):
+        price_entry = pick_catalog_price_entry(
+            item_price_entry=item_price,
+            invoice_entry=invoice_entry,
+            standard_rate=standard_rates.get(item_code),
+            fx=fx,
+            compare_base=catalog_price_compare_currency(config),
+        )
+    elif item_price is not None:
+        price_entry = item_price
+    elif catalog_invoice_price_fallback(config):
+        price_entry = invoice_entry
+    else:
+        price_entry = None
     amount_str, source = resolve_catalog_price(item_stub, price_entry)
     if amount_str is None:
         return "not available", None, None
@@ -297,8 +357,10 @@ def merge_inspector_rows(
     standard_rates: dict[str, float],
     invoice_cache: InvoicePriceCache | None,
     config: dict[str, Any],
+    fx: FxRateService | None = None,
 ) -> list[InspectorRow]:
     merged: list[InspectorRow] = []
+    compare_base = catalog_price_compare_currency(config)
     for code in sorted(rag_rows):
         rag = rag_rows[code]
         price_entry = item_prices.get(code)
@@ -313,17 +375,39 @@ def merge_inspector_rows(
         std_rate = standard_rates.get(code)
         standard_rate_display = _format_amount(std_rate)
         invoice_price_display = "—"
+        invoice_rate: float | None = None
+        invoice_currency: str | None = None
         if invoice_cache and code in invoice_cache.rates:
             cached = invoice_cache.rates[code]
-            rate = _positive_rate(cached.get("rate"))
-            if rate is not None:
-                invoice_price_display = _format_amount(rate, str(cached.get("currency") or ""))
+            invoice_rate = _positive_rate(cached.get("rate"))
+            invoice_currency = str(cached.get("currency") or "").strip() or None
+            if invoice_rate is not None:
+                invoice_price_display = _format_amount(invoice_rate, invoice_currency)
+        rag_converted = _format_converted_hint(
+            rag.price_rate,
+            rag.price_currency,
+            fx=fx,
+            compare_base=compare_base,
+        )
+        item_converted = _format_converted_hint(
+            _positive_rate(price_entry.get("rate")) if price_entry else None,
+            str(price_entry.get("currency") or "").strip() if price_entry else None,
+            fx=fx,
+            compare_base=compare_base,
+        )
+        invoice_converted = _format_converted_hint(
+            invoice_rate,
+            invoice_currency,
+            fx=fx,
+            compare_base=compare_base,
+        )
         expected_display, expected_source, expected_rate = _expected_price_entry(
             code,
             item_prices=item_prices,
             standard_rates=standard_rates,
             invoice_cache=invoice_cache,
             config=config,
+            fx=fx,
         )
         mismatch = not _rates_match(rag.price_rate, expected_rate)
         if rag.price_display == "not available" and expected_display == "not available":
@@ -344,6 +428,9 @@ def merge_inspector_rows(
                 item_price_display=item_price_display,
                 standard_rate_display=standard_rate_display,
                 invoice_price_display=invoice_price_display,
+                rag_price_converted_display=rag_converted,
+                item_price_converted_display=item_converted,
+                invoice_price_converted_display=invoice_converted,
                 mismatch=mismatch,
                 expected_source=expected_source,
             )
@@ -440,6 +527,8 @@ def paginate_rows(
         invoice_cache_count=0,
         price_list_name="",
         invoice_fallback_enabled=False,
+        highest_price_enabled=False,
+        compare_currency="MUR",
     )
 
 
@@ -457,12 +546,16 @@ def build_inspector_page(
     rag_rows = load_rag_rows(catalog_dir)
     item_prices, standard_rates = fetch_live_erp_columns(client, config)
     invoice_cache = read_invoice_cache(catalog_dir)
+    data_root = catalog_dir.parent.parent
+    compare_currency = catalog_price_compare_currency(config)
+    fx = FxRateService(data_root)
     rows = merge_inspector_rows(
         rag_rows,
         item_prices=item_prices,
         standard_rates=standard_rates,
         invoice_cache=invoice_cache,
         config=config,
+        fx=fx,
     )
     rows = filter_rows(rows, query)
     rows = filter_by_rag_price(rows, price_filter)
@@ -479,6 +572,8 @@ def build_inspector_page(
         invoice_cache_count=len(invoice_cache.rates) if invoice_cache else 0,
         price_list_name=catalog_price_list(config),
         invoice_fallback_enabled=catalog_invoice_price_fallback(config),
+        highest_price_enabled=catalog_use_highest_price(config),
+        compare_currency=compare_currency,
     )
 
 
@@ -499,6 +594,9 @@ def inspector_row_to_dict(row: InspectorRow) -> dict[str, Any]:
         "item_price_source": _price_source_label(row.item_price_display),
         "standard_rate_display": row.standard_rate_display,
         "invoice_price_display": row.invoice_price_display,
+        "rag_price_converted_display": row.rag_price_converted_display,
+        "item_price_converted_display": row.item_price_converted_display,
+        "invoice_price_converted_display": row.invoice_price_converted_display,
         "mismatch": row.mismatch,
         "expected_source": row.expected_source,
     }
@@ -516,4 +614,6 @@ def inspector_page_to_dict(page: InspectorPage) -> dict[str, Any]:
         "invoice_cache_count": page.invoice_cache_count,
         "price_list_name": page.price_list_name,
         "invoice_fallback_enabled": page.invoice_fallback_enabled,
+        "highest_price_enabled": page.highest_price_enabled,
+        "compare_currency": page.compare_currency,
     }

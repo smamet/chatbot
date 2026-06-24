@@ -17,6 +17,7 @@ from chatbot.adapters.persistence.tenant_paths import safe_catalog_filename, ten
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
 from chatbot.application.ingest_service import file_content_hash
+from chatbot.application.fx_rate_service import FxRateService
 from chatbot.application.sync_service import IngestSyncService
 from chatbot.application.tenant_settings import merge_tenant_settings
 from chatbot.application.usage_metering import metered_embedder
@@ -79,6 +80,8 @@ def catalog_price_list(config: dict[str, Any]) -> str:
 
 
 def catalog_invoice_price_fallback(config: dict[str, Any]) -> bool:
+    if catalog_use_highest_price(config):
+        return False
     value = config.get("catalog_invoice_price_fallback")
     if value is None:
         return False
@@ -87,13 +90,85 @@ def catalog_invoice_price_fallback(config: dict[str, Any]) -> bool:
     return str(value).lower() in ("true", "1", "on", "yes")
 
 
+def catalog_use_highest_price(config: dict[str, Any]) -> bool:
+    value = config.get("catalog_use_highest_price")
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    return str(value).lower() in ("true", "1", "on", "yes")
+
+
+def catalog_price_compare_currency(config: dict[str, Any]) -> str:
+    raw = config.get("catalog_price_compare_currency", "MUR")
+    return str(raw).strip().upper() or "MUR"
+
+
+def pick_catalog_price_entry(
+    *,
+    item_price_entry: dict[str, Any] | None,
+    invoice_entry: dict[str, Any] | None,
+    standard_rate: float | None,
+    fx: FxRateService | None,
+    compare_base: str,
+) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
+    if item_price_entry and _positive_rate(item_price_entry.get("rate")) is not None:
+        candidates.append(item_price_entry)
+    if invoice_entry and _positive_rate(invoice_entry.get("rate")) is not None:
+        candidates.append(invoice_entry)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    compare_ccy = compare_base.strip().upper() or "MUR"
+    best: dict[str, Any] | None = None
+    best_converted = -1.0
+    for entry in candidates:
+        rate = _positive_rate(entry.get("rate"))
+        if rate is None:
+            continue
+        currency = str(entry.get("currency") or compare_ccy).strip().upper() or compare_ccy
+        converted = rate if currency == compare_ccy else None
+        if converted is None and fx is not None:
+            converted = fx.convert(rate, currency, compare_ccy)
+        if converted is None:
+            continue
+        if converted > best_converted:
+            best_converted = converted
+            best = entry
+    if best is not None:
+        return best
+    return item_price_entry if item_price_entry in candidates else candidates[0]
+
+
 def build_catalog_price_map(
     items: list[dict[str, Any]],
     *,
     erp_client: ErpNextClient,
     config: dict[str, Any],
+    fx: FxRateService | None = None,
 ) -> dict[str, dict[str, Any]]:
     price_by_code = erp_client.fetch_price_list_rates(catalog_price_list(config))
+    if catalog_use_highest_price(config):
+        invoice_rates = erp_client.fetch_latest_invoice_rates()
+        compare_base = catalog_price_compare_currency(config)
+        merged: dict[str, dict[str, Any]] = {}
+        for item in items:
+            code = str(item.get("item_code", "")).strip()
+            if not code:
+                continue
+            picked = pick_catalog_price_entry(
+                item_price_entry=price_by_code.get(code),
+                invoice_entry=invoice_rates.get(code),
+                standard_rate=_positive_rate(item.get("standard_rate")),
+                fx=fx,
+                compare_base=compare_base,
+            )
+            if picked is not None:
+                merged[code] = picked
+        return merged
     if not catalog_invoice_price_fallback(config):
         return price_by_code
     missing: set[str] = set()
@@ -374,7 +449,13 @@ def sync_erpnext_catalog_for_tenant(
     try:
         items = erp_client.list_catalog_items()
         stock_totals = erp_client.fetch_stock_totals() if include_stock else {}
-        price_by_code = build_catalog_price_map(items, erp_client=erp_client, config=config)
+        fx = FxRateService(settings.data_root) if catalog_use_highest_price(config) else None
+        price_by_code = build_catalog_price_map(
+            items,
+            erp_client=erp_client,
+            config=config,
+            fx=fx,
+        )
     except Exception as exc:
         return CatalogSyncResult(ok=False, message=str(exc))
 

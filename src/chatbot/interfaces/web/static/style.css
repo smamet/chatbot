@@ -2883,8 +2883,23 @@ button.is-loading,
 
 .catalog-inspector-stats {
   flex: 1 1 320px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.catalog-inspector-stats-primary {
   font-size: 0.875rem;
   color: var(--text-muted);
+  line-height: 1.35;
+}
+
+.catalog-inspector-stats-meta {
+  font-size: 0.75rem;
+  font-weight: 400;
+  color: var(--color-text-muted);
+  opacity: 0.75;
+  line-height: 1.35;
 }
 
 .catalog-inspector-invoice-actions {
@@ -2908,4 +2923,30 @@ button.is-loading,
 .catalog-inspector-price {
   cursor: help;
   border-bottom: 1px dotted var(--color-text-muted);
+}
+
+.catalog-inspector-price-line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.2rem 0.35rem;
+}
+
+.catalog-inspector-price-value {
+  display: inline;
+  white-space: nowrap;
+}
+
+.catalog-inspector-price-sep {
+  color: var(--color-text-muted);
+  opacity: 0.55;
+  font-size: 0.7rem;
+  line-height: 1;
+  user-select: none;
+}
+
+.catalog-inspector-price-converted {
+  font-size: 0.8125rem;
+  color: var(--color-text-muted);
+  white-space: nowrap;
 }

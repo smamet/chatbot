@@ -2558,6 +2558,9 @@ def test_catalog_inspector_page_and_data(dashboard_env) -> None:
                     item_price_display="—",
                     standard_rate_display="—",
                     invoice_price_display="—",
+                    rag_price_converted_display=None,
+                    item_price_converted_display=None,
+                    invoice_price_converted_display=None,
                     mismatch=False,
                     expected_source=None,
                 )
@@ -2571,6 +2574,8 @@ def test_catalog_inspector_page_and_data(dashboard_env) -> None:
             invoice_cache_count=0,
             price_list_name="Standard Selling",
             invoice_fallback_enabled=False,
+            highest_price_enabled=False,
+            compare_currency="MUR",
         )
         r = client.get(f"/dashboard/bots/{slug}/integrations/erpnext/catalog/data")
     assert r.status_code == 200
@@ -2592,6 +2597,8 @@ def test_catalog_inspector_page_and_data(dashboard_env) -> None:
             invoice_cache_count=0,
             price_list_name="Standard Selling",
             invoice_fallback_enabled=False,
+            highest_price_enabled=False,
+            compare_currency="MUR",
         )
         r = client.get(
             f"/dashboard/bots/{slug}/integrations/erpnext/catalog/data?price_filter=without"
@@ -2614,6 +2621,8 @@ def test_catalog_inspector_page_and_data(dashboard_env) -> None:
             invoice_cache_count=0,
             price_list_name="Standard Selling",
             invoice_fallback_enabled=False,
+            highest_price_enabled=False,
+            compare_currency="MUR",
         )
         r = client.get(
             f"/dashboard/bots/{slug}/integrations/erpnext/catalog/data?mismatch_filter=mismatch"

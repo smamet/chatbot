@@ -160,7 +160,14 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
         IntegrationField(
             key="catalog_invoice_price_fallback",
             label="Invoice price fallback (catalog sync)",
-            help="When syncing the catalog to RAG: if Item Price and standard rate are missing, use the latest submitted Sales Invoice line rate. Off by default.",
+            help="When syncing the catalog to RAG: if Item Price and standard rate are missing, use the latest submitted Sales Invoice line rate. Off by default. Ignored when “Use highest catalog price” is enabled.",
+            input_type="checkbox",
+            default="false",
+        ),
+        IntegrationField(
+            key="catalog_use_highest_price",
+            label="Use highest catalog price",
+            help="When syncing catalog to RAG: compare Item Price (price list) and latest invoice rate; keep the higher amount after FX conversion (MUR by default). Scans invoices on each sync. Ignores invoice fallback when enabled.",
             input_type="checkbox",
             default="false",
         ),

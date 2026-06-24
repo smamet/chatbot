@@ -126,12 +126,36 @@
     return escapeHtml(text).replace(/'/g, '&#39;');
   }
 
-  function priceCell(amount, source) {
+  function priceCell(amount, source, converted) {
     const label = String(amount || '—');
-    if (!source || label === '—' || label === 'not available') {
+    if (label === '—' || label === 'not available') {
       return escapeHtml(label);
     }
-    return '<span class="catalog-inspector-price" title="' + escapeAttr(source) + '">' + escapeHtml(label) + '</span>';
+    const title = source ? ' title="' + escapeAttr(source) + '"' : '';
+    const priceClass = source ? ' catalog-inspector-price' : '';
+    let html = '<span class="catalog-inspector-price-line">';
+    html += '<span class="catalog-inspector-price-value' + priceClass + '"' + title + '>' + escapeHtml(label) + '</span>';
+    if (converted) {
+      html += '<span class="catalog-inspector-price-sep" aria-hidden="true">·</span>';
+      html += '<span class="catalog-inspector-price-converted" title="FX conversion">' + escapeHtml(converted) + '</span>';
+    }
+    html += '</span>';
+    return html;
+  }
+
+  function priceCellPlain(label, converted) {
+    const text = String(label || '—');
+    if (text === '—') {
+      return escapeHtml(text);
+    }
+    let html = '<span class="catalog-inspector-price-line">';
+    html += '<span class="catalog-inspector-price-value">' + escapeHtml(text) + '</span>';
+    if (converted) {
+      html += '<span class="catalog-inspector-price-sep" aria-hidden="true">·</span>';
+      html += '<span class="catalog-inspector-price-converted" title="FX conversion">' + escapeHtml(converted) + '</span>';
+    }
+    html += '</span>';
+    return html;
   }
 
   function formatCacheDate(iso) {
@@ -169,10 +193,10 @@
         '<td><strong>' + escapeHtml(row.name) + '</strong><br>' +
         '<code class="text-muted" title="Local RAG file (data/catalog/' + escapeAttr(slug) + '/)">' + escapeHtml(row.md_filename || (row.item_code + '.md')) + '</code></td>' +
         '<td>' + escapeHtml(descPreview) + '</td>' +
-        '<td>' + priceCell(row.rag_price_amount || row.rag_price_display, row.rag_price_source || row.rag_source) + '</td>' +
-        '<td>' + priceCell(row.item_price_amount || row.item_price_display, row.item_price_source) + '</td>' +
+        '<td>' + priceCell(row.rag_price_amount || row.rag_price_display, row.rag_price_source || row.rag_source, row.rag_price_converted_display) + '</td>' +
+        '<td>' + priceCell(row.item_price_amount || row.item_price_display, row.item_price_source, row.item_price_converted_display) + '</td>' +
         '<td>' + escapeHtml(row.standard_rate_display) + '</td>' +
-        '<td>' + escapeHtml(row.invoice_price_display) + '</td>' +
+        '<td>' + priceCellPlain(row.invoice_price_display, row.invoice_price_converted_display) + '</td>' +
         '<td class="validation-row-chevron" aria-hidden="true">' + (hasLongDesc ? '▶' : '') + '</td>' +
         '</tr>' +
         (hasLongDesc
@@ -204,17 +228,25 @@
     });
   }
 
-  function renderStats(stats, priceListName, invoiceFallback) {
+  function renderStats(stats, priceListName, invoiceFallback, highestPrice, compareCurrency) {
     if (!stats) {
       statsEl.textContent = '';
       return;
     }
-    const fallbackLabel = invoiceFallback ? 'invoice fallback on' : 'invoice fallback off';
-    statsEl.textContent =
-      stats.total + ' products · ' +
-      stats.with_rag_price + ' with RAG price · ' +
-      stats.mismatches + ' mismatches · ' +
-      'price list: ' + priceListName + ' · ' + fallbackLabel;
+    const pricingLabel = highestPrice
+      ? 'highest price on'
+      : (invoiceFallback ? 'invoice fallback on' : 'invoice fallback off');
+    statsEl.innerHTML =
+      '<div class="catalog-inspector-stats-primary">' +
+        stats.total + ' products · ' +
+        stats.with_rag_price + ' with RAG price · ' +
+        stats.mismatches + ' mismatches' +
+      '</div>' +
+      '<div class="catalog-inspector-stats-meta">' +
+        'Price list: ' + escapeHtml(priceListName) + ' · ' +
+        escapeHtml(pricingLabel) + ' · FX compare: ' +
+        escapeHtml(compareCurrency || 'MUR') +
+      '</div>';
     priceListHeader.textContent = 'Item price (' + priceListName + ')';
   }
 
@@ -241,7 +273,13 @@
       }
       renderRows(payload.rows || []);
       renderPagination(payload.page || 1, payload.total_pages || 1);
-      renderStats(payload.stats, payload.price_list_name || 'Standard Selling', payload.invoice_fallback_enabled);
+      renderStats(
+        payload.stats,
+        payload.price_list_name || 'Standard Selling',
+        payload.invoice_fallback_enabled,
+        payload.highest_price_enabled,
+        payload.compare_currency || 'MUR'
+      );
       updateInvoiceControls(payload.invoice_cache_at, payload.invoice_cache_count || 0);
     } catch (err) {
       if (requestId !== loadRequestId) return;
