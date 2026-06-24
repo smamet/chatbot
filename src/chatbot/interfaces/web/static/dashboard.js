@@ -364,6 +364,18 @@
         const data = await res.json();
         resultEl.classList.add(data.ok ? "ok" : "err");
         resultEl.textContent = data.message || data.error || "Done";
+        if (data.ok) {
+          const panel = document.getElementById("integration-catalog-sync-panel");
+          panel?.querySelector(".integration-catalog-last-sync")?.replaceChildren(
+            document.createTextNode("—"),
+          );
+          panel?.querySelector(".integration-catalog-item-count")?.replaceChildren(
+            document.createTextNode("—"),
+          );
+          panel?.querySelector(".integration-catalog-last-error")?.replaceChildren(
+            document.createTextNode("—"),
+          );
+        }
       } catch (err) {
         resultEl.classList.add("err");
         resultEl.textContent = String(err);

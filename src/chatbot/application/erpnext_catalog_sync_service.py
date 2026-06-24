@@ -531,6 +531,17 @@ def update_catalog_sync_metadata(
     repo.update(integration_id, config=merged)
 
 
+def clear_catalog_sync_metadata(session: Session, integration_id: int) -> None:
+    repo = SqlAlchemyIntegrationRepository(session)
+    integration = repo.find_by_id(integration_id)
+    if integration is None:
+        return
+    merged = dict(integration.config)
+    for key in ("catalog_last_sync_at", "catalog_last_item_count", "catalog_last_error"):
+        merged.pop(key, None)
+    repo.update(integration_id, config=merged)
+
+
 def catalog_sync_due(config: dict[str, Any], *, now: datetime | None = None) -> bool:
     if not catalog_sync_enabled(config):
         return False

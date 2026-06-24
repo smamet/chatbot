@@ -73,6 +73,7 @@ from chatbot.application.customer_provisioning_service import create_erpnext_cus
 from chatbot.application.erpnext_catalog_sync_service import (
     apply_catalog_rag_transition,
     catalog_rag_effective_enabled,
+    clear_catalog_sync_metadata,
     purge_catalog_files_and_rag,
     sync_erpnext_catalog_for_tenant,
     update_catalog_sync_metadata,
@@ -3121,6 +3122,12 @@ def purge_erpnext_catalog(
         tenant_id=tenant.id,
         tenant_slug=tenant.slug,
     )
+    integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
+        tenant.id,
+        type=IntegrationType.ERPNEXT,
+    )
+    if integration is not None:
+        clear_catalog_sync_metadata(session, integration.id)
     session.commit()
     return JSONResponse({"ok": True, "message": "Catalog files and RAG vectors purged.", "logs": logs})
 

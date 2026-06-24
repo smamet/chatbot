@@ -2655,6 +2655,20 @@ def test_purge_catalog_endpoint(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
     _save_erpnext_integration(client, slug)
+    with factory() as session:
+        integration = SqlAlchemyIntegrationRepository(session).find_active(
+            tenant_id, type=IntegrationType.ERPNEXT
+        )
+        assert integration is not None
+        SqlAlchemyIntegrationRepository(session).update(
+            integration.id,
+            config={
+                **integration.config,
+                "catalog_last_sync_at": "2026-01-01T00:00:00+00:00",
+                "catalog_last_item_count": 4349,
+            },
+        )
+        session.commit()
     catalog_dir = data / "catalog" / slug
     catalog_dir.mkdir(parents=True, exist_ok=True)
     (catalog_dir / "item.md").write_text("# item", encoding="utf-8")
@@ -2662,6 +2676,13 @@ def test_purge_catalog_endpoint(dashboard_env) -> None:
     assert r.status_code == 200
     assert r.json()["ok"] is True
     assert not list(catalog_dir.glob("*.md"))
+    with factory() as session:
+        integration = SqlAlchemyIntegrationRepository(session).find_active(
+            tenant_id, type=IntegrationType.ERPNEXT
+        )
+        assert integration is not None
+        assert "catalog_last_sync_at" not in integration.config
+        assert "catalog_last_item_count" not in integration.config
 
 
 def test_upload_documents_auto_syncs(dashboard_env) -> None:
