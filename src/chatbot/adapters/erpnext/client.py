@@ -494,21 +494,22 @@ class ErpNextClient:
             start += page_size
         return found
 
-    def probe_invoice_prices(self, *, max_invoices: int = 25) -> dict[str, Any]:
-        """Diagnose Sales Invoice API access for catalog invoice pricing."""
+    def _probe_item_price_list_access(self, price_list: str) -> dict[str, Any]:
+        name = str(price_list or "").strip() or "Standard Selling"
         if not self._base_url or not self._api_key or not self._api_secret:
             return {
                 "ok": False,
-                "message": "ERPNext URL, API key and secret are required.",
+                "price_list": name,
+                "rows": 0,
                 "error": "missing_credentials",
+                "preview_line": f"Item Price ({name}): credentials missing",
             }
-        capped = max(1, min(max_invoices, 200))
-        list_url = urljoin(f"{self._base_url}/", "/api/resource/Sales Invoice")
+        list_url = urljoin(f"{self._base_url}/", "/api/resource/Item Price")
         list_params: dict[str, str] = {
-            "filters": self._filters_json([["docstatus", "=", 1]]),
-            "fields": json.dumps(["name", "posting_date"]),
+            "filters": self._filters_json([["price_list", "=", name]]),
+            "fields": json.dumps(_ITEM_PRICE_FIELDS),
             "limit_page_length": "1",
-            "order_by": "posting_date desc, creation desc",
+            "order_by": "modified asc",
         }
         try:
             with httpx.Client(timeout=self._timeout) as http:
@@ -518,87 +519,161 @@ class ErpNextClient:
         except httpx.HTTPStatusError as exc:
             return {
                 "ok": False,
-                "message": "Cannot list submitted Sales Invoices — check API user permissions.",
+                "price_list": name,
+                "rows": 0,
                 "error": self._parse_erpnext_error(exc),
                 "http_status": exc.response.status_code,
+                "preview_line": f"Item Price ({name}): FAIL",
             }
         except httpx.HTTPError as exc:
             return {
                 "ok": False,
-                "message": "Network error while listing Sales Invoices.",
+                "price_list": name,
+                "rows": 0,
                 "error": str(exc),
+                "preview_line": f"Item Price ({name}): network error",
             }
         rows = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(rows, list):
             return {
                 "ok": False,
-                "message": "Unexpected ERPNext response when listing Sales Invoice.",
+                "price_list": name,
+                "rows": 0,
                 "error": "invalid_response",
+                "preview_line": f"Item Price ({name}): unexpected response",
             }
-        if not rows:
-            return {
-                "ok": True,
-                "message": "Sales Invoice API reachable but no submitted invoices found.",
-                "invoice_list_access": True,
-                "rates_found": 0,
-                "invoices_scanned": 0,
-                "sample_item_codes": [],
-                "preview": "List access OK — 0 submitted invoices in ERPNext.",
-            }
-
-        first_name = str(rows[0].get("name", "")).strip()
-        if first_name:
-            detail_url = urljoin(
-                f"{self._base_url}/",
-                f"/api/resource/Sales Invoice/{quote(first_name, safe='')}",
-            )
-            try:
-                with httpx.Client(timeout=self._timeout) as http:
-                    response = http.get(detail_url, headers=self._headers())
-                    response.raise_for_status()
-                    doc = response.json().get("data")
-            except httpx.HTTPStatusError as exc:
-                return {
-                    "ok": False,
-                    "message": f"Can list invoices but cannot read detail for {first_name}.",
-                    "error": self._parse_erpnext_error(exc),
-                    "http_status": exc.response.status_code,
-                    "invoice_list_access": True,
-                }
-            except httpx.HTTPError as exc:
-                return {
-                    "ok": False,
-                    "message": f"Network error reading Sales Invoice {first_name}.",
-                    "error": str(exc),
-                    "invoice_list_access": True,
-                }
-            if not isinstance(doc, dict) or not doc.get("items"):
-                return {
-                    "ok": False,
-                    "message": f"Sales Invoice {first_name} returned no line items.",
-                    "error": "empty_invoice_items",
-                    "invoice_list_access": True,
-                }
-
-        rates = self.fetch_latest_invoice_rates(max_invoices=capped)
-        sample = list(rates.keys())[:5]
-        preview_lines = [
-            f"Sales Invoice list: OK",
-            f"Rates found (scan ≤{capped} invoices): {len(rates)}",
-        ]
-        if sample:
-            preview_lines.append(f"Sample items: {', '.join(sample)}")
+        row_count = len(rows)
+        preview = f"Item Price ({name}): OK"
+        if row_count:
+            preview += f" — sample row readable"
+        else:
+            preview += " — access OK but no rows in this price list"
         return {
             "ok": True,
-            "message": (
-                f"Sales Invoice API OK — {len(rates)} item rate(s) from up to {capped} invoices."
-            ),
-            "invoice_list_access": True,
-            "rates_found": len(rates),
-            "invoices_scanned": capped,
-            "sample_item_codes": sample,
-            "preview": "\n".join(preview_lines),
+            "price_list": name,
+            "rows": row_count,
+            "preview_line": preview,
         }
+
+    def probe_invoice_prices(
+        self,
+        *,
+        max_invoices: int = 25,
+        price_list: str | None = None,
+    ) -> dict[str, Any]:
+        """Diagnose Item Price + Sales Invoice API access for catalog pricing."""
+        if not self._base_url or not self._api_key or not self._api_secret:
+            return {
+                "ok": False,
+                "message": "ERPNext URL, API key and secret are required.",
+                "error": "missing_credentials",
+            }
+        price_list_name = str(price_list or "").strip() or "Standard Selling"
+        item_probe = self._probe_item_price_list_access(price_list_name)
+        preview_lines = [item_probe["preview_line"]]
+
+        capped = max(1, min(max_invoices, 200))
+        list_url = urljoin(f"{self._base_url}/", "/api/resource/Sales Invoice")
+        list_params: dict[str, str] = {
+            "filters": self._filters_json([["docstatus", "=", 1]]),
+            "fields": json.dumps(["name", "posting_date"]),
+            "limit_page_length": "1",
+            "order_by": "posting_date desc, creation desc",
+        }
+        invoice_ok = False
+        invoice_error: str | None = None
+        invoice_http_status: int | None = None
+        rates_found = 0
+        sample: list[str] = []
+        try:
+            with httpx.Client(timeout=self._timeout) as http:
+                response = http.get(list_url, headers=self._headers(), params=list_params)
+                response.raise_for_status()
+                payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            invoice_error = self._parse_erpnext_error(exc)
+            invoice_http_status = exc.response.status_code
+            preview_lines.append("Sales Invoice list: FAIL")
+        except httpx.HTTPError as exc:
+            invoice_error = str(exc)
+            preview_lines.append("Sales Invoice list: network error")
+        else:
+            rows = payload.get("data") if isinstance(payload, dict) else None
+            if not isinstance(rows, list):
+                invoice_error = "invalid_response"
+                preview_lines.append("Sales Invoice list: unexpected response")
+            elif not rows:
+                invoice_ok = True
+                preview_lines.append("Sales Invoice list: OK — 0 submitted invoices")
+            else:
+                first_name = str(rows[0].get("name", "")).strip()
+                if first_name:
+                    detail_url = urljoin(
+                        f"{self._base_url}/",
+                        f"/api/resource/Sales Invoice/{quote(first_name, safe='')}",
+                    )
+                    try:
+                        with httpx.Client(timeout=self._timeout) as http:
+                            response = http.get(detail_url, headers=self._headers())
+                            response.raise_for_status()
+                            doc = response.json().get("data")
+                    except httpx.HTTPStatusError as exc:
+                        invoice_error = self._parse_erpnext_error(exc)
+                        invoice_http_status = exc.response.status_code
+                        preview_lines.append(f"Sales Invoice detail ({first_name}): FAIL")
+                    except httpx.HTTPError as exc:
+                        invoice_error = str(exc)
+                        preview_lines.append(f"Sales Invoice detail ({first_name}): network error")
+                    else:
+                        if not isinstance(doc, dict) or not doc.get("items"):
+                            invoice_error = "empty_invoice_items"
+                            preview_lines.append(f"Sales Invoice detail ({first_name}): no line items")
+                        else:
+                            invoice_ok = True
+                else:
+                    invoice_ok = True
+
+                if invoice_ok and invoice_error is None:
+                    rates = self.fetch_latest_invoice_rates(max_invoices=capped)
+                    rates_found = len(rates)
+                    sample = list(rates.keys())[:5]
+                    preview_lines.append("Sales Invoice list: OK")
+                    preview_lines.append(f"Rates found (scan ≤{capped} invoices): {rates_found}")
+                    if sample:
+                        preview_lines.append(f"Sample items: {', '.join(sample)}")
+
+        overall_ok = bool(item_probe.get("ok")) and invoice_ok and invoice_error is None
+        message_parts: list[str] = []
+        if item_probe.get("ok"):
+            message_parts.append(f"Item Price ({price_list_name}) OK")
+        else:
+            message_parts.append(f"Item Price ({price_list_name}) failed")
+        if invoice_ok and invoice_error is None:
+            message_parts.append(f"{rates_found} invoice rate(s)")
+        else:
+            message_parts.append("Sales Invoice failed")
+
+        result: dict[str, Any] = {
+            "ok": overall_ok,
+            "message": " — ".join(message_parts),
+            "preview": "\n".join(preview_lines),
+            "item_price_list": price_list_name,
+            "item_price_access": bool(item_probe.get("ok")),
+            "item_price_rows": int(item_probe.get("rows") or 0),
+            "invoice_list_access": invoice_ok,
+            "rates_found": rates_found,
+            "invoices_scanned": capped if invoice_ok else 0,
+            "sample_item_codes": sample,
+        }
+        if item_probe.get("error"):
+            result["item_price_error"] = item_probe["error"]
+        if item_probe.get("http_status"):
+            result["item_price_http_status"] = item_probe["http_status"]
+        if invoice_error:
+            result["error"] = invoice_error
+        if invoice_http_status:
+            result["http_status"] = invoice_http_status
+        return result
 
     def find_customer(self, *, email: str | None = None, phone: str | None = None) -> str | None:
         contact = self._find_contact(email=email, phone=phone)

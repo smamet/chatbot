@@ -354,7 +354,7 @@
       btn.disabled = true;
       resultEl.hidden = false;
       resultEl.className = "integration-invoice-price-test-result integration-test-result";
-      resultEl.textContent = "Testing invoice access…";
+      resultEl.textContent = "Testing catalog price access…";
       try {
         const res = await fetch(
           `/dashboard/bots/${slug}/integrations/erpnext/test-invoice-prices`,
@@ -363,11 +363,17 @@
         const data = await res.json().catch(() => ({}));
         resultEl.classList.add(data.ok ? "ok" : "err");
         const lines = [data.preview || data.message || ""];
+        if (data.item_price_error && !data.item_price_access) {
+          lines.push(String(data.item_price_error));
+        }
         if (data.error && !data.ok) {
           lines.push(String(data.error));
         }
+        if (data.item_price_http_status) {
+          lines.push(`Item Price HTTP ${data.item_price_http_status}`);
+        }
         if (data.http_status) {
-          lines.push(`HTTP ${data.http_status}`);
+          lines.push(`Sales Invoice HTTP ${data.http_status}`);
         }
         resultEl.textContent = lines.filter(Boolean).join("\n");
       } catch (err) {

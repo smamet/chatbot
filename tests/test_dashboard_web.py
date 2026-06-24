@@ -2658,17 +2658,20 @@ def test_erpnext_invoice_price_test_endpoint(dashboard_env) -> None:
     with patch("chatbot.interfaces.api.routers.dashboard_web.ErpNextClient") as mock_cls:
         mock_cls.return_value.probe_invoice_prices.return_value = {
             "ok": True,
-            "message": "Sales Invoice API OK — 2 item rate(s) from up to 25 invoices.",
+            "message": "Item Price (Standard Selling) OK — 2 invoice rate(s)",
+            "item_price_access": True,
             "rates_found": 2,
             "sample_item_codes": ["A", "B"],
-            "preview": "Sales Invoice list: OK\nRates found (scan ≤25 invoices): 2",
+            "preview": "Item Price (Standard Selling): OK\nSales Invoice list: OK",
         }
         r = client.post(f"/dashboard/bots/{slug}/integrations/erpnext/test-invoice-prices")
     assert r.status_code == 200
     body = r.json()
     assert body["ok"] is True
     assert body["rates_found"] == 2
-    mock_cls.return_value.probe_invoice_prices.assert_called_once()
+    mock_cls.return_value.probe_invoice_prices.assert_called_once_with(
+        price_list="Standard Selling",
+    )
 
 
 def test_purge_catalog_endpoint(dashboard_env) -> None:

@@ -74,6 +74,7 @@ from chatbot.application.erpnext_catalog_sync_service import (
     apply_catalog_rag_transition,
     catalog_rag_effective_enabled,
     clear_catalog_sync_metadata,
+    catalog_price_list,
     purge_catalog_files_and_rag,
     sync_erpnext_catalog_for_tenant,
     update_catalog_sync_metadata,
@@ -3151,7 +3152,9 @@ def test_erpnext_invoice_prices(
         )
     client = ErpNextClient(integration.config)
     try:
-        result = client.probe_invoice_prices()
+        result = client.probe_invoice_prices(
+            price_list=catalog_price_list(integration.config),
+        )
     except Exception as exc:
         logger.exception("ERPNext invoice price test failed for %s", slug)
         return JSONResponse(
