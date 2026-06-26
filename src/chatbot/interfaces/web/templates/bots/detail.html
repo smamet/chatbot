@@ -1100,50 +1100,64 @@
       <div id="integration-qb-disconnect-wrap"></div>
       <p class="field-hint integration-oauth-hint" id="integration-qb-hint" hidden></p>
 
-      <details class="integration-test">
-        <summary>Test connection</summary>
-        <div class="integration-test__body">
-          <div class="form-grid integration-test__inputs">
-            <label>Test email<input type="email" class="integration-test-email" placeholder="customer@example.com"></label>
-            <label>Test phone<input type="text" class="integration-test-phone" placeholder="+33612345678"></label>
-          </div>
-          <button type="button" class="btn-secondary btn-sm integration-test-btn" data-slug="{{ tenant.slug }}">Run test</button>
-          <pre class="integration-test-result" hidden></pre>
-        </div>
-      </details>
+      <details class="integration-test-group">
+        <summary>Tests</summary>
+        <div class="integration-test-group__body">
+          <details class="integration-test integration-test--nested">
+            <summary>Test connection</summary>
+            <div class="integration-test__body">
+              <div class="form-grid integration-test__inputs">
+                <label>Test email<input type="email" class="integration-test-email" placeholder="customer@example.com"></label>
+                <label>Test phone<input type="text" class="integration-test-phone" placeholder="+33612345678"></label>
+              </div>
+              <button type="button" class="btn-secondary btn-sm integration-test-btn" data-slug="{{ tenant.slug }}">Run test</button>
+              <pre class="integration-test-result" hidden></pre>
+            </div>
+          </details>
 
-      <details class="integration-test integration-customer-create" id="integration-customer-create-panel" hidden>
-        <summary>Test customer creation</summary>
-        <div class="integration-test__body">
-          <p class="field-hint">Creates a real ERPNext Customer (+ Contact). With a <strong>company name</strong>, the Customer is created as Company and the contact person is linked to it.</p>
-          <div class="form-grid integration-test__inputs">
-            <label>Company name<input type="text" class="integration-customer-company" placeholder="Acme Corp"></label>
-            <label>Contact name (optional)<input type="text" class="integration-customer-name" placeholder="Jane Doe"></label>
-            <label>Test email<input type="email" class="integration-customer-email" placeholder="customer@example.com"></label>
-            <label>Test phone<input type="text" class="integration-customer-phone" placeholder="+33612345678"></label>
-          </div>
-          <button type="button" class="btn-secondary btn-sm integration-customer-create-btn" data-slug="{{ tenant.slug }}">Create customer</button>
-          <pre class="integration-customer-create-result" hidden></pre>
-        </div>
-      </details>
+          <details class="integration-test integration-test--nested integration-customer-create" id="integration-customer-create-panel" hidden>
+            <summary>Test customer creation</summary>
+            <div class="integration-test__body">
+              <p class="field-hint">Creates a real ERPNext Customer (+ Contact). With a <strong>company name</strong>, the Customer is created as Company and the contact person is linked to it.</p>
+              <div class="form-grid integration-test__inputs">
+                <label>Company name<input type="text" class="integration-customer-company" placeholder="Acme Corp"></label>
+                <label>Contact name (optional)<input type="text" class="integration-customer-name" placeholder="Jane Doe"></label>
+                <label>Test email<input type="email" class="integration-customer-email" placeholder="customer@example.com"></label>
+                <label>Test phone<input type="text" class="integration-customer-phone" placeholder="+33612345678"></label>
+              </div>
+              <button type="button" class="btn-secondary btn-sm integration-customer-create-btn" data-slug="{{ tenant.slug }}">Create customer</button>
+              <pre class="integration-customer-create-result" hidden></pre>
+            </div>
+          </details>
 
-      <details class="integration-test integration-quotation-create" id="integration-quotation-create-panel" hidden>
-        <summary>Test quotation creation</summary>
-        <div class="integration-test__body">
-          <p class="field-hint">Creates a real ERPNext Quotation (+ PDF). Requires <strong>Allow quotation creation</strong>. Uses test identity to find or create the customer.</p>
-          <div class="form-grid integration-test__inputs">
-            <label>Company name (optional)<input type="text" class="integration-quotation-company" placeholder="Acme Corp"></label>
-            <label>Test email<input type="email" class="integration-quotation-email" placeholder="customer@example.com"></label>
-            <label>Test phone<input type="text" class="integration-quotation-phone" placeholder="+33612345678"></label>
-            <label>Item code or name<input type="text" class="integration-quotation-item" placeholder="OKI Consumables or EP-M C650 (Image Drum)" required></label>
-            <label>Qty<input type="number" class="integration-quotation-qty" value="1" min="1" step="1"></label>
-            <label>Notes (optional)<input type="text" class="integration-quotation-notes" placeholder="Delivery note…"></label>
-          </div>
-          <button type="button" class="btn-secondary btn-sm integration-quotation-create-btn" data-slug="{{ tenant.slug }}">Create quotation</button>
-          <div class="integration-quotation-create-result integration-test-result" hidden>
-            <pre class="integration-quotation-create-log"></pre>
-            <a class="btn-secondary btn-sm integration-quotation-pdf-btn" hidden download>Download PDF</a>
-          </div>
+          <details class="integration-test integration-test--nested integration-quotation-create" id="integration-quotation-create-panel" hidden>
+            <summary>Test quotation creation</summary>
+            <div class="integration-test__body">
+              <p class="field-hint">Creates a real ERPNext Quotation (+ PDF). Requires <strong>Allow quotation creation</strong>. Uses test identity to find or create the customer.</p>
+              <div class="form-grid integration-test__inputs">
+                <label>Company name (optional)<input type="text" class="integration-quotation-company" placeholder="Acme Corp"></label>
+                <label>Test email<input type="email" class="integration-quotation-email" placeholder="customer@example.com"></label>
+                <label>Test phone<input type="text" class="integration-quotation-phone" placeholder="+33612345678"></label>
+                <label>Item code or name<input type="text" class="integration-quotation-item" placeholder="OKI Consumables or EP-M C650 (Image Drum)" required></label>
+                <label>Qty<input type="number" class="integration-quotation-qty" value="1" min="1" step="1"></label>
+                <label>Notes (optional)<input type="text" class="integration-quotation-notes" placeholder="Delivery note…"></label>
+              </div>
+              <button type="button" class="btn-secondary btn-sm integration-quotation-create-btn" data-slug="{{ tenant.slug }}">Create quotation</button>
+              <div class="integration-quotation-create-result integration-test-result" hidden>
+                <pre class="integration-quotation-create-log"></pre>
+                <a class="btn-secondary btn-sm integration-quotation-pdf-btn" hidden download>Download PDF</a>
+              </div>
+            </div>
+          </details>
+
+          <details class="integration-test integration-test--nested integration-invoice-price-test" id="integration-invoice-price-test-panel" hidden>
+            <summary>Test catalog prices</summary>
+            <div class="integration-test__body">
+              <p class="field-hint">Checks read access to <strong>Item Price</strong> (catalog price list) and submitted <strong>Sales Invoice</strong> documents — both are used by <strong>Use highest catalog price</strong> and the catalog price inspector. Save the integration first.</p>
+              <button type="button" class="btn-secondary btn-sm integration-invoice-price-test-btn" data-slug="{{ tenant.slug }}">Run price test</button>
+              <pre class="integration-invoice-price-test-result integration-test-result" hidden></pre>
+            </div>
+          </details>
         </div>
       </details>
 
@@ -1161,15 +1175,6 @@
              class="btn-secondary btn-sm">Inspect catalog prices</a>
           <button type="button" class="btn-danger btn-sm integration-catalog-purge-btn" data-slug="{{ tenant.slug }}">Purge catalog files</button>
           <pre class="integration-catalog-sync-result integration-test-result" hidden></pre>
-        </div>
-      </details>
-
-      <details class="integration-test integration-invoice-price-test" id="integration-invoice-price-test-panel" hidden>
-        <summary>Test catalog prices</summary>
-        <div class="integration-test__body">
-          <p class="field-hint">Checks read access to <strong>Item Price</strong> (catalog price list) and submitted <strong>Sales Invoice</strong> documents — both are used by <strong>Use highest catalog price</strong> and the catalog price inspector. Save the integration first.</p>
-          <button type="button" class="btn-secondary btn-sm integration-invoice-price-test-btn" data-slug="{{ tenant.slug }}">Run price test</button>
-          <pre class="integration-invoice-price-test-result integration-test-result" hidden></pre>
         </div>
       </details>
     </div>
