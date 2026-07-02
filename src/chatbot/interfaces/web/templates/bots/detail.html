@@ -1463,15 +1463,43 @@
 {% endif %}
 <div class="table-wrap">
   <table class="data-table validation-table validation-table--inbox">
+    <colgroup>
+      {% if validation_subtab == 'pending' %}<col class="validation-col-bulk">{% endif %}
+      <col class="validation-col-id">
+      <col class="validation-col-channel">
+      <col class="validation-col-from">
+      <col class="validation-col-subject">
+      {% if validation_subtab in ('approved', 'rejected') %}
+      <col class="validation-col-by">
+      <col class="validation-col-time">
+      {% else %}
+      <col class="validation-col-time">
+      {% endif %}
+      <col class="validation-col-chevron">
+    </colgroup>
     <thead><tr>
       {% if validation_subtab == 'pending' %}<th class="validation-bulk-col"><input type="checkbox" id="validation-select-all" aria-label="Select all emails" title="Select all emails"></th>{% endif %}
-      <th>ID</th><th></th><th>From</th><th>Subject</th>
-      {% if validation_subtab in ('approved', 'rejected') %}<th>By</th><th>At</th>{% else %}<th>Created</th>{% endif %}
-      <th></th>
+      <th class="validation-inbox-id">ID</th><th class="validation-inbox-channel"></th><th class="validation-inbox-from">From</th><th class="validation-inbox-subject">Subject</th>
+      {% if validation_subtab in ('approved', 'rejected') %}<th class="validation-inbox-by">By</th><th class="validation-inbox-time">Time</th>{% else %}<th class="validation-inbox-time">Time</th>{% endif %}
+      <th class="validation-row-chevron" aria-hidden="true"></th>
     </tr></thead>
     <tbody>
+    {% set inbox_colspan = 7 %}
+    {% set ns = namespace(prev_date=None) %}
     {% for item in pending_replies_ui %}
     {% set r = item.reply %}
+    {% if validation_subtab in ('approved', 'rejected') %}
+      {% set row_dt = r.resolved_at %}
+    {% else %}
+      {% set row_dt = r.created_at %}
+    {% endif %}
+    {% set row_date = row_dt.strftime('%Y-%m-%d') if row_dt else '' %}
+    {% if row_date and row_date != ns.prev_date %}
+    <tr class="validation-inbox-date-row">
+      <td colspan="{{ inbox_colspan }}">{{ row_dt.strftime('%d/%m/%Y') }}</td>
+    </tr>
+    {% set ns.prev_date = row_date %}
+    {% endif %}
     <tr class="validation-row validation-inbox-row"
         data-href="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}"
         tabindex="0"
@@ -1486,7 +1514,7 @@
         {% endif %}
       </td>
       {% endif %}
-      <td>{{ r.id }}</td>
+      <td class="validation-inbox-id">{{ r.id }}</td>
       <td class="validation-inbox-channel">
         {{ channel_icon(r.channel) }}
         <span class="validation-inbox-flags">
@@ -1502,7 +1530,8 @@
           {% endif %}
         </span>
       </td>
-      <td><code>{{ r.session_id | session_label }}</code></td>
+      {% set from_label = r.session_id | session_label %}
+      <td class="validation-inbox-from" title="{{ from_label }}"><code>{{ from_label }}</code></td>
       <td class="validation-inbox-subject"{% if item.inbound_subject %} title="{{ item.inbound_subject }}"{% endif %}>
         {%- if r.channel == 'email' and item.inbound_subject -%}
         {{ item.inbound_subject }}
@@ -1511,10 +1540,10 @@
         {%- endif -%}
       </td>
       {% if validation_subtab in ('approved', 'rejected') %}
-      <td class="text-muted">{{ r.resolved_by or '—' }}</td>
-      <td class="text-muted">{{ r.resolved_at.strftime('%Y-%m-%d %H:%M') if r.resolved_at else '—' }}</td>
+      <td class="text-muted validation-inbox-by" title="{{ r.resolved_by or '' }}">{{ r.resolved_by or '—' }}</td>
+      <td class="text-muted validation-inbox-time">{% if row_dt %}<time datetime="{{ row_dt.isoformat() }}">{{ row_dt.strftime('%H:%M') }}</time>{% else %}—{% endif %}</td>
       {% else %}
-      <td class="text-muted">{{ r.created_at.strftime('%Y-%m-%d %H:%M') if r.created_at else '—' }}</td>
+      <td class="text-muted validation-inbox-time">{% if row_dt %}<time datetime="{{ row_dt.isoformat() }}">{{ row_dt.strftime('%H:%M') }}</time>{% else %}—{% endif %}</td>
       {% endif %}
       <td class="validation-row-chevron" aria-hidden="true">▶</td>
     </tr>
