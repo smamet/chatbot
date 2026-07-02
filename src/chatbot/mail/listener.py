@@ -82,6 +82,7 @@ def _process_one_mail(
     settings: Settings,
     tenant_id: int,
     in_connector: Connector,
+    mail_config: dict,
     mail: IncomingMail,
     imap_conn,
     uid_repo: SqlAlchemyMailImapUidRepository,
@@ -103,7 +104,7 @@ def _process_one_mail(
         uid_repo.record_blacklisted(mail.uid, received_at=mail.received_at)
         return False
 
-    mailbox_addr = str(in_connector.config.get("username", ""))
+    mailbox_addr = str(mail_config.get("username", "") or in_connector.config.get("username", ""))
     if _is_cc_only(mail, in_connector.config, mailbox_addr):
         uid_repo.record_skipped(mail.uid, received_at=mail.received_at)
         return False
@@ -200,6 +201,7 @@ def _process_tenant_inbox(
                     settings=settings,
                     tenant_id=in_connector.tenant_id,
                     in_connector=in_connector,
+                    mail_config=mail_config,
                     mail=mail,
                     imap_conn=imap,
                     uid_repo=uid_repo,

@@ -436,3 +436,58 @@ def test_run_once_processes_mail_when_mailbox_in_to_and_cc(
 
     n = mail_listener.run_once(factory, settings)
     assert n == 1
+
+
+@patch("chatbot.application.mail_connection_service.prepare_oauth_mail_config")
+@patch("chatbot.mail.listener.imap_client")
+def test_run_once_skips_cc_only_with_mail_connection(
+    mock_imap_ctx, mock_oauth, mail_env
+) -> None:
+    from chatbot.application.mail_connection_service import MailConnectionService
+
+    mock_oauth.side_effect = lambda cfg, **kwargs: (cfg, None)
+    factory, settings, tenant_id, in_id, _ = mail_env
+    with factory() as session:
+        conn_svc = MailConnectionService(session)
+        connection = conn_svc.upsert(
+            tenant_id=tenant_id,
+            connection_id=None,
+            label="Bot mailbox",
+            provider="microsoft_oauth",
+            mailbox_email="bot@test.local",
+            config_incoming={"oauth_refresh_token": "rt"},
+        )
+        repo = SqlAlchemyConnectorRepository(session)
+        existing = repo.find_by_id(in_id)
+        assert existing is not None
+        repo.update(
+            in_id,
+            config={
+                "mail_connection_id": connection.id,
+                "auth_type": "microsoft_oauth",
+                "skip_cc_only": True,
+            },
+        )
+        session.commit()
+
+    imap = MagicMock()
+    imap.fetch_pending.return_value = [
+        _mail(
+            "cc-conn-1",
+            to_addr="client@example.com",
+            to_addrs=("client@example.com",),
+            cc_addrs=("bot@test.local",),
+        )
+    ]
+    mock_imap_ctx.return_value.__enter__.return_value = imap
+
+    with patch("chatbot.mail.listener.build_chat_service_for_worker") as mock_build:
+        n = mail_listener.run_once(factory, settings)
+        mock_build.assert_not_called()
+
+    assert n == 0
+    with factory() as session:
+        uid_repo = SqlAlchemyMailImapUidRepository(session, tenant_id=tenant_id)
+        draft_repo = SqlAlchemyMailDraftRepository(session, tenant_id=tenant_id)
+        assert uid_repo.exists_by_uid("cc-conn-1")
+        assert not draft_repo.exists_by_uid("cc-conn-1")
