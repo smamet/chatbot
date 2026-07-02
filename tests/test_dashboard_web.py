@@ -3451,6 +3451,170 @@ def test_client_operator_reject_creates_audit(dashboard_env) -> None:
     assert "validation-inbox-row" in inbox.text
 
 
+def _create_pending_reply(
+    factory,
+    *,
+    tenant_id: int,
+    channel: str,
+    session_id: str | None = None,
+    recipient_id: str | None = None,
+) -> int:
+    with factory() as session:
+        connector = SqlAlchemyConnectorRepository(session).create(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.OUT,
+            type=ConnectorType.EMAIL if channel == "email" else ConnectorType.WHATSAPP,
+            mode=ConnectorMode.VALIDATION,
+            config={"from_addr": "bot@test.local"} if channel == "email" else {},
+        )
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+
+        pending = SqlAlchemyPendingReplyRepository(session).create(
+            tenant_id=tenant_id,
+            connector_id=connector.id,
+            session_id=session_id or f"{channel}:client@example.com",
+            channel=channel,
+            recipient_id=recipient_id or "client@example.com",
+            draft_text="Hello",
+            draft_html="<p>Hello</p>" if channel == "email" else None,
+        )
+        session.commit()
+        return pending.id
+
+
+def test_validation_inbox_pending_shows_bulk_reject_ui(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    _create_pending_reply(factory, tenant_id=tenant_id, channel="email")
+    _login(client, admin.email, "admin-pass")
+    inbox = client.get(f"/dashboard/bots/{slug}?tab=validation&vsub=pending")
+    assert inbox.status_code == 200
+    assert "validation-bulk-form" in inbox.text
+    assert "validation-inbox-select" in inbox.text
+    assert 'id="validation-select-all"' in inbox.text
+
+
+def test_bulk_reject_emails_happy_path(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    email_a = _create_pending_reply(
+        factory, tenant_id=tenant_id, channel="email", session_id="email:a@example.com", recipient_id="a@example.com"
+    )
+    email_b = _create_pending_reply(
+        factory, tenant_id=tenant_id, channel="email", session_id="email:b@example.com", recipient_id="b@example.com"
+    )
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/bulk-reject",
+        data={"reply_ids": [str(email_a), str(email_b)]},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    assert r.headers["location"].endswith("?tab=validation&vsub=pending")
+    inbox = client.get(r.headers["location"])
+    assert inbox.status_code == 200
+    assert "Rejected 2 emails." in inbox.text
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+        from chatbot.domain.models.pending_reply import PendingReplyStatus
+
+        for reply_id in (email_a, email_b):
+            reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
+            assert reply is not None
+            assert reply.status == PendingReplyStatus.REJECTED
+
+
+def test_bulk_reject_skips_non_email(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _, factory = dashboard_env
+    email_id = _create_pending_reply(factory, tenant_id=tenant_id, channel="email")
+    whatsapp_id = _create_pending_reply(
+        factory,
+        tenant_id=tenant_id,
+        channel="whatsapp",
+        session_id="whatsapp:+1555",
+        recipient_id="+1555",
+    )
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/bulk-reject",
+        data={"reply_ids": [str(email_id), str(whatsapp_id)]},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    inbox = client.get(r.headers["location"])
+    assert inbox.status_code == 200
+    assert "Rejected 1 email." in inbox.text
+    assert f"#{whatsapp_id} (not email)" in inbox.text
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+        from chatbot.domain.models.pending_reply import PendingReplyStatus
+
+        email = SqlAlchemyPendingReplyRepository(session).find_by_id(email_id)
+        whatsapp = SqlAlchemyPendingReplyRepository(session).find_by_id(whatsapp_id)
+        assert email is not None and email.status == PendingReplyStatus.REJECTED
+        assert whatsapp is not None and whatsapp.status == PendingReplyStatus.PENDING
+
+
+def test_bulk_reject_empty_selection_shows_error(dashboard_env) -> None:
+    client, admin, _, slug, _, _, _factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/bulk-reject",
+        data={},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    inbox = client.get(r.headers["location"])
+    assert inbox.status_code == 200
+    assert "Select at least one email to reject." in inbox.text
+
+
+def test_bulk_reject_requires_bot_access(dashboard_env) -> None:
+    client, _admin, editor, slug, tenant_id, _, factory = dashboard_env
+    email_id = _create_pending_reply(factory, tenant_id=tenant_id, channel="email")
+    with factory() as session:
+        other = TenantService(SqlAlchemyTenantRepository(session)).create_tenant(
+            name="Other Bot",
+            slug="other-bot",
+        ).tenant
+        session.commit()
+        other_slug = other.slug
+    _login(client, editor.email, "edit-pass")
+    r = client.post(
+        f"/dashboard/bots/{other_slug}/validation/bulk-reject",
+        data={"reply_ids": str(email_id)},
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+
+def test_client_operator_can_bulk_reject_emails(dashboard_env) -> None:
+    client, _admin, _, slug, tenant_id, _, factory = dashboard_env
+    email_id = _create_pending_reply(factory, tenant_id=tenant_id, channel="email")
+    _create_operator(factory, tenant_id)
+    _login(client, "operator@test.com", "op-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/validation/bulk-reject",
+        data={"reply_ids": str(email_id)},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with factory() as session:
+        from chatbot.adapters.persistence.pending_reply_repository import (
+            SqlAlchemyPendingReplyRepository,
+        )
+        from chatbot.domain.models.pending_reply import PendingReplyStatus
+
+        reply = SqlAlchemyPendingReplyRepository(session).find_by_id(email_id)
+        assert reply is not None
+        assert reply.status == PendingReplyStatus.REJECTED
+        assert reply.resolved_by == "operator@test.com"
+
+
 def test_admin_monitoring_global_page(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")

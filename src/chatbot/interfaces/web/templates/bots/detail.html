@@ -1446,10 +1446,25 @@
   {% if request.session.get('validation_error') %}
   <p class="validation-error">{{ request.session.pop('validation_error') }}</p>
   {% endif %}
+  {% if request.session.get('validation_success') %}
+  <p class="validation-success">{{ request.session.pop('validation_success') }}</p>
+  {% endif %}
 </div>
+{% if validation_subtab == 'pending' %}
+<form method="post"
+      action="/dashboard/bots/{{ tenant.slug }}/validation/bulk-reject"
+      class="validation-bulk-bar"
+      id="validation-bulk-form"
+      hidden
+      data-confirm-template="Reject {count} selected email(s)? This cannot be undone.">
+  <span class="validation-bulk-count" id="validation-bulk-count">0 selected</span>
+  <button type="submit" class="btn-secondary btn-sm">Reject selected</button>
+</form>
+{% endif %}
 <div class="table-wrap">
   <table class="data-table validation-table validation-table--inbox">
     <thead><tr>
+      {% if validation_subtab == 'pending' %}<th class="validation-bulk-col"><input type="checkbox" id="validation-select-all" aria-label="Select all emails" title="Select all emails"></th>{% endif %}
       <th>ID</th><th></th><th>From</th><th>Subject</th>
       {% if validation_subtab in ('approved', 'rejected') %}<th>By</th><th>At</th>{% else %}<th>Created</th>{% endif %}
       <th></th>
@@ -1461,6 +1476,16 @@
         data-href="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}"
         tabindex="0"
         role="link">
+      {% if validation_subtab == 'pending' %}
+      <td class="validation-bulk-col">
+        {% if r.channel == 'email' %}
+        <input type="checkbox"
+               class="validation-inbox-select"
+               value="{{ r.id }}"
+               aria-label="Select reply {{ r.id }}">
+        {% endif %}
+      </td>
+      {% endif %}
       <td>{{ r.id }}</td>
       <td class="validation-inbox-channel">
         {{ channel_icon(r.channel) }}
@@ -1494,7 +1519,7 @@
       <td class="validation-row-chevron" aria-hidden="true">▶</td>
     </tr>
     {% else %}
-    <tr><td colspan="{% if validation_subtab in ('approved', 'rejected') %}7{% else %}6{% endif %}" class="empty-state">
+    <tr><td colspan="{% if validation_subtab in ('approved', 'rejected') %}7{% elif validation_subtab == 'pending' %}7{% else %}6{% endif %}" class="empty-state">
       {%- if validation_subtab == 'approved' -%}No approved replies yet
       {%- elif validation_subtab == 'rejected' -%}No rejected replies yet
       {%- else -%}No replies awaiting validation

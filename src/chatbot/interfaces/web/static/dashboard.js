@@ -443,6 +443,76 @@
     });
   });
 
+  const bulkForm = document.getElementById("validation-bulk-form");
+  const bulkCountEl = document.getElementById("validation-bulk-count");
+  const selectAllEl = document.getElementById("validation-select-all");
+  const inboxSelectEls = () =>
+    Array.from(document.querySelectorAll(".validation-inbox-select"));
+
+  const selectedInboxIds = () =>
+    inboxSelectEls()
+      .filter((el) => el.checked)
+      .map((el) => el.value);
+
+  const syncValidationBulkBar = () => {
+    if (!bulkForm || !bulkCountEl) return;
+    const ids = selectedInboxIds();
+    const count = ids.length;
+    bulkCountEl.textContent =
+      count === 1 ? "1 selected" : `${count} selected`;
+    bulkForm.hidden = count === 0;
+    if (selectAllEl) {
+      const boxes = inboxSelectEls();
+      selectAllEl.checked = boxes.length > 0 && boxes.every((el) => el.checked);
+      selectAllEl.indeterminate =
+        count > 0 && count < boxes.length;
+    }
+  };
+
+  inboxSelectEls().forEach((el) => {
+    el.addEventListener("change", syncValidationBulkBar);
+  });
+
+  if (selectAllEl) {
+    selectAllEl.addEventListener("change", () => {
+      const checked = selectAllEl.checked;
+      inboxSelectEls().forEach((el) => {
+        el.checked = checked;
+      });
+      syncValidationBulkBar();
+    });
+  }
+
+  if (bulkForm) {
+    bulkForm.addEventListener("submit", (event) => {
+      const ids = selectedInboxIds();
+      if (!ids.length) {
+        event.preventDefault();
+        return;
+      }
+      const template =
+        bulkForm.dataset.confirmTemplate ||
+        "Reject {count} selected email(s)? This cannot be undone.";
+      const message = template.replace("{count}", String(ids.length));
+      if (!window.confirm(message)) {
+        event.preventDefault();
+        return;
+      }
+      bulkForm
+        .querySelectorAll('input[name="reply_ids"]')
+        .forEach((el) => el.remove());
+      ids.forEach((id) => {
+        const input = document.createElement("input");
+        input.type = "hidden";
+        input.name = "reply_ids";
+        input.value = id;
+        bulkForm.appendChild(input);
+      });
+    });
+  }
+
+  syncValidationBulkBar();
+
   document.querySelectorAll(".validation-row[data-panel]").forEach((row) => {
     const panel = document.getElementById(row.dataset.panel);
     if (!panel) return;

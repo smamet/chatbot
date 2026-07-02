@@ -178,6 +178,11 @@ from chatbot.application.usage_metering import metered_embedder
 from chatbot.application.usage_recorder_service import UsageRecorderService
 from chatbot.application.user_service import UserService
 from chatbot.application.validation_audit_service import VALIDATION_ACTIVITY_LIMIT, ValidationAuditService
+from chatbot.application.validation_bulk_service import (
+    ValidationBulkService,
+    format_bulk_reject_summary,
+    reject_pending_reply,
+)
 from chatbot.config.settings import Settings
 from chatbot.domain.constants import DEFAULT_HOOK_INSTRUCTIONS
 from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
@@ -653,40 +658,6 @@ def _require_pending_email_reply(reply: PendingReply) -> None:
         raise HTTPException(status_code=400, detail="Reply is not pending")
     if reply.channel != ConnectorType.EMAIL.value:
         raise HTTPException(status_code=400, detail="Attachments are only supported for email")
-
-
-def _persist_validation_email_draft_from_form(
-    session: Session,
-    *,
-    tenant_id: int,
-    reply: PendingReply,
-    form,
-    edited_by: str,
-    outbound_config: dict | None = None,
-) -> PendingReply:
-    if reply.channel != ConnectorType.EMAIL.value:
-        return reply
-    if "draft_html" in form:
-        try:
-            reply = save_pending_reply_draft(
-                session,
-                tenant_id=tenant_id,
-                reply=reply,
-                draft_html=str(form.get("draft_html", "")),
-                draft_subject=str(form.get("draft_subject", "")),
-                edited_by=edited_by,
-            )
-        except DraftEditError:
-            pass
-    if outbound_config is not None:
-        reply = persist_validation_email_subject(
-            session,
-            tenant_id=tenant_id,
-            reply=reply,
-            form_subject=str(form.get("draft_subject", "")),
-            outbound_config=outbound_config,
-        )
-    return reply
 
 
 def _merge_resolved_selection(form, reply) -> str | None:
@@ -4032,25 +4003,48 @@ def _reject_pending_reply(
     edited_by: str,
     settings: Settings,
 ) -> None:
-    _persist_validation_email_draft_from_form(
+    reject_pending_reply(
         session,
         tenant_id=tenant_id,
         reply=reply,
-        form=form,
         edited_by=edited_by,
-    )
-    cleanup_pending_reply_attachments(reply)
-    mark_imap_seen_for_pending_reply(
-        session,
-        tenant_id=tenant_id,
-        reply=reply,
         settings=settings,
+        form=form,
     )
-    ValidationAuditService(session).resolve_reply(
-        reply,
-        status=PendingReplyStatus.REJECTED,
-        actor_email=edited_by,
+
+
+@router.post("/bots/{slug}/validation/bulk-reject")
+async def bulk_reject_validation_replies(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_validator),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    reply_ids = [int(value) for value in form.getlist("reply_ids") if str(value).strip().isdigit()]
+    if not reply_ids:
+        request.session["validation_error"] = "Select at least one email to reject."
+        return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
+
+    result = ValidationBulkService(session, settings=settings).reject_email_replies(
+        tenant.id,
+        reply_ids,
+        actor_email=user.email,
     )
+    session.commit()
+    summary = format_bulk_reject_summary(result)
+    if result.rejected_ids:
+        request.session["validation_success"] = summary
+    elif summary:
+        request.session["validation_error"] = summary
+    else:
+        request.session["validation_error"] = "No replies were rejected."
+    return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
 
 
 @router.post("/bots/{slug}/validation/{reply_id}/regenerate")
