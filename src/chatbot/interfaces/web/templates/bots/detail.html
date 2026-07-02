@@ -1462,6 +1462,7 @@
 </form>
 {% endif %}
 <div class="table-wrap">
+  {% set inbox_colspan = 7 %}
   <table class="data-table validation-table validation-table--inbox">
     <colgroup>
       {% if validation_subtab == 'pending' %}<col class="validation-col-bulk">{% endif %}
@@ -1483,9 +1484,7 @@
       {% if validation_subtab in ('approved', 'rejected') %}<th class="validation-inbox-by">By</th><th class="validation-inbox-time">Time</th>{% else %}<th class="validation-inbox-time">Time</th>{% endif %}
       <th class="validation-row-chevron" aria-hidden="true"></th>
     </tr></thead>
-    <tbody>
-    {% set inbox_colspan = 7 %}
-    {% set ns = namespace(prev_date=None) %}
+    <tbody data-inbox-colspan="{{ inbox_colspan }}">
     {% for item in pending_replies_ui %}
     {% set r = item.reply %}
     {% if validation_subtab in ('approved', 'rejected') %}
@@ -1493,14 +1492,8 @@
     {% else %}
       {% set row_dt = r.created_at %}
     {% endif %}
-    {% set row_date = row_dt.strftime('%Y-%m-%d') if row_dt else '' %}
-    {% if row_date and row_date != ns.prev_date %}
-    <tr class="validation-inbox-date-row">
-      <td colspan="{{ inbox_colspan }}">{{ row_dt.strftime('%d/%m/%Y') }}</td>
-    </tr>
-    {% set ns.prev_date = row_date %}
-    {% endif %}
     <tr class="validation-row validation-inbox-row"
+        {% if row_dt %}data-utc="{{ row_dt.isoformat() }}"{% endif %}
         data-href="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}"
         tabindex="0"
         role="link">
@@ -1541,9 +1534,9 @@
       </td>
       {% if validation_subtab in ('approved', 'rejected') %}
       <td class="text-muted validation-inbox-by" title="{{ r.resolved_by or '' }}">{{ r.resolved_by or '—' }}</td>
-      <td class="text-muted validation-inbox-time">{% if row_dt %}<time datetime="{{ row_dt.isoformat() }}">{{ row_dt.strftime('%H:%M') }}</time>{% else %}—{% endif %}</td>
+      <td class="text-muted validation-inbox-time">{% if row_dt %}<time class="js-local-time" datetime="{{ row_dt.isoformat() }}">--:--</time>{% else %}—{% endif %}</td>
       {% else %}
-      <td class="text-muted validation-inbox-time">{% if row_dt %}<time datetime="{{ row_dt.isoformat() }}">{{ row_dt.strftime('%H:%M') }}</time>{% else %}—{% endif %}</td>
+      <td class="text-muted validation-inbox-time">{% if row_dt %}<time class="js-local-time" datetime="{{ row_dt.isoformat() }}">--:--</time>{% else %}—{% endif %}</td>
       {% endif %}
       <td class="validation-row-chevron" aria-hidden="true">▶</td>
     </tr>
@@ -1565,7 +1558,7 @@
   <ul class="validation-activity-list validation-activity-list--scroll">
   {% for entry in validation_activity %}
     <li class="validation-activity-item">
-      <time class="validation-activity-time">{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
+      <time class="validation-activity-time js-local-datetime" datetime="{{ entry.created_at.isoformat() }}">{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
       <span class="validation-activity-actor">{{ entry.actor_email }}</span>
       <span class="validation-activity-summary">{{ entry.summary }}</span>
       <a class="validation-activity-link" href="/dashboard/bots/{{ tenant.slug }}/validation/{{ entry.pending_reply_id }}">#{{ entry.pending_reply_id }}</a>

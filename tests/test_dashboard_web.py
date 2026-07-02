@@ -3493,6 +3493,9 @@ def test_validation_inbox_pending_shows_bulk_reject_ui(dashboard_env) -> None:
     assert "validation-bulk-form" in inbox.text
     assert "validation-inbox-select" in inbox.text
     assert 'id="validation-select-all"' in inbox.text
+    assert "data-utc=" in inbox.text
+    assert "js-local-time" in inbox.text
+    assert 'data-inbox-colspan="7"' in inbox.text
 
 
 def test_bulk_reject_emails_happy_path(dashboard_env) -> None:

@@ -511,7 +511,73 @@
     });
   }
 
+  const localInboxDateFormatter = new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+  const localInboxTimeFormatter = new Intl.DateTimeFormat(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+  const localDateTimeFormatter = new Intl.DateTimeFormat(undefined, {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+
+  function localDateKey(dt) {
+    return `${dt.getFullYear()}-${dt.getMonth()}-${dt.getDate()}`;
+  }
+
+  function renderValidationInboxLocalTimes() {
+    const tbody = document.querySelector(".validation-table--inbox tbody");
+    if (!tbody) return;
+
+    tbody.querySelectorAll(".validation-inbox-date-row").forEach((row) => row.remove());
+
+    const colspan = Number.parseInt(tbody.dataset.inboxColspan || "7", 10);
+    let prevDateKey = null;
+
+    tbody.querySelectorAll(".validation-inbox-row").forEach((row) => {
+      const utc = row.dataset.utc;
+      if (!utc) return;
+      const dt = new Date(utc);
+      if (Number.isNaN(dt.getTime())) return;
+
+      const dateKey = localDateKey(dt);
+      if (dateKey !== prevDateKey) {
+        const header = document.createElement("tr");
+        header.className = "validation-inbox-date-row";
+        const cell = document.createElement("td");
+        cell.colSpan = colspan;
+        cell.textContent = localInboxDateFormatter.format(dt);
+        header.appendChild(cell);
+        row.before(header);
+        prevDateKey = dateKey;
+      }
+
+      const timeEl = row.querySelector(".js-local-time");
+      if (timeEl) timeEl.textContent = localInboxTimeFormatter.format(dt);
+    });
+  }
+
+  function renderLocalDateTimes(root = document) {
+    root.querySelectorAll("time.js-local-datetime[datetime]").forEach((el) => {
+      const dt = new Date(el.dateTime);
+      if (!Number.isNaN(dt.getTime())) {
+        el.textContent = localDateTimeFormatter.format(dt);
+      }
+    });
+  }
+
   syncValidationBulkBar();
+  renderValidationInboxLocalTimes();
+  renderLocalDateTimes();
 
   document.querySelectorAll(".validation-row[data-panel]").forEach((row) => {
     const panel = document.getElementById(row.dataset.panel);
