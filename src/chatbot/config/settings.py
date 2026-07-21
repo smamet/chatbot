@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     cac40_ohlc_poll_seconds: int = Field(
         default=900, validation_alias="CAC40_OHLC_POLL_SECONDS"
     )
+    cac40_live_poll_seconds: int = Field(
+        default=60, validation_alias="CAC40_LIVE_POLL_SECONDS"
+    )
 
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     chat_model: str = Field(default="gemini-2.5-flash", validation_alias="CHAT_MODEL")

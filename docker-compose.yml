@@ -117,6 +117,26 @@ services:
       api:
         condition: service_started
 
+  worker-cac40-live:
+    build: .
+    command: python -m chatbot.interfaces.worker_cac40_live
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DATA_ROOT: /app/data
+      CAC40_LIVE_POLL_SECONDS: ${CAC40_LIVE_POLL_SECONDS:-60}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
   caddy:
     profiles: [caddy]
     image: caddy:2-alpine

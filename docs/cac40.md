@@ -8,11 +8,35 @@ Hedge-mode CAC40 bot: IG connectors, multimodal Gemini decisions, HedgeLedger ba
 |------|------|
 | `src/chatbot/cac40/` | Core engine (IG, charts, LLM, RiskGate, HedgeLedger, backtest, live scheduler) |
 | `prompts/cac40/system.md` | LLM system prompt |
-| `/dashboard/bots/{slug}/cac40` | Backtest UI integration |
-| `/dashboard/bots/{slug}/cac40/runs/{id}` | Run report + LLM decision browser (charts sent to Gemini) |
-| Connectors type `ig` | IG credentials (bidirectional) |
+| `/dashboard/bots/{slug}/cac40` | Backtest UI + **Live trading** panel |
+| `/dashboard/bots/{slug}/cac40/live/report` | Paper/live results (decision browser + PnL) |
+| `/dashboard/bots/{slug}/cac40/runs/{id}` | Backtest run report + LLM decision browser |
+| Connectors type `ig` | IG credentials (multiple accounts allowed; optional label) |
 | Integration type `cac40_backtest` | FM URL/token + defaults |
 | `worker-cac40-ohlc` | Background OHLC top-up from IG |
+| `worker-cac40-live` | Background live/paper cycles |
+
+## Live trading (dashboard)
+
+On **CAC40 Backtest** → **Live trading**:
+
+1. Add one or more IG connectors (Connectors tab). Use a label (e.g. Demo CFD).
+2. Check the accounts to use; **first checked = primary price feed**. Orders in Live mode are mirrored to every selected account.
+3. Save strategy (same knobs as the simulation form, minus period/llm_mode).
+4. **Paper** = Gemini + simulated ledger (no IG order API). **Live** = real working orders (each connector’s DEMO/LIVE env). **Off** = worker skips the bot.
+5. **View results** opens the live report (decisions, charts, open legs, realized/UPL).
+6. Disarming (Off/Paper) stops new cycles but **does not cancel** IG working orders already placed.
+
+Config lives under `data/cac40/{slug}/live/` (`live_config.json`, `status.json`, `state.json`, `decisions_log.json`, `journal/`).
+
+```bash
+# Live worker
+./sail up -d worker-cac40-live
+./sail exec worker-cac40-live python -m chatbot.interfaces.worker_cac40_live --once
+./sail logs worker-cac40-live
+```
+
+Poll interval: `CAC40_LIVE_POLL_SECONDS` (default 60). Bot cycles align to 15m candle closes in Europe/Paris at `:00:15`, `:15:15`, `:30:15`, `:45:15` (15s after the bar closes so OHLC is available).
 
 ## CLI
 

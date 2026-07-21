@@ -350,6 +350,13 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
     ],
     ConnectorType.IG.value: [
         ConnectorField(
+            key="name",
+            label="Label",
+            help="Optional name to tell accounts apart (e.g. Demo CFD, Live).",
+            placeholder="Demo CFD",
+            directions=(ConnectorDirection.BOTH.value,),
+        ),
+        ConnectorField(
             key="api_key",
             label="IG API key",
             help="IG Labs API key. Leave blank on update to keep current value.",

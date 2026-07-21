@@ -35,6 +35,12 @@ services:
     environment:
       CAC40_OHLC_POLL_SECONDS: ${CAC40_OHLC_POLL_SECONDS:-900}
 
+  worker-cac40-live:
+    volumes:
+      - ./src:/app/src
+    environment:
+      CAC40_LIVE_POLL_SECONDS: ${CAC40_LIVE_POLL_SECONDS:-60}
+
   greenmail:
     profiles: [dev]
     image: greenmail/standalone:2.1.8

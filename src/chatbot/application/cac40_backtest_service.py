@@ -639,7 +639,11 @@ def run_due_ig_ohlc_syncs(session: Session, settings: Settings) -> list[str]:
         if tenant is None:
             continue
         slug = tenant.slug
-        ig_config = connector_svc.get_ig_config(tenant.id)
+        from chatbot.application.cac40_live_service import resolve_primary_ig_config
+
+        ig_config = resolve_primary_ig_config(
+            settings, slug, session=session, tenant_id=tenant.id
+        )
         if not ig_config:
             skip_count += 1
             logs.append(f"{slug}: skip — no active IG connector")

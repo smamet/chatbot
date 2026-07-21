@@ -164,3 +164,14 @@ class LastLevels:
 
     def to_dict(self) -> dict[str, Any]:
         return {"support": self.support, "resistance": self.resistance, "source": self.source}
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> LastLevels:
+        raw = dict(data or {})
+        support = raw.get("support")
+        resistance = raw.get("resistance")
+        return cls(
+            support=float(support) if support is not None else None,
+            resistance=float(resistance) if resistance is not None else None,
+            source=str(raw.get("source") or ""),
+        )

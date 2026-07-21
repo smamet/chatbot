@@ -185,16 +185,19 @@ def test_run_due_skips_missing_csv_and_connector(mock_sync, tmp_path: Path) -> N
             "chatbot.adapters.persistence.connector_repository.SqlAlchemyConnectorRepository"
         ),
         patch("chatbot.application.connector_service.ConnectorService") as mock_conn_svc,
+        patch(
+            "chatbot.application.cac40_live_service.resolve_primary_ig_config"
+        ) as mock_primary,
     ):
         mock_int_repo.return_value.list_active_by_type.return_value = [integration]
         mock_tenant_svc.return_value.get_by_id.return_value = tenant
-        mock_conn_svc.return_value.get_ig_config.return_value = None
+        mock_primary.return_value = None
 
         logs = run_due_ig_ohlc_syncs(session, settings)
         assert any("no active IG connector" in line for line in logs)
         mock_sync.assert_not_called()
 
-        mock_conn_svc.return_value.get_ig_config.return_value = {
+        mock_primary.return_value = {
             "api_key": "k",
             "username": "u",
             "password": "p",

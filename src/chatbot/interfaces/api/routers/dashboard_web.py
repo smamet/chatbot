@@ -388,7 +388,20 @@ async def _connector_config_from_request(
         connector_type, cdir.value, field_values, outbound_provider=outbound_provider
     )
     svc = ConnectorService(SqlAlchemyConnectorRepository(session))
-    existing = svc.find(tenant_id, direction=cdir, type=ctype)
+    existing = None
+    raw_id = str(form.get("connector_id", "") or "").strip()
+    if raw_id.isdigit():
+        candidate = svc.get(int(raw_id))
+        if (
+            candidate is not None
+            and candidate.tenant_id == tenant_id
+            and candidate.type == ctype
+            and (ctype != ConnectorType.IG or True)
+            and (ctype == ConnectorType.IG or candidate.direction == cdir)
+        ):
+            existing = candidate
+    if existing is None:
+        existing = svc.find(tenant_id, direction=cdir, type=ctype)
     if existing is None and ctype == ConnectorType.IG:
         existing = svc.find_ig(tenant_id)
     cfg = _merge_connector_config(existing.config if existing else None, incoming)
@@ -750,7 +763,6 @@ def _connector_configs_for_client(connectors: list[Connector]) -> dict[str, dict
     secrets = secret_connector_keys()
     out: dict[str, dict] = {}
     for connector in connectors:
-        key = f"{connector.type.value}:{connector.direction.value}"
         cfg: dict = {}
         for field_key, value in connector.config.items():
             if field_key in secrets:
@@ -759,13 +771,20 @@ def _connector_configs_for_client(connectors: list[Connector]) -> dict[str, dict
                 cfg[field_key] = format_for_datetime_local(value)
             else:
                 cfg[field_key] = value
-        out[key] = {
+        payload = {
+            "id": connector.id,
             "active": connector.active,
             "mode": connector.mode.value,
             "config": cfg,
             "oauth_connected": is_oauth_connected(connector.config)
             or bool(str(connector.config.get("mail_connection_id", "")).strip()),
         }
+        # Prefer id-keyed entries (supports multiple IG accounts).
+        out[f"id:{connector.id}"] = payload
+        # Keep type:direction for the first of each (non-IG / legacy JS).
+        legacy_key = f"{connector.type.value}:{connector.direction.value}"
+        if legacy_key not in out:
+            out[legacy_key] = payload
     return out
 
 
@@ -2287,8 +2306,23 @@ async def save_connector(
         direction=direction,
     )
     svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    raw_id = str(form.get("connector_id", "") or "").strip()
+    connector_id = int(raw_id) if raw_id.isdigit() else None
     if ctype == ConnectorType.IG:
-        svc.upsert_ig(tenant_id=tenant.id, config=cfg, active=active == "on")
+        if connector_id is None and str(form.get("ig_create_new", "")).strip() in (
+            "1",
+            "true",
+            "on",
+            "yes",
+        ):
+            svc.create_ig(tenant_id=tenant.id, config=cfg, active=active == "on")
+        else:
+            svc.upsert_ig(
+                tenant_id=tenant.id,
+                config=cfg,
+                active=active == "on",
+                connector_id=connector_id,
+            )
     else:
         svc.upsert(
             tenant_id=tenant.id,

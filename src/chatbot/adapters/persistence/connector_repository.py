@@ -53,13 +53,33 @@ class SqlAlchemyConnectorRepository:
         type: ConnectorType,
     ) -> Connector | None:
         row = self._session.scalar(
-            select(ConnectorRow).where(
+            select(ConnectorRow)
+            .where(
                 ConnectorRow.tenant_id == tenant_id,
                 ConnectorRow.direction == direction.value,
                 ConnectorRow.type == type.value,
             )
+            .order_by(ConnectorRow.id.asc())
         )
         return _row_to_connector(row) if row else None
+
+    def list_by_tenant_direction_type(
+        self,
+        tenant_id: int,
+        *,
+        direction: ConnectorDirection,
+        type: ConnectorType,
+    ) -> list[Connector]:
+        rows = self._session.scalars(
+            select(ConnectorRow)
+            .where(
+                ConnectorRow.tenant_id == tenant_id,
+                ConnectorRow.direction == direction.value,
+                ConnectorRow.type == type.value,
+            )
+            .order_by(ConnectorRow.id.asc())
+        ).all()
+        return [_row_to_connector(r) for r in rows]
 
     def list_active_by_type(
         self,

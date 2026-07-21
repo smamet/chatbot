@@ -56,6 +56,22 @@ class WorkingOrder:
             "active_from_bar": self.active_from_bar,
         }
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> WorkingOrder:
+        raw = dict(data or {})
+        return cls(
+            id=str(raw.get("id") or ""),
+            type=OrderType(str(raw.get("type") or OrderType.LIMIT.value)),
+            side=Side(str(raw.get("side") or Side.BUY.value)),
+            level=float(raw.get("level") or 0.0),
+            size=float(raw.get("size") or 0.0),
+            purpose=OrderPurpose(str(raw.get("purpose") or OrderPurpose.ENTRY.value)),
+            position_id=(str(raw["position_id"]) if raw.get("position_id") else None),
+            client_ref=str(raw.get("client_ref") or ""),
+            deal_id=str(raw.get("deal_id") or ""),
+            active_from_bar=int(raw.get("active_from_bar") or 0),
+        )
+
 
 @dataclass
 class PositionLeg:
@@ -75,8 +91,24 @@ class PositionLeg:
             "size": self.size,
             "entry": self.entry,
             "role": self.role.value,
+            "opened_bar": self.opened_bar,
+            "opened_at": self.opened_at,
             "upl": self.upl,
         }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> PositionLeg:
+        raw = dict(data or {})
+        return cls(
+            id=str(raw.get("id") or ""),
+            side=Side(str(raw.get("side") or Side.BUY.value)),
+            size=float(raw.get("size") or 0.0),
+            entry=float(raw.get("entry") or 0.0),
+            role=LegRole(str(raw.get("role") or LegRole.PRIMARY.value)),
+            opened_bar=int(raw.get("opened_bar") or 0),
+            opened_at=str(raw.get("opened_at") or ""),
+            upl=float(raw.get("upl") or 0.0),
+        )
 
 
 @dataclass
@@ -91,6 +123,36 @@ class ClosedTrade:
     opened_at: str
     closed_at: str
     bars_held: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "side": self.side.value,
+            "size": self.size,
+            "entry": self.entry,
+            "exit": self.exit,
+            "role": self.role.value,
+            "realized_pnl": self.realized_pnl,
+            "opened_at": self.opened_at,
+            "closed_at": self.closed_at,
+            "bars_held": self.bars_held,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> ClosedTrade:
+        raw = dict(data or {})
+        return cls(
+            id=str(raw.get("id") or ""),
+            side=Side(str(raw.get("side") or Side.BUY.value)),
+            size=float(raw.get("size") or 0.0),
+            entry=float(raw.get("entry") or 0.0),
+            exit=float(raw.get("exit") or 0.0),
+            role=LegRole(str(raw.get("role") or LegRole.PRIMARY.value)),
+            realized_pnl=float(raw.get("realized_pnl") or 0.0),
+            opened_at=str(raw.get("opened_at") or ""),
+            closed_at=str(raw.get("closed_at") or ""),
+            bars_held=int(raw.get("bars_held") or 0),
+        )
 
 
 @dataclass

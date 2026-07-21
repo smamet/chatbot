@@ -1,0 +1,101 @@
+{# Shared strategy fields for backtest + live forms. #}
+{% macro strategy_fields(cfg, prefix='', include_period=false, include_llm_mode=false) %}
+{% if include_period %}
+<label>Period
+  <select name="period">
+    <option value="1w" {% if cfg.backtest_period == '1w' %}selected{% endif %}>1 week</option>
+    <option value="2w" {% if cfg.backtest_period == '2w' %}selected{% endif %}>2 weeks</option>
+    <option value="1m" {% if cfg.backtest_period == '1m' %}selected{% endif %}>1 month</option>
+    <option value="3m" {% if cfg.backtest_period == '3m' %}selected{% endif %}>3 months</option>
+    <option value="6m" {% if cfg.backtest_period == '6m' %}selected{% endif %}>6 months</option>
+    <option value="1y" {% if cfg.backtest_period == '1y' %}selected{% endif %}>1 year</option>
+    <option value="all" {% if cfg.backtest_period == 'all' %}selected{% endif %}>All</option>
+  </select>
+</label>
+{% endif %}
+<label>Max open positions
+  <input type="number" name="max_open_positions" value="{{ cfg.max_open_positions }}" min="1" max="20">
+</label>
+<label>Order size
+  <input type="number" step="0.01" name="order_size" value="{{ cfg.order_size }}">
+</label>
+<label>Spread points
+  <input type="number" step="0.1" name="spread_points" value="{{ cfg.spread_points }}">
+</label>
+<label>Prevent selling at a loss
+  <select name="prevent_loss_exits">
+    <option value="0" {% if not cfg.prevent_loss_exits %}selected{% endif %}>No (default)</option>
+    <option value="1" {% if cfg.prevent_loss_exits %}selected{% endif %}>Yes — block exits with PnL ≤ 0</option>
+  </select>
+  <small class="field-hint">Hard gate: reject market closes and TP/close orders that would realize a loss after spread.</small>
+</label>
+<label>LLM schedule
+  <select name="llm_trigger_mode" id="{{ prefix }}llm-trigger-mode">
+    <option value="levels" {% if cfg.llm_trigger_mode != 'interval' %}selected{% endif %}>
+      Adaptive — S/R approach, break, fill
+    </option>
+    <option value="interval" {% if cfg.llm_trigger_mode == 'interval' %}selected{% endif %}>
+      Fixed rate — every N bars
+    </option>
+  </select>
+</label>
+<label id="{{ prefix }}llm-band-wrap" class="cac40-trigger-field">Level band (points)
+  <input type="number" step="0.1" name="llm_level_band_points"
+         value="{{ cfg.llm_level_band_points or 15 }}" min="0.1" max="500">
+  <small class="field-hint">How close price must get to S/R to trigger a call.</small>
+</label>
+<label id="{{ prefix }}llm-every-wrap" class="cac40-trigger-field">Call every
+  <span class="llm-rate-row">
+    <input type="number" name="llm_every_n" value="{{ cfg.llm_every_n or 6 }}" min="1" max="96">
+    <select name="llm_every_unit">
+      <option value="15m" {% if cfg.llm_every_unit == '15m' %}selected{% endif %}>× 15 minutes</option>
+      <option value="1h" {% if cfg.llm_every_unit != '15m' %}selected{% endif %}>× 1 hour</option>
+    </select>
+  </span>
+  <small class="field-hint">Fixed cadence (only used when schedule is Fixed rate).</small>
+</label>
+{% if include_llm_mode %}
+<label>LLM mode
+  <select name="llm_mode">
+    <option value="live" {% if cfg.llm_mode == 'live' %}selected{% endif %}>live (call Gemini)</option>
+    <option value="replay" {% if cfg.llm_mode == 'replay' %}selected{% endif %}>replay (cached)</option>
+    <option value="charts_only" {% if cfg.llm_mode == 'charts_only' %}selected{% endif %}>charts_only</option>
+  </select>
+</label>
+{% endif %}
+<label>LLM temperature
+  <input type="number" step="0.1" min="0" max="1" name="llm_temperature" value="{{ cfg.llm_temperature if cfg.llm_temperature is not none else 0 }}">
+  <small class="field-hint">0–1 sampling for live Gemini. <strong>0</strong> = more deterministic. Ignored for replay / charts_only.</small>
+</label>
+<label>Chart window 15m (bars)
+  <input type="number" name="lookback_15m" value="{{ cfg.lookback_15m }}" min="1">
+</label>
+<label>Chart window 1H (bars)
+  <input type="number" name="lookback_1h" value="{{ cfg.lookback_1h }}" min="1">
+</label>
+<label>Chart window 1D (bars)
+  <input type="number" name="lookback_1d" value="{{ cfg.lookback_1d }}" min="1">
+</label>
+<label>Warm-up / RSI bars
+  <input type="number" name="warmup_bars" value="{{ cfg.warmup_bars }}" min="2">
+</label>
+<label>Show RSI on charts
+  <select name="chart_show_rsi">
+    <option value="1" {% if cfg.chart_show_rsi %}selected{% endif %}>Yes</option>
+    <option value="0" {% if not cfg.chart_show_rsi %}selected{% endif %}>No</option>
+  </select>
+</label>
+<label>Show Traditional pivots
+  <select name="chart_show_pivots">
+    <option value="1" {% if cfg.chart_show_pivots %}selected{% endif %}>Yes</option>
+    <option value="0" {% if not cfg.chart_show_pivots %}selected{% endif %}>No</option>
+  </select>
+</label>
+<label>Pivot period
+  <select name="chart_pivot_period">
+    <option value="D" {% if cfg.chart_pivot_period == 'D' or not cfg.chart_pivot_period %}selected{% endif %}>Daily</option>
+    <option value="W" {% if cfg.chart_pivot_period == 'W' %}selected{% endif %}>Weekly</option>
+    <option value="M" {% if cfg.chart_pivot_period == 'M' %}selected{% endif %}>Monthly</option>
+  </select>
+</label>
+{% endmacro %}

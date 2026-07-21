@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -11,8 +12,11 @@ from starlette.middleware.sessions import SessionMiddleware
 from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from chatbot.adapters.llm.gemini_client import GeminiLlmClient
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
+from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.adapters.rag.fasttext_language_gate import load_rewrite_language_gate
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
+from chatbot.application.cac40_live_service import resolve_cac40_trading_banner
+from chatbot.application.tenant_service import TenantService
 from chatbot.config.settings import Settings, get_settings
 from chatbot.interfaces.api.error_handlers import register_exception_handlers
 from chatbot.interfaces.api.routers import (
@@ -27,6 +31,9 @@ from chatbot.interfaces.api.routers import (
 )
 
 _STATIC = Path(__file__).resolve().parent.parent / "web" / "static"
+_logger = logging.getLogger(__name__)
+# Bot hub + nested pages; skip list/new/import.
+_BOT_PAGE_RE = re.compile(r"^/dashboard/bots/(?!new(?:/|$)|import(?:/|$))([^/]+)")
 
 
 def _configure_rag_verbose_logging(enabled: bool) -> None:
@@ -97,6 +104,35 @@ def create_app() -> FastAPI:
     @app.middleware("http")
     async def _reload_env_clients_middleware(request: Request, call_next):
         refresh_genai_clients_if_needed(request.app)
+        return await call_next(request)
+
+    @app.middleware("http")
+    async def _cac40_trading_banner_middleware(request: Request, call_next):
+        request.state.cac40_trading = None
+        if request.method == "GET":
+            match = _BOT_PAGE_RE.match(request.url.path)
+            if match is not None:
+                slug = match.group(1)
+                factory = getattr(request.app.state, "session_factory", None)
+                if factory is not None:
+                    try:
+                        settings = get_settings()
+                        with factory() as session:
+                            tenant = TenantService(
+                                SqlAlchemyTenantRepository(session)
+                            ).get_by_slug(slug)
+                            if tenant is not None:
+                                request.state.cac40_trading = resolve_cac40_trading_banner(
+                                    session,
+                                    settings,
+                                    tenant_id=tenant.id,
+                                    slug=tenant.slug,
+                                    allowed_integrations=tenant.config.allowed_integrations,
+                                )
+                    except Exception:
+                        _logger.exception(
+                            "CAC40 trading banner lookup failed for slug=%s", slug
+                        )
         return await call_next(request)
 
     @app.get("/healthz")

@@ -318,3 +318,57 @@ class HedgeLedger:
             "legs_count": self.legs_count(),
             "working_orders_count": len(self.working_orders),
         }
+
+    def to_state_dict(self) -> dict:
+        """Persistable ledger snapshot for live paper/live continuity."""
+        max_id = 0
+        for key in list(self.positions) + list(self.working_orders):
+            digits = "".join(ch for ch in key if ch.isdigit())
+            if digits.isdigit():
+                max_id = max(max_id, int(digits))
+        for trade in self.closed_trades:
+            digits = "".join(ch for ch in trade.id if ch.isdigit())
+            if digits.isdigit():
+                max_id = max(max_id, int(digits))
+        return {
+            "symbol": self.symbol,
+            "cash": self.cash,
+            "realized_session": self.realized_session,
+            "bar_index": self.bar_index,
+            "last_price": self.last_price,
+            "last_levels": self.last_levels.to_dict(),
+            "phase": self.phase,
+            "positions": [p.to_dict() for p in self.positions.values()],
+            "working_orders": [o.to_dict() for o in self.working_orders.values()],
+            "closed_trades": [t.to_dict() for t in self.closed_trades],
+            "equity_curve": list(self.equity_curve),
+            "id_seq": max_id,
+        }
+
+    @classmethod
+    def from_state_dict(cls, config: Cac40Config, data: dict | None) -> HedgeLedger:
+        raw = dict(data or {})
+        ledger = cls(config=config, symbol=str(raw.get("symbol") or config.symbol or "CAC40"))
+        ledger.cash = float(raw.get("cash") or 0.0)
+        ledger.realized_session = float(raw.get("realized_session") or 0.0)
+        ledger.bar_index = int(raw.get("bar_index") or 0)
+        ledger.last_price = float(raw.get("last_price") or 0.0)
+        ledger.last_levels = LastLevels.from_dict(raw.get("last_levels") or {})
+        ledger.phase = str(raw.get("phase") or "Flat")
+        ledger.positions = {
+            p.id: p
+            for p in (PositionLeg.from_dict(row) for row in (raw.get("positions") or []))
+            if p.id
+        }
+        ledger.working_orders = {
+            o.id: o
+            for o in (WorkingOrder.from_dict(row) for row in (raw.get("working_orders") or []))
+            if o.id
+        }
+        ledger.closed_trades = [
+            ClosedTrade.from_dict(row) for row in (raw.get("closed_trades") or [])
+        ]
+        ledger.equity_curve = list(raw.get("equity_curve") or [])
+        start = int(raw.get("id_seq") or 0) + 1
+        ledger._id_seq = itertools.count(max(1, start))
+        return ledger
