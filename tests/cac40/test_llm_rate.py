@@ -24,3 +24,5 @@ def test_defaults_one_week_and_six_hours() -> None:
     assert cfg.llm_every_n == 6
     assert cfg.llm_every_unit == "1h"
     assert cfg.resolve_llm_every_bars() == 24
+    assert cfg.llm_trigger_mode == "levels"
+    assert cfg.llm_level_band_points == 15.0

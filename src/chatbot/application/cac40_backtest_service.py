@@ -29,6 +29,20 @@ _SAFE_CHART_KEY = re.compile(r"^[\w.-]+$")
 _SAFE_CHART_FILE = re.compile(r"^chart_[\w.-]+\.png$")
 
 
+def _read_json(path: Path, default: Any = None) -> Any:
+    """Load JSON; return default on missing, empty, or corrupt files."""
+    if not path.exists():
+        return default
+    try:
+        text = path.read_text(encoding="utf-8").strip()
+        if not text:
+            return default
+        return json.loads(text)
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning("Invalid JSON at %s: %s", path, exc)
+        return default
+
+
 def cac40_root(settings: Settings, tenant_slug: str) -> Path:
     root = settings.data_root / "cac40" / tenant_slug
     root.mkdir(parents=True, exist_ok=True)
@@ -49,13 +63,12 @@ def list_runs(settings: Settings, tenant_slug: str) -> list[dict[str, Any]]:
         state_path = path / "state.json"
         report_path = path / "report.json"
         config_path = path / "config.json"
-        state = json.loads(state_path.read_text()) if state_path.exists() else {}
-        report = json.loads(report_path.read_text()) if report_path.exists() else {}
+        state = _read_json(state_path, default={}) or {}
+        report = _read_json(report_path, default={}) or {}
         raw_cfg: dict[str, Any] = {}
-        if config_path.exists():
-            loaded = json.loads(config_path.read_text(encoding="utf-8"))
-            if isinstance(loaded, dict):
-                raw_cfg = loaded
+        loaded = _read_json(config_path, default={})
+        if isinstance(loaded, dict):
+            raw_cfg = loaded
         if not raw_cfg:
             raw_cfg = dict(report.get("config") or {})
         cfg = public_config_snapshot(raw_cfg)
@@ -69,6 +82,8 @@ def list_runs(settings: Settings, tenant_slug: str) -> list[dict[str, Any]]:
                 "max_drawdown": report.get("max_drawdown"),
                 "trades": report.get("trades"),
                 "winrate": report.get("winrate"),
+                "llm_calls_total": report.get("llm_calls_total"),
+                "llm_trigger_mode": cfg.get("llm_trigger_mode") or "levels",
                 "chart_show_rsi": bool(cfg["chart_show_rsi"]) if "chart_show_rsi" in cfg else True,
                 "chart_show_pivots": bool(cfg["chart_show_pivots"]) if "chart_show_pivots" in cfg else False,
                 "chart_pivot_period": str(cfg.get("chart_pivot_period") or "D"),
@@ -99,8 +114,8 @@ def get_run(settings: Settings, tenant_slug: str, run_id: str) -> dict[str, Any]
     path = _run_path(settings, tenant_slug, run_id)
     if path is None or not path.exists():
         raise FileNotFoundError(run_id)
-    state = json.loads((path / "state.json").read_text()) if (path / "state.json").exists() else {}
-    report = json.loads((path / "report.json").read_text()) if (path / "report.json").exists() else {}
+    state = _read_json(path / "state.json", default={}) or {}
+    report = _read_json(path / "report.json", default={}) or {}
     decisions = _load_decision_entries(path, tenant_slug=tenant_slug, run_id=run_id)
     return {
         "run_id": run_id,
@@ -116,11 +131,8 @@ def _equity_curve_indexes(run_path: Path) -> tuple[dict[int, dict[str, Any]], di
     by_bar: dict[int, dict[str, Any]] = {}
     by_ts: dict[str, dict[str, Any]] = {}
     report_path = run_path / "report.json"
-    if not report_path.exists():
-        return by_bar, by_ts
-    try:
-        report = json.loads(report_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    report = _read_json(report_path, default={})
+    if not isinstance(report, dict):
         return by_bar, by_ts
     for pt in report.get("equity_curve") or []:
         if not isinstance(pt, dict):
@@ -171,29 +183,29 @@ def _load_decision_entries(
     """Prefer decisions_log.json (charts + gate results); fall back to cache/report."""
     entries: list[dict[str, Any]] = []
     log_path = run_path / "decisions_log.json"
-    if log_path.exists():
-        raw = json.loads(log_path.read_text(encoding="utf-8"))
-        if isinstance(raw, list):
-            entries = list(raw)
-    if not entries and (run_path / "report.json").exists():
-        report = json.loads((run_path / "report.json").read_text(encoding="utf-8"))
+    raw = _read_json(log_path, default=None)
+    if isinstance(raw, list):
+        entries = list(raw)
+    if not entries:
+        report = _read_json(run_path / "report.json", default={}) or {}
         if isinstance(report.get("decisions"), list):
             entries = list(report["decisions"])
-    if not entries and (run_path / "decisions.json").exists():
-        cached = json.loads((run_path / "decisions.json").read_text(encoding="utf-8"))
-        for ts, payload in cached.items():
-            meta = payload.get("meta") or {}
-            entries.append(
-                {
-                    "ts": ts,
-                    "decision": payload.get("decision"),
-                    "charts_rel": meta.get("charts_rel"),
-                    "chart_files": meta.get("chart_files") or [],
-                    "executed": [],
-                    "rejected": [],
-                    "bar": meta.get("bar"),
-                }
-            )
+    if not entries:
+        cached = _read_json(run_path / "decisions.json", default=None)
+        if isinstance(cached, dict):
+            for ts, payload in cached.items():
+                meta = (payload or {}).get("meta") or {}
+                entries.append(
+                    {
+                        "ts": ts,
+                        "decision": (payload or {}).get("decision"),
+                        "charts_rel": meta.get("charts_rel"),
+                        "chart_files": meta.get("chart_files") or [],
+                        "executed": [],
+                        "rejected": [],
+                        "bar": meta.get("bar"),
+                    }
+                )
 
     by_bar, by_ts = _equity_curve_indexes(run_path)
 
@@ -259,15 +271,16 @@ def resolve_chart_file(
 
 
 def delete_run(settings: Settings, tenant_slug: str, run_id: str) -> bool:
-    """Delete a backtest run directory (charts, decisions, report)."""
-    with _LOCK:
-        if run_id in _ENGINES:
-            _ENGINES[run_id].request_stop()
+    """Stop a live engine if present, then delete the run directory."""
+    stop_run(settings, tenant_slug, run_id)
     path = _run_path(settings, tenant_slug, run_id)
     if path is None or not path.exists():
         return False
-    shutil.rmtree(path)
-    return True
+    with _LOCK:
+        _ENGINES.pop(run_id, None)
+        _THREADS.pop(run_id, None)
+    shutil.rmtree(path, ignore_errors=True)
+    return not path.exists()
 
 
 def start_run(
@@ -310,13 +323,34 @@ def start_run(
     return run_path.name
 
 
-def stop_run(run_id: str) -> bool:
+def stop_run(settings: Settings, tenant_slug: str, run_id: str) -> bool:
+    """
+    Request stop on a live engine, or mark orphaned runs stopped on disk.
+
+    Orphans happen when the API process restarts (reload/crash) while state.json
+    still says ``running`` — there is no in-memory engine to signal.
+    """
     with _LOCK:
         engine = _ENGINES.get(run_id)
-    if not engine:
+    if engine:
+        engine.request_stop()
+        return True
+
+    path = _run_path(settings, tenant_slug, run_id)
+    if path is None or not path.exists():
         return False
-    engine.request_stop()
-    return True
+    state_path = path / "state.json"
+    state = _read_json(state_path, default={}) or {}
+    if not isinstance(state, dict):
+        state = {}
+    if state.get("status") in ("running", "stopping", "pending"):
+        state["status"] = "stopped"
+        note = "Stopped (no active worker — process may have restarted)"
+        prev = str(state.get("error") or "").strip()
+        state["error"] = f"{prev}\n{note}".strip() if prev else note
+        state_path.write_text(json.dumps(state, indent=2, default=str), encoding="utf-8")
+        return True
+    return False
 
 
 def default_ohlc_path(settings: Settings, tenant_slug: str) -> Path:

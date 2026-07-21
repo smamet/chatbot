@@ -4,12 +4,13 @@ import logging
 from dataclasses import dataclass, field
 
 from chatbot.cac40.config import Cac40Config, LastLevels
-from chatbot.cac40.hedge_ledger import HedgeLedger
+from chatbot.cac40.hedge_ledger import HedgeLedger, exit_would_lose
 from chatbot.cac40.models import (
     LlmAction,
     LlmDecision,
     OrderPurpose,
     OrderType,
+    PositionLeg,
     Side,
     WorkingOrder,
 )
@@ -73,6 +74,11 @@ class RiskGate:
             return next(iter(self.ledger.positions))
         return None
 
+    def _loss_exit_blocked(self, leg: PositionLeg, exit_price: float) -> bool:
+        if not self.config.prevent_loss_exits:
+            return False
+        return exit_would_lose(leg, exit_price, self.config.point_value)
+
     def _apply_one(self, action: LlmAction, result: GateResult) -> None:
         op = action.op
         purpose = (action.purpose or "").strip().lower()
@@ -103,6 +109,12 @@ class RiskGate:
                     result.rejected.append("place_limit:missing_position_id")
                     return
                 action.position_id = pid
+                leg = self.ledger.positions.get(pid)
+                if leg is not None:
+                    exit_px = self.ledger.estimate_exit_fill(side, float(action.level), order_type=OrderType.LIMIT)
+                    if self._loss_exit_blocked(leg, exit_px):
+                        result.rejected.append("place_limit:loss_exit_blocked")
+                        return
             if purpose == "hedge_cover":
                 if not self.ledger.positions:
                     result.rejected.append("place_limit:hedge_without_primary")
@@ -144,6 +156,12 @@ class RiskGate:
                     result.rejected.append("place_stop:missing_position_id")
                     return
                 action.position_id = pid
+                leg = self.ledger.positions.get(pid)
+                if leg is not None:
+                    exit_px = self.ledger.estimate_exit_fill(side, float(action.level), order_type=OrderType.STOP)
+                    if self._loss_exit_blocked(leg, exit_px):
+                        result.rejected.append("place_stop:loss_exit_blocked")
+                        return
             if purpose == "hedge_cover" or not purpose:
                 if not self.ledger.positions:
                     result.rejected.append("place_stop:hedge_without_primary")
@@ -172,9 +190,19 @@ class RiskGate:
             if not action.order_id or action.level is None:
                 result.rejected.append("amend_order:invalid")
                 return
-            if action.order_id not in self.ledger.working_orders:
+            existing = self.ledger.working_orders.get(action.order_id)
+            if existing is None:
                 result.rejected.append(f"amend_order:unknown:{action.order_id}")
                 return
+            if existing.purpose in (OrderPurpose.TP, OrderPurpose.CLOSE) and existing.position_id:
+                leg = self.ledger.positions.get(existing.position_id)
+                if leg is not None:
+                    exit_px = self.ledger.estimate_exit_fill(
+                        existing.side, float(action.level), order_type=existing.type
+                    )
+                    if self._loss_exit_blocked(leg, exit_px):
+                        result.rejected.append("amend_order:loss_exit_blocked")
+                        return
             self.ledger.amend_order(action.order_id, level=float(action.level))
             result.executed.append(f"amend_order:{action.order_id}->{action.level}")
             return
@@ -202,6 +230,12 @@ class RiskGate:
             if not action.position_id:
                 result.rejected.append("market_close:invalid")
                 return
+            leg = self.ledger.positions.get(action.position_id)
+            if leg is not None:
+                exit_px = self.ledger.market_close_fill_price(leg)
+                if self._loss_exit_blocked(leg, exit_px):
+                    result.rejected.append("market_close:loss_exit_blocked")
+                    return
             self.ledger.market_close(action.position_id)
             result.executed.append(f"market_close:{action.position_id}")
             return

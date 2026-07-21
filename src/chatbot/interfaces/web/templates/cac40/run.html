@@ -9,22 +9,31 @@
       ({{ run.state.current_bar }}/{{ run.state.total_bars }})
       {% if run.report and run.report.config %}
       · Period {{ run.report.config.backtest_period or '—' }}
-      · LLM every {{ run.report.config.llm_every_n or '?' }} × {{ run.report.config.llm_every_unit or '15m' }}
+      {% if run.report.config.llm_trigger_mode == 'interval' %}
+      · Fixed rate {{ run.report.config.llm_every_n or '?' }} × {{ run.report.config.llm_every_unit or '15m' }}
+      {% else %}
+      · Adaptive S/R (band {{ run.report.config.llm_level_band_points or 15 }})
+      {% endif %}
+      {% if run.report.llm_calls_total is defined %}
+      · {{ run.report.llm_calls_total }} LLM calls
+      {% endif %}
       {% endif %}
     </p>
   </div>
   <div class="header-actions cac40-run-header-actions">
-    {% if run.state.status == 'running' %}
+    {% if run.state.status in ('running', 'stopping') %}
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/stop">
-      <button type="submit" class="btn-secondary">Stop</button>
+      <button type="submit" class="btn-secondary"{% if run.state.status == 'stopping' %} disabled{% endif %}>
+        {% if run.state.status == 'stopping' %}Stopping…{% else %}Stop{% endif %}
+      </button>
     </form>
     {% endif %}
-    {% if run.state.status != 'running' %}
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/delete"
-          onsubmit="return confirm('Delete this backtest and all charts?');">
-      <button type="submit" class="btn-danger">Delete run</button>
+          onsubmit="return confirm('{% if run.state.status in ('running', 'stopping') %}Force-delete this running backtest and all charts?{% else %}Delete this backtest and all charts?{% endif %}');">
+      <button type="submit" class="btn-danger">
+        {% if run.state.status in ('running', 'stopping') %}Force delete{% else %}Delete run{% endif %}
+      </button>
     </form>
-    {% endif %}
     <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40">All runs</a>
   </div>
 </section>
@@ -46,6 +55,7 @@
     <div><strong>Max DD</strong><br>{{ '%.2f'|format(report.max_drawdown or 0) }}</div>
     <div><strong>Trades</strong><br>{{ report.trades }}{% if report.trades %} (WR {{ '%.0f'|format((report.winrate or 0) * 100) }}%){% else %} (WR —){% endif %}</div>
     <div><strong>LLM decisions</strong><br>{{ report.decisions_count or (run.decisions|length) }}</div>
+    <div><strong>LLM calls (total)</strong><br>{{ report.llm_calls_total if report.llm_calls_total is defined else '—' }}</div>
   </div>
 </section>
 

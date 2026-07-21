@@ -10,10 +10,21 @@ from chatbot.cac40.models import (
     LegRole,
     MarketSnapshot,
     OrderPurpose,
+    OrderType,
     PositionLeg,
     Side,
     WorkingOrder,
 )
+
+
+def realized_exit_pnl(leg: PositionLeg, exit_price: float, point_value: float = 1.0) -> float:
+    """Same economics as HedgeLedger.close_position."""
+    direction = 1.0 if leg.side == Side.BUY else -1.0
+    return (exit_price - leg.entry) * direction * leg.size * point_value
+
+
+def exit_would_lose(leg: PositionLeg, exit_price: float, point_value: float = 1.0) -> bool:
+    return realized_exit_pnl(leg, exit_price, point_value) <= 0
 
 
 @dataclass
@@ -128,8 +139,7 @@ class HedgeLedger:
         leg = self.positions.pop(position_id, None)
         if leg is None:
             return None
-        direction = 1.0 if leg.side == Side.BUY else -1.0
-        pnl = (exit_price - leg.entry) * direction * leg.size * self.config.point_value
+        pnl = realized_exit_pnl(leg, exit_price, self.config.point_value)
         self.realized_session += pnl
         self.cash += pnl
         trade = ClosedTrade(
@@ -151,6 +161,18 @@ class HedgeLedger:
                 self.working_orders.pop(oid, None)
         return trade
 
+    def market_close_fill_price(self, leg: PositionLeg) -> float:
+        half = abs(self.config.spread_points) / 2.0
+        return self.last_price - half if leg.side == Side.BUY else self.last_price + half
+
+    def estimate_exit_fill(self, close_side: Side, level: float, *, order_type: OrderType = OrderType.LIMIT) -> float:
+        """Optimistic touch fill at level (same convention as fill_engine)."""
+        if order_type == OrderType.STOP:
+            slip = abs(self.config.slippage_points)
+            return level + slip if close_side == Side.BUY else level - slip
+        half = abs(self.config.spread_points) / 2.0
+        return level + half if close_side == Side.BUY else level - half
+
     def market_open(self, side: Side, size: float, *, role: LegRole = LegRole.PRIMARY) -> str:
         price = self.last_price
         half = abs(self.config.spread_points) / 2.0
@@ -159,12 +181,10 @@ class HedgeLedger:
         return leg.id
 
     def market_close(self, position_id: str) -> None:
-        half = abs(self.config.spread_points) / 2.0
         leg = self.positions.get(position_id)
         if not leg:
             return
-        fill = self.last_price - half if leg.side == Side.BUY else self.last_price + half
-        self.close_position(position_id, fill)
+        self.close_position(position_id, self.market_close_fill_price(leg))
 
     def apply_overnight_funding(self) -> float:
         if not self.positions or not self.last_price:
@@ -205,6 +225,22 @@ class HedgeLedger:
                         {
                             "type": "rejected_fill",
                             "reason": "tp_missing_position_id",
+                            "order": order.to_dict(),
+                            "fill": fill.fill_price,
+                        }
+                    )
+                    continue
+                leg = self.positions.get(order.position_id)
+                if (
+                    self.config.prevent_loss_exits
+                    and leg is not None
+                    and exit_would_lose(leg, fill.fill_price, self.config.point_value)
+                ):
+                    # Order already popped — cancel rather than leave a guaranteed-loss TP.
+                    events.append(
+                        {
+                            "type": "rejected_fill",
+                            "reason": "loss_exit_blocked",
                             "order": order.to_dict(),
                             "fill": fill.fill_price,
                         }

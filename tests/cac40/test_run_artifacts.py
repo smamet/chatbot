@@ -94,3 +94,44 @@ def test_get_run_exposes_chart_urls_and_delete_cleans(tmp_path: Path) -> None:
 
     assert delete_run(settings, "demo-bot", run_id) is True
     assert not run_path.exists()
+
+
+def test_get_run_tolerates_empty_decisions_log(tmp_path: Path) -> None:
+    settings = Settings(data_root=tmp_path)
+    run_id = "run_empty_log"
+    run_path = runs_dir(settings, "demo-bot") / run_id
+    run_path.mkdir(parents=True)
+    (run_path / "state.json").write_text(json.dumps({"status": "running", "progress": 0.1}))
+    (run_path / "report.json").write_text("{}")
+    (run_path / "decisions_log.json").write_text("")  # truncated / mid-write
+
+    run = get_run(settings, "demo-bot", run_id)
+    assert run["state"]["status"] == "running"
+    assert run["decisions"] == []
+
+
+def test_stop_run_marks_orphan_stopped(tmp_path: Path) -> None:
+    from chatbot.application.cac40_backtest_service import stop_run
+
+    settings = Settings(data_root=tmp_path)
+    run_id = "run_orphan"
+    run_path = runs_dir(settings, "demo-bot") / run_id
+    run_path.mkdir(parents=True)
+    (run_path / "state.json").write_text(json.dumps({"status": "running", "progress": 0.4}))
+
+    assert stop_run(settings, "demo-bot", run_id) is True
+    state = json.loads((run_path / "state.json").read_text())
+    assert state["status"] == "stopped"
+    assert "no active worker" in state["error"]
+
+
+def test_force_delete_running_orphan(tmp_path: Path) -> None:
+    settings = Settings(data_root=tmp_path)
+    run_id = "run_force_del"
+    run_path = runs_dir(settings, "demo-bot") / run_id
+    run_path.mkdir(parents=True)
+    (run_path / "state.json").write_text(json.dumps({"status": "running", "progress": 0.2}))
+    (run_path / "decisions_log.json").write_text("[]")
+
+    assert delete_run(settings, "demo-bot", run_id) is True
+    assert not run_path.exists()

@@ -19,6 +19,9 @@ _CONFIG_SECRET_KEYS = frozenset(
 _CONFIG_DISPLAY_ORDER = (
     "backtest_period",
     "llm_mode",
+    "llm_temperature",
+    "llm_trigger_mode",
+    "llm_level_band_points",
     "llm_every_n",
     "llm_every_unit",
     "llm_every_bars",
@@ -27,6 +30,7 @@ _CONFIG_DISPLAY_ORDER = (
     "spread_points",
     "slippage_points",
     "allow_market_orders",
+    "prevent_loss_exits",
     "lookback_15m",
     "lookback_1h",
     "lookback_1d",
@@ -69,10 +73,17 @@ class Cac40Config:
     max_open_positions: int = 4
     order_size: float = 1.0
     allow_market_orders: bool = False
+    # When True, RiskGate + fills reject exits that would realize PnL ≤ 0 after spread.
+    prevent_loss_exits: bool = False
     llm_every_bars: int = 24  # resolved 15m-bar stride (engine); default = 6h
-    llm_every_n: int = 6  # UI: call every N units
+    llm_every_n: int = 6  # UI: call every N units (interval mode only)
     llm_every_unit: str = "1h"  # UI: 15m | 1h
     llm_mode: str = "live"  # live | replay | charts_only
+    # Gemini sampling temperature for live decisions (0 = more deterministic, 1 = more varied).
+    llm_temperature: float = 0.0
+    # levels = call on S/R approach·break / bootstrap / fill; interval = every N bars
+    llm_trigger_mode: str = "levels"
+    llm_level_band_points: float = 15.0
     spread_points: float = 1.5
     slippage_points: float = 0.0
     overnight_funding_rate: float = 0.0001  # per night on notional

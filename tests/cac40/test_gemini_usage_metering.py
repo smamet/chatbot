@@ -47,7 +47,12 @@ def _install_fake_genai(monkeypatch: pytest.MonkeyPatch, response: object) -> Ma
         def from_bytes(**kwargs):
             return kwargs.get("data")
 
+    class GenerateContentConfig:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
     types_mod.Part = Part
+    types_mod.GenerateContentConfig = GenerateContentConfig
     genai_mod.Client = MagicMock(return_value=client)
     genai_mod.types = types_mod
     google_mod.genai = genai_mod

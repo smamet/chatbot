@@ -17,6 +17,7 @@ from chatbot.cac40.llm_decision import (
     load_prompt,
     summarize_decision,
 )
+from chatbot.cac40.llm_trigger import LlmTrigger
 from chatbot.cac40.risk_gate import RiskGate
 
 logger = logging.getLogger(__name__)
@@ -49,11 +50,18 @@ class LiveScheduler:
         self.llm = GeminiDecisionClient(
             api_key=api_key,
             model=config.gemini_model,
+            temperature=float(config.llm_temperature),
             tenant_id=tenant_id,
             session_factory=session_factory,
         )
+        self.trigger = LlmTrigger(
+            band_points=float(config.llm_level_band_points or 15.0),
+            mode=str(config.llm_trigger_mode or "levels"),
+            every_bars=int(config.resolve_llm_every_bars()),
+        )
         self._stop = False
         self._last_decision_summary: dict[str, Any] | None = None
+        self._cycle_index = 0
 
     def request_stop(self) -> None:
         self._stop = True
@@ -75,6 +83,8 @@ class LiveScheduler:
     def run_once(self) -> dict[str, Any]:
         gate = RiskGate(self.config, self.ig.ledger)
         self.ig.sync_price()
+        self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
+
         rsi_seed = max(2, int(self.config.warmup_bars or 14))
         pivots_on = bool(self.config.chart_show_pivots)
         pivot_period = self.config.chart_pivot_period or "D"
@@ -88,8 +98,28 @@ class LiveScheduler:
         cycle_dir = self.journal_dir / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         cycle_dir.mkdir(parents=True, exist_ok=True)
 
+        bar = self._last_closed_bar(ohlc_15)
+        levels = self.ig.ledger.last_levels
+        trig = (
+            self.trigger.evaluate(
+                bar=bar,
+                support=levels.support,
+                resistance=levels.resistance,
+                bar_index=self._cycle_index,
+            )
+            if bar
+            else None
+        )
+        self._cycle_index += 1
+
         images = {}
-        if not ohlc_15.empty:
+        decision = None
+        gate_result = None
+        llm_trigger_reasons: list[str] = []
+
+        should_call = bool(bar and trig and trig.should_call and not ohlc_15.empty)
+        if should_call and trig is not None:
+            llm_trigger_reasons = list(trig.reasons)
             frames = {"15m": ohlc_15}
             if not ohlc_1h.empty:
                 frames["1H"] = ohlc_1h
@@ -110,40 +140,78 @@ class LiveScheduler:
                 pivot_period=pivot_period,
             )
 
-        decision = None
-        gate_result = None
-        if images:
-            decision = self.llm.decide(
-                images=images,
-                snapshot=snap,
-                phase=self.ig.ledger.phase,
-                prompt=load_prompt(),
-                order_size=float(self.config.order_size),
-                max_open_positions=int(self.config.max_open_positions),
-                last_decision=self._last_decision_summary,
-                allow_market_orders=bool(self.config.allow_market_orders),
-            )
-            if decision:
-                gate_result = gate.apply(decision)
-                self._mirror_orders_to_ig(gate_result)
-                self._last_decision_summary = summarize_decision(decision)
+            if images:
+                decision = self.llm.decide(
+                    images=images,
+                    snapshot=snap,
+                    phase=self.ig.ledger.phase,
+                    prompt=load_prompt(),
+                    order_size=float(self.config.order_size),
+                    max_open_positions=int(self.config.max_open_positions),
+                    last_decision=self._last_decision_summary,
+                    allow_market_orders=bool(self.config.allow_market_orders),
+                )
+                if decision and bar is not None:
+                    gate_result = gate.apply(decision)
+                    self._mirror_orders_to_ig(gate_result)
+                    self._last_decision_summary = summarize_decision(decision)
+                    self.trigger.on_success(
+                        bar=bar,
+                        support=self.ig.ledger.last_levels.support,
+                        resistance=self.ig.ledger.last_levels.resistance,
+                    )
+                    self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
+                else:
+                    logger.error("LLM fail-closed: no actions this cycle")
+                    self.trigger.on_failure()
             else:
-                logger.error("LLM fail-closed: no actions this cycle")
-        else:
+                logger.warning("No OHLC available; skip LLM")
+                self.trigger.on_failure()
+        elif ohlc_15.empty:
             logger.warning("No OHLC available; skip LLM")
+        else:
+            logger.info(
+                "LLM skipped (trigger=%s levels=%s/%s)",
+                list(trig.reasons) if trig else [],
+                levels.support,
+                levels.resistance,
+            )
 
-        self.fm.notify(self.ig.ledger, error=None if decision else "llm_fail_closed")
+        error = None
+        if should_call and not decision:
+            error = "llm_fail_closed"
+        self.fm.notify(self.ig.ledger, error=error)
         payload = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "snapshot": self.ig.get_snapshot().to_dict(),
+            "llm_trigger": llm_trigger_reasons,
             "decision": decision.to_dict() if decision else None,
             "executed": gate_result.executed if gate_result else [],
-            "rejected": gate_result.rejected if gate_result else ["llm_fail_closed"],
+            "rejected": (
+                gate_result.rejected
+                if gate_result
+                else (["llm_fail_closed"] if should_call and not decision else [])
+            ),
             "dry_run": self.dry_run,
+            "skipped": not should_call,
         }
-        (cycle_dir / "cycle.json").write_text(json.dumps(payload, indent=2, default=str), encoding="utf-8")
+        (cycle_dir / "cycle.json").write_text(
+            json.dumps(payload, indent=2, default=str), encoding="utf-8"
+        )
         self._journal(payload)
         return payload
+
+    @staticmethod
+    def _last_closed_bar(ohlc_15) -> dict[str, float] | None:
+        if ohlc_15 is None or getattr(ohlc_15, "empty", True):
+            return None
+        row = ohlc_15.iloc[-1]
+        return {
+            "open": float(row["open"]),
+            "high": float(row["high"]),
+            "low": float(row["low"]),
+            "close": float(row["close"]),
+        }
 
     def _mirror_orders_to_ig(self, gate_result: Any) -> None:
         """Orders already in ledger via RiskGate; optionally push to IG API."""

@@ -122,3 +122,77 @@ def test_rejects_duplicate_hedge_for_same_position():
         )
     )
     assert any("duplicate_hedge" in r for r in second.rejected)
+
+
+def test_loss_exit_flag_off_allows_losing_market_close():
+    cfg = Cac40Config(allow_market_orders=True, spread_points=0, prevent_loss_exits=False)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    pid = ledger.market_open(Side.BUY, 1)
+    ledger.last_price = 95  # underwater
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(_decision(LlmAction(op="market_close", position_id=pid)))
+    assert result.executed
+    assert pid not in ledger.positions
+
+
+def test_loss_exit_flag_on_blocks_losing_market_close_allows_profit():
+    cfg = Cac40Config(allow_market_orders=True, spread_points=0, prevent_loss_exits=True)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    pid = ledger.market_open(Side.BUY, 1)
+    ledger.last_price = 95
+    gate = RiskGate(cfg, ledger)
+    lost = gate.apply(_decision(LlmAction(op="market_close", position_id=pid)))
+    assert any("loss_exit_blocked" in r for r in lost.rejected)
+    assert pid in ledger.positions
+
+    ledger.last_price = 105
+    won = gate.apply(_decision(LlmAction(op="market_close", position_id=pid)))
+    assert won.executed
+    assert pid not in ledger.positions
+
+
+def test_loss_exit_flag_on_blocks_losing_tp_allows_profit_tp():
+    cfg = Cac40Config(allow_market_orders=True, spread_points=0, prevent_loss_exits=True)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    pid = ledger.market_open(Side.BUY, 1)
+    gate = RiskGate(cfg, ledger)
+
+    bad = gate.apply(
+        _decision(LlmAction(op="place_limit", side="SELL", level=99, size=1, purpose="tp", position_id=pid))
+    )
+    assert any("loss_exit_blocked" in r for r in bad.rejected)
+    assert not ledger.working_orders
+
+    good = gate.apply(
+        _decision(LlmAction(op="place_limit", side="SELL", level=101, size=1, purpose="tp", position_id=pid))
+    )
+    assert good.executed
+    assert len(ledger.working_orders) == 1
+
+
+def test_loss_exit_flag_on_rejects_losing_close_fill():
+    from chatbot.cac40.models import OrderPurpose, OrderType, WorkingOrder
+
+    cfg = Cac40Config(spread_points=0, prevent_loss_exits=True)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    pid = ledger.market_open(Side.BUY, 1)
+    # Bypass RiskGate: resting TP below entry
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.SELL,
+            level=99,
+            size=1,
+            purpose=OrderPurpose.TP,
+            position_id=pid,
+        )
+    )
+    events = ledger.process_bar({"open": 100, "high": 100, "low": 98, "close": 99})
+    assert any(e.get("type") == "rejected_fill" and e.get("reason") == "loss_exit_blocked" for e in events)
+    assert pid in ledger.positions
+    assert not ledger.working_orders  # cancelled, not left working

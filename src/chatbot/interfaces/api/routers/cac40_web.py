@@ -221,6 +221,10 @@ def cac40_start_run(
     llm_every_n: int = Form(6),
     llm_every_unit: str = Form("1h"),
     llm_mode: str = Form("live"),
+    llm_temperature: float = Form(0.0),
+    llm_trigger_mode: str = Form("levels"),
+    llm_level_band_points: float = Form(15.0),
+    prevent_loss_exits: str = Form("0"),
     period: str = Form("1w"),
     lookback_15m: int = Form(96),
     lookback_1h: int = Form(72),
@@ -248,6 +252,11 @@ def cac40_start_run(
     every_n, every_unit, every_bars = Cac40Config.llm_rate_from_form(
         every_n=llm_every_n, unit=llm_every_unit
     )
+    trigger_mode = (llm_trigger_mode or "levels").strip().lower()
+    if trigger_mode not in ("levels", "interval"):
+        trigger_mode = "levels"
+    band = max(0.1, float(llm_level_band_points or 15.0))
+    temperature = max(0.0, min(1.0, float(llm_temperature if llm_temperature is not None else 0.0)))
     integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
         tenant.id, type=IntegrationType.CAC40_BACKTEST
     )
@@ -265,6 +274,10 @@ def cac40_start_run(
         llm_every_unit=every_unit,
         llm_every_bars=every_bars,
         llm_mode=llm_mode,
+        llm_temperature=temperature,
+        llm_trigger_mode=trigger_mode,
+        llm_level_band_points=band,
+        prevent_loss_exits=str(prevent_loss_exits).strip().lower() in ("1", "true", "yes", "on"),
         backtest_period=period_key,
         lookback_15m=max(1, lookback_15m),
         lookback_1h=max(1, lookback_1h),
@@ -328,12 +341,13 @@ def cac40_stop_run(
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     _require_cac40_active(tenant, session)
-    stop_run(run_id)
+    stop_run(settings, slug, run_id)
     return RedirectResponse(url=f"/dashboard/bots/{slug}/cac40/runs/{run_id}", status_code=303)
 
 

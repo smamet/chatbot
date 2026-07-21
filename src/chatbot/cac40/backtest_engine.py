@@ -22,6 +22,7 @@ from chatbot.cac40.llm_decision import (
     parse_llm_json,
     summarize_decision,
 )
+from chatbot.cac40.llm_trigger import LlmTrigger
 from chatbot.cac40.ohlc_store import load_ohlc_csv, resample_ohlc, slice_ohlc_period, window_asof
 from chatbot.cac40.risk_gate import RiskGate
 
@@ -33,7 +34,7 @@ ProgressCb = Callable[[dict[str, Any]], None]
 @dataclass
 class BacktestRunState:
     run_id: str
-    status: str = "pending"  # pending|running|done|failed|stopped
+    status: str = "pending"  # pending|running|stopping|done|failed|stopped
     progress: float = 0.0
     current_bar: int = 0
     total_bars: int = 0
@@ -66,17 +67,17 @@ class BacktestEngine:
         self.state = BacktestRunState(run_id=run_dir.name)
         self._stop = False
 
-    def request_stop(self) -> None:
-        self._stop = True
-
     def run(self) -> dict[str, Any]:
         self.state.status = "running"
         self._write_state()
         try:
             report = self._run_inner()
-            self.state.status = "done"
+            if self._stop or self.state.status == "stopped":
+                self.state.status = "stopped"
+            else:
+                self.state.status = "done"
+                self.state.progress = 1.0
             self.state.report = report
-            self.state.progress = 1.0
             self._write_state()
             (self.run_dir / "report.json").write_text(
                 json.dumps(report, indent=2, default=str), encoding="utf-8"
@@ -90,6 +91,12 @@ class BacktestEngine:
                 traceback.format_exc(), encoding="utf-8"
             )
             raise
+
+    def request_stop(self) -> None:
+        self._stop = True
+        if self.state.status == "running":
+            self.state.status = "stopping"
+            self._write_state()
 
     def _run_inner(self) -> dict[str, Any]:
         df_full = load_ohlc_csv(self.ohlc_path, timezone=self.config.data_timezone)
@@ -108,8 +115,14 @@ class BacktestEngine:
         llm = GeminiDecisionClient(
             api_key=self.api_key,
             model=self.config.gemini_model,
+            temperature=float(self.config.llm_temperature),
             tenant_id=self.tenant_id,
             session_factory=self.session_factory,
+        )
+        trigger = LlmTrigger(
+            band_points=float(self.config.llm_level_band_points or 15.0),
+            mode=str(self.config.llm_trigger_mode or "levels"),
+            every_bars=int(self.config.resolve_llm_every_bars()),
         )
         prompt = load_prompt()
         journal_path = self.run_dir / "journal.jsonl"
@@ -131,6 +144,7 @@ class BacktestEngine:
                 "close": float(row.close),
             }
             events = ledger.process_bar(bar, ts=str(ts))
+            trigger.note_fills(events)
 
             # overnight funding on day change
             if i > 0:
@@ -140,7 +154,14 @@ class BacktestEngine:
 
             history_len = len(df_full.loc[:ts])
             warmed_up = history_len >= warmup
-            decision_point = warmed_up and (i % max(1, self.config.resolve_llm_every_bars())) == 0
+            levels = ledger.last_levels
+            trig = trigger.evaluate(
+                bar=bar,
+                support=levels.support,
+                resistance=levels.resistance,
+                bar_index=i,
+            )
+            decision_point = warmed_up and trig.should_call
             if decision_point:
                 snap = ledger.get_snapshot()
                 # Extra bars so RSI is valid; extra history when drawing session pivots.
@@ -205,6 +226,7 @@ class BacktestEngine:
                     "charts_rel": chart_rel,
                     "chart_files": chart_files,
                     "llm_mode": mode,
+                    "llm_trigger": list(trig.reasons),
                     "book": {
                         "positions": len(snap.positions),
                         "working_orders": len(snap.working_orders),
@@ -227,10 +249,21 @@ class BacktestEngine:
                     entry["executed"] = gate_result.executed
                     entry["rejected"] = gate_result.rejected
                     last_decision_summary = summarize_decision(decision)
+                    trigger.on_success(
+                        bar=bar,
+                        support=ledger.last_levels.support,
+                        resistance=ledger.last_levels.resistance,
+                    )
                 elif mode == "charts_only":
                     entry["rejected"] = []
+                    trigger.on_success(
+                        bar=bar,
+                        support=ledger.last_levels.support,
+                        resistance=ledger.last_levels.resistance,
+                    )
                 else:
                     entry["rejected"] = [llm_error or "llm_fail_closed"]
+                    trigger.on_failure()
                 pnl = ledger.pnl_payload()
                 entry["pnl"] = {
                     "realized": ledger.realized_session,
@@ -283,6 +316,10 @@ class BacktestEngine:
             max_dd = max(max_dd, dd)
         wins = [t for t in ledger.closed_trades if t.realized_pnl > 0]
         losses = [t for t in ledger.closed_trades if t.realized_pnl <= 0]
+        # Gemini API invocations (live mode only; charts_only / replay do not call).
+        llm_calls_total = sum(
+            1 for d in decisions if str(d.get("llm_mode") or "").strip().lower() == "live"
+        )
         return {
             "run_id": self.state.run_id,
             "config": self.config.to_dict(),
@@ -308,6 +345,7 @@ class BacktestEngine:
             ],
             "equity_curve": equity,
             "decisions_count": len(decisions),
+            "llm_calls_total": llm_calls_total,
             "decisions": decisions,
             "open_legs_end": [p.to_dict() for p in ledger.positions.values()],
             "generated_at": datetime.now(timezone.utc).isoformat(),

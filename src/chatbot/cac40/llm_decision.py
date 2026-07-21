@@ -157,11 +157,13 @@ class GeminiDecisionClient:
         *,
         api_key: str,
         model: str = "gemini-2.5-flash",
+        temperature: float = 0.0,
         tenant_id: int | None = None,
         session_factory: SessionFactory | None = None,
     ) -> None:
         self.api_key = api_key
         self.model = model
+        self.temperature = max(0.0, min(1.0, float(temperature)))
         self.tenant_id = tenant_id
         self.session_factory = session_factory
         self.last_error: str | None = None
@@ -245,6 +247,9 @@ class GeminiDecisionClient:
             response = client.models.generate_content(
                 model=self.model,
                 contents=parts,
+                config=types.GenerateContentConfig(
+                    temperature=self.temperature,
+                ),
             )
             self._record_usage(response)
             text = getattr(response, "text", None) or ""
