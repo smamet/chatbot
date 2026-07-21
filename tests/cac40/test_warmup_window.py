@@ -168,4 +168,6 @@ def test_warmup_allows_llm_when_history_sufficient(tmp_path: Path) -> None:
             "1H": 10,
             "1D": 5,
         }
+        assert mock_render.call_args.kwargs.get("show_rsi") is True
+        assert mock_render.call_args.kwargs.get("show_pivots") is True
         assert report["decisions_count"] > 0

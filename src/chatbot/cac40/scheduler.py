@@ -7,11 +7,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from chatbot.cac40.chart_renderer import render_multi_timeframe
+from chatbot.cac40.chart_renderer import pivot_history_pad, render_multi_timeframe
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.fundmanager_client import FundManagerClient
 from chatbot.cac40.ig_connector import IgConnector
-from chatbot.cac40.llm_decision import GeminiDecisionClient, load_prompt, summarize_decision
+from chatbot.cac40.llm_decision import (
+    GeminiDecisionClient,
+    SessionFactory,
+    load_prompt,
+    summarize_decision,
+)
 from chatbot.cac40.risk_gate import RiskGate
 
 logger = logging.getLogger(__name__)
@@ -28,6 +33,8 @@ class LiveScheduler:
         journal_dir: Path,
         dry_run: bool = True,
         sleep_seconds: int = 900,
+        tenant_id: int | None = None,
+        session_factory: SessionFactory | None = None,
     ) -> None:
         self.config = config
         self.api_key = api_key
@@ -35,9 +42,16 @@ class LiveScheduler:
         self.journal_dir.mkdir(parents=True, exist_ok=True)
         self.dry_run = dry_run
         self.sleep_seconds = sleep_seconds
+        self.tenant_id = tenant_id
+        self.session_factory = session_factory
         self.ig = IgConnector(config, dry_run=dry_run)
         self.fm = FundManagerClient(config)
-        self.llm = GeminiDecisionClient(api_key=api_key, model=config.gemini_model)
+        self.llm = GeminiDecisionClient(
+            api_key=api_key,
+            model=config.gemini_model,
+            tenant_id=tenant_id,
+            session_factory=session_factory,
+        )
         self._stop = False
         self._last_decision_summary: dict[str, Any] | None = None
 
@@ -62,8 +76,12 @@ class LiveScheduler:
         gate = RiskGate(self.config, self.ig.ledger)
         self.ig.sync_price()
         rsi_seed = max(2, int(self.config.warmup_bars or 14))
-        ohlc_15 = self.ig.get_ohlc("15m", self.config.lookback_15m + rsi_seed)
-        ohlc_1h = self.ig.get_ohlc("1h", self.config.lookback_1h + rsi_seed)
+        pivots_on = bool(self.config.chart_show_pivots)
+        pivot_period = self.config.chart_pivot_period or "D"
+        pad_15 = pivot_history_pad(pivot_period, timeframe="15m") if pivots_on else 0
+        pad_1h = pivot_history_pad(pivot_period, timeframe="1h") if pivots_on else 0
+        ohlc_15 = self.ig.get_ohlc("15m", self.config.lookback_15m + rsi_seed + pad_15)
+        ohlc_1h = self.ig.get_ohlc("1h", self.config.lookback_1h + rsi_seed + pad_1h)
         ohlc_1d = self.ig.get_ohlc("1d", self.config.lookback_1d + rsi_seed)
 
         snap = self.ig.get_snapshot()
@@ -87,6 +105,9 @@ class LiveScheduler:
                     "1H": self.config.lookback_1h,
                     "1D": self.config.lookback_1d,
                 },
+                show_rsi=bool(self.config.chart_show_rsi),
+                show_pivots=pivots_on,
+                pivot_period=pivot_period,
             )
 
         decision = None

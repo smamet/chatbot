@@ -39,11 +39,27 @@ def test_get_run_exposes_chart_urls_and_delete_cleans(tmp_path: Path) -> None:
     (chart_dir / "chart_15m.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
     (chart_dir / "chart_1H.png").write_bytes(b"\x89PNG\r\n\x1a\nfake")
     (run_path / "state.json").write_text(json.dumps({"status": "done", "progress": 1.0}))
+    (run_path / "report.json").write_text(
+        json.dumps(
+            {
+                "equity_curve": [
+                    {
+                        "bar": 1,
+                        "ts": "2024-01-02 09:00:00+01:00",
+                        "realized": 12.5,
+                        "net_upl": -3.25,
+                        "equity": 9.25,
+                    }
+                ]
+            }
+        )
+    )
     (run_path / "decisions_log.json").write_text(
         json.dumps(
             [
                 {
                     "ts": "2024-01-02 09:00:00+01:00",
+                    "bar": 0,
                     "charts_rel": f"charts/{chart_key}",
                     "chart_files": ["chart_15m.png", "chart_1H.png"],
                     "decision": {
@@ -66,6 +82,11 @@ def test_get_run_exposes_chart_urls_and_delete_cleans(tmp_path: Path) -> None:
     charts = run["decisions"][0]["charts"]
     assert len(charts) == 2
     assert charts[0]["url"].endswith(f"/charts/{chart_key}/chart_15m.png")
+    assert run["decisions"][0]["pnl"] == {
+        "realized": 12.5,
+        "net_upl": -3.25,
+        "equity": 9.25,
+    }
 
     resolved = resolve_chart_file(settings, "demo-bot", run_id, chart_key, "chart_15m.png")
     assert resolved is not None and resolved.exists()

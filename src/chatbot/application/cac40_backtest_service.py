@@ -4,12 +4,17 @@ import json
 import re
 import shutil
 import threading
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.orm import Session
+
 from chatbot.cac40.backtest_engine import BacktestEngine, new_run_dir
-from chatbot.cac40.config import Cac40Config
+from chatbot.cac40.config import Cac40Config, public_config_snapshot
 from chatbot.config.settings import Settings
+
+SessionFactory = Callable[[], Session]
 
 _SAFE_RUN_ID = re.compile(r"^[\w.-]+$")
 _SAFE_CHART_KEY = re.compile(r"^[\w.-]+$")
@@ -35,9 +40,17 @@ def list_runs(settings: Settings, tenant_slug: str) -> list[dict[str, Any]]:
             continue
         state_path = path / "state.json"
         report_path = path / "report.json"
+        config_path = path / "config.json"
         state = json.loads(state_path.read_text()) if state_path.exists() else {}
         report = json.loads(report_path.read_text()) if report_path.exists() else {}
-        cfg = report.get("config") or {}
+        raw_cfg: dict[str, Any] = {}
+        if config_path.exists():
+            loaded = json.loads(config_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                raw_cfg = loaded
+        if not raw_cfg:
+            raw_cfg = dict(report.get("config") or {})
+        cfg = public_config_snapshot(raw_cfg)
         items.append(
             {
                 "run_id": path.name,
@@ -48,6 +61,10 @@ def list_runs(settings: Settings, tenant_slug: str) -> list[dict[str, Any]]:
                 "max_drawdown": report.get("max_drawdown"),
                 "trades": report.get("trades"),
                 "winrate": report.get("winrate"),
+                "chart_show_rsi": bool(cfg["chart_show_rsi"]) if "chart_show_rsi" in cfg else True,
+                "chart_show_pivots": bool(cfg["chart_show_pivots"]) if "chart_show_pivots" in cfg else False,
+                "chart_pivot_period": str(cfg.get("chart_pivot_period") or "D"),
+                "config": cfg,
             }
         )
     return items
@@ -86,6 +103,60 @@ def get_run(settings: Settings, tenant_slug: str, run_id: str) -> dict[str, Any]
     }
 
 
+def _equity_curve_indexes(run_path: Path) -> tuple[dict[int, dict[str, Any]], dict[str, dict[str, Any]]]:
+    """Index report equity_curve by 0-based decision bar and ts for PnL backfill."""
+    by_bar: dict[int, dict[str, Any]] = {}
+    by_ts: dict[str, dict[str, Any]] = {}
+    report_path = run_path / "report.json"
+    if not report_path.exists():
+        return by_bar, by_ts
+    try:
+        report = json.loads(report_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return by_bar, by_ts
+    for pt in report.get("equity_curve") or []:
+        if not isinstance(pt, dict):
+            continue
+        pnl = {
+            "realized": pt.get("realized"),
+            "net_upl": pt.get("net_upl"),
+            "equity": pt.get("equity"),
+        }
+        # equity_curve.bar is 1-based (ledger.bar_index); decisions use 0-based loop i
+        if pt.get("bar") is not None:
+            try:
+                by_bar[int(pt["bar"]) - 1] = pnl
+            except (TypeError, ValueError):
+                pass
+        if pt.get("ts") is not None:
+            by_ts[str(pt["ts"])] = pnl
+    return by_bar, by_ts
+
+
+def _resolve_entry_pnl(
+    entry: dict[str, Any],
+    by_bar: dict[int, dict[str, Any]],
+    by_ts: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    existing = entry.get("pnl")
+    if isinstance(existing, dict) and (
+        existing.get("realized") is not None or existing.get("net_upl") is not None
+    ):
+        return existing
+    ts = entry.get("ts")
+    if ts is not None and str(ts) in by_ts:
+        return by_ts[str(ts)]
+    bar = entry.get("bar")
+    if bar is not None:
+        try:
+            key = int(bar)
+        except (TypeError, ValueError):
+            key = None
+        if key is not None and key in by_bar:
+            return by_bar[key]
+    return existing if isinstance(existing, dict) else None
+
+
 def _load_decision_entries(
     run_path: Path, *, tenant_slug: str, run_id: str
 ) -> list[dict[str, Any]]:
@@ -112,8 +183,11 @@ def _load_decision_entries(
                     "chart_files": meta.get("chart_files") or [],
                     "executed": [],
                     "rejected": [],
+                    "bar": meta.get("bar"),
                 }
             )
+
+    by_bar, by_ts = _equity_curve_indexes(run_path)
 
     out: list[dict[str, Any]] = []
     for entry in entries:
@@ -149,6 +223,7 @@ def _load_decision_entries(
                 "support": analysis.get("support"),
                 "resistance": analysis.get("resistance"),
                 "actions": dec.get("actions") or [],
+                "pnl": _resolve_entry_pnl(entry, by_bar, by_ts),
             }
         )
     out.reverse()
@@ -194,13 +269,21 @@ def start_run(
     config: Cac40Config,
     ohlc_path: Path,
     api_key: str,
+    tenant_id: int | None = None,
+    session_factory: SessionFactory | None = None,
 ) -> str:
     run_path = new_run_dir(runs_dir(settings, tenant_slug))
+    (run_path / "config.json").write_text(
+        json.dumps(config.public_snapshot(), indent=2, default=str),
+        encoding="utf-8",
+    )
     engine = BacktestEngine(
         config,
         ohlc_path=ohlc_path,
         run_dir=run_path,
         api_key=api_key,
+        tenant_id=tenant_id,
+        session_factory=session_factory,
     )
 
     def _target() -> None:

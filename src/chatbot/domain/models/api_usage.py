@@ -10,6 +10,7 @@ ApiUsageOperation = Literal[
     "embed_chat",
     "embed_ingest",
     "embed_catalog",
+    "cac40",
 ]
 
 

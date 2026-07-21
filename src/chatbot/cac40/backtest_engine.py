@@ -6,15 +6,22 @@ import traceback
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 import pandas as pd
 
-from chatbot.cac40.chart_renderer import render_multi_timeframe
+from chatbot.cac40.chart_renderer import pivot_history_pad, render_multi_timeframe
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.decision_cache import DecisionCache
 from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.llm_decision import GeminiDecisionClient, load_prompt, parse_llm_json, summarize_decision
+from chatbot.cac40.llm_decision import (
+    GeminiDecisionClient,
+    SessionFactory,
+    load_prompt,
+    parse_llm_json,
+    summarize_decision,
+)
 from chatbot.cac40.ohlc_store import load_ohlc_csv, resample_ohlc, slice_ohlc_period, window_asof
 from chatbot.cac40.risk_gate import RiskGate
 
@@ -45,6 +52,8 @@ class BacktestEngine:
         run_dir: Path,
         api_key: str = "",
         on_progress: ProgressCb | None = None,
+        tenant_id: int | None = None,
+        session_factory: SessionFactory | None = None,
     ) -> None:
         self.config = config
         self.ohlc_path = ohlc_path
@@ -52,6 +61,8 @@ class BacktestEngine:
         self.run_dir.mkdir(parents=True, exist_ok=True)
         self.api_key = api_key
         self.on_progress = on_progress
+        self.tenant_id = tenant_id
+        self.session_factory = session_factory
         self.state = BacktestRunState(run_id=run_dir.name)
         self._stop = False
 
@@ -94,7 +105,12 @@ class BacktestEngine:
         ledger = HedgeLedger(config=self.config, symbol=self.config.symbol)
         gate = RiskGate(self.config, ledger)
         cache = DecisionCache(self.run_dir / "decisions.json")
-        llm = GeminiDecisionClient(api_key=self.api_key, model=self.config.gemini_model)
+        llm = GeminiDecisionClient(
+            api_key=self.api_key,
+            model=self.config.gemini_model,
+            tenant_id=self.tenant_id,
+            session_factory=self.session_factory,
+        )
         prompt = load_prompt()
         journal_path = self.run_dir / "journal.jsonl"
 
@@ -127,10 +143,14 @@ class BacktestEngine:
             decision_point = warmed_up and (i % max(1, self.config.resolve_llm_every_bars())) == 0
             if decision_point:
                 snap = ledger.get_snapshot()
-                # Extra bars so RSI is valid across the full displayed lookback.
+                # Extra bars so RSI is valid; extra history when drawing session pivots.
                 rsi_seed = warmup
-                w15 = window_asof(df_full, ts, lookback_15m + rsi_seed)
-                w1h = window_asof(df1h, ts, lookback_1h + rsi_seed)
+                pivots_on = bool(self.config.chart_show_pivots)
+                pivot_period = self.config.chart_pivot_period or "D"
+                pad_15 = pivot_history_pad(pivot_period, timeframe="15m") if pivots_on else 0
+                pad_1h = pivot_history_pad(pivot_period, timeframe="1h") if pivots_on else 0
+                w15 = window_asof(df_full, ts, lookback_15m + rsi_seed + pad_15)
+                w1h = window_asof(df1h, ts, lookback_1h + rsi_seed + pad_1h)
                 w1d = window_asof(df1d, ts, lookback_1d + rsi_seed)
                 chart_key = ts.strftime("%Y%m%d_%H%M%S")
                 chart_rel = f"charts/{chart_key}"
@@ -141,6 +161,9 @@ class BacktestEngine:
                     out_dir=chart_dir,
                     rsi_period=warmup,
                     display_bars={"15m": lookback_15m, "1H": lookback_1h, "1D": lookback_1d},
+                    show_rsi=bool(self.config.chart_show_rsi),
+                    show_pivots=pivots_on,
+                    pivot_period=pivot_period,
                 )
                 chart_files = sorted(p.name for p in chart_dir.glob("chart_*.png"))
 
@@ -208,6 +231,12 @@ class BacktestEngine:
                     entry["rejected"] = []
                 else:
                     entry["rejected"] = [llm_error or "llm_fail_closed"]
+                pnl = ledger.pnl_payload()
+                entry["pnl"] = {
+                    "realized": ledger.realized_session,
+                    "net_upl": pnl["net_upl"],
+                    "equity": ledger.cash + pnl["net_upl"],
+                }
                 decisions_log.append(entry)
                 self._write_decisions_log(decisions_log)
 
@@ -264,7 +293,7 @@ class BacktestEngine:
             "trades": len(ledger.closed_trades),
             "wins": len(wins),
             "losses": len(losses),
-            "winrate": (len(wins) / len(ledger.closed_trades)) if ledger.closed_trades else 0.0,
+            "winrate": (len(wins) / len(ledger.closed_trades)) if ledger.closed_trades else None,
             "closed_trades": [
                 {
                     "id": t.id,

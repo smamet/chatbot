@@ -44,7 +44,7 @@
     <div><strong>Final equity</strong><br>{{ '%.2f'|format(report.final_equity or 0) }}</div>
     <div><strong>Realized PnL</strong><br>{{ '%.2f'|format(report.realized_pnl or 0) }}</div>
     <div><strong>Max DD</strong><br>{{ '%.2f'|format(report.max_drawdown or 0) }}</div>
-    <div><strong>Trades</strong><br>{{ report.trades }} (WR {{ '%.0f'|format((report.winrate or 0) * 100) }}%)</div>
+    <div><strong>Trades</strong><br>{{ report.trades }}{% if report.trades %} (WR {{ '%.0f'|format((report.winrate or 0) * 100) }}%){% else %} (WR —){% endif %}</div>
     <div><strong>LLM decisions</strong><br>{{ report.decisions_count or (run.decisions|length) }}</div>
   </div>
 </section>
@@ -90,6 +90,26 @@
         {% if d.rejected %}<span class="badge failed">{{ d.rejected|length }} rej</span>{% endif %}
         {% set book = d.book or {} %}
         <span class="text-muted">{{ book.positions|default(0) }} legs · {{ book.working_orders|default(0) }} orders</span>
+        {% set pnl = d.pnl or {} %}
+        {% if pnl.net_upl is not none or pnl.realized is not none %}
+        <span class="cac40-decision__pnl">
+          {% if pnl.net_upl is not none %}
+          <span class="{% if pnl.net_upl > 0 %}cac40-decision__pnl--pos{% elif pnl.net_upl < 0 %}cac40-decision__pnl--neg{% endif %}">
+            UPL {{ '%+.2f'|format(pnl.net_upl) }}
+          </span>
+          {% else %}
+          <span>UPL —</span>
+          {% endif %}
+          <span class="text-muted">·</span>
+          {% if pnl.realized is not none %}
+          <span class="{% if pnl.realized > 0 %}cac40-decision__pnl--pos{% elif pnl.realized < 0 %}cac40-decision__pnl--neg{% endif %}">
+            PnL {{ '%+.2f'|format(pnl.realized) }}
+          </span>
+          {% else %}
+          <span>PnL —</span>
+          {% endif %}
+        </span>
+        {% endif %}
       </summary>
       <div class="cac40-decision__body">
         {% if d.charts %}

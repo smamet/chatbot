@@ -23,6 +23,7 @@ from chatbot.application.integration_service import IntegrationService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.user_service import UserService
 from chatbot.cac40.config import Cac40Config
+from chatbot.cac40.chart_renderer import normalize_pivot_period
 from chatbot.cac40.yahoo_ohlc import yahoo_source_meta
 from chatbot.config.settings import Settings
 from chatbot.domain.models.integration import IntegrationType
@@ -185,6 +186,9 @@ def cac40_start_run(
     lookback_1h: int = Form(72),
     lookback_1d: int = Form(60),
     warmup_bars: int = Form(14),
+    chart_show_rsi: str = Form("1"),
+    chart_show_pivots: str = Form("1"),
+    chart_pivot_period: str = Form("D"),
     ohlc_file: str = Form(""),
 ):
     tenant = _tenant_or_404(tenant_service, slug)
@@ -219,12 +223,23 @@ def cac40_start_run(
         lookback_1h=max(1, lookback_1h),
         lookback_1d=max(1, lookback_1d),
         warmup_bars=max(2, warmup_bars),
+        chart_show_rsi=str(chart_show_rsi).strip().lower() in ("1", "true", "yes", "on"),
+        chart_show_pivots=str(chart_show_pivots).strip().lower() in ("1", "true", "yes", "on"),
+        chart_pivot_period=normalize_pivot_period(chart_pivot_period),
         gemini_model=(tenant.config.chat_model or settings.chat_model or "gemini-2.5-flash"),
     )
     from chatbot.interfaces.api.deps import _gemini_api_key
 
     api_key = _gemini_api_key(tenant, settings)
-    run_id = start_run(settings, slug, config=cfg, ohlc_path=ohlc_path, api_key=api_key or "")
+    run_id = start_run(
+        settings,
+        slug,
+        config=cfg,
+        ohlc_path=ohlc_path,
+        api_key=api_key or "",
+        tenant_id=tenant.id,
+        session_factory=request.app.state.session_factory,
+    )
     return RedirectResponse(url=f"/dashboard/bots/{slug}/cac40/runs/{run_id}", status_code=303)
 
 

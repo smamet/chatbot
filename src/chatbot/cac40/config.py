@@ -3,6 +3,62 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+# Never surface these in dashboards / run lists.
+_CONFIG_SECRET_KEYS = frozenset(
+    {
+        "ig_api_key",
+        "ig_username",
+        "ig_password",
+        "ig_account_id",
+        "fundmanager_token",
+        "fundmanager_url",
+    }
+)
+
+# Prefer this order in the unfold panel (unknown keys appended alphabetically).
+_CONFIG_DISPLAY_ORDER = (
+    "backtest_period",
+    "llm_mode",
+    "llm_every_n",
+    "llm_every_unit",
+    "llm_every_bars",
+    "max_open_positions",
+    "order_size",
+    "spread_points",
+    "slippage_points",
+    "allow_market_orders",
+    "lookback_15m",
+    "lookback_1h",
+    "lookback_1d",
+    "warmup_bars",
+    "chart_show_rsi",
+    "chart_show_pivots",
+    "chart_pivot_period",
+    "gemini_model",
+    "data_timezone",
+    "intrabar_pessimistic",
+    "point_value",
+    "overnight_funding_rate",
+    "symbol",
+    "strategy_name",
+    "bot_id",
+    "prompt_version",
+)
+
+
+def public_config_snapshot(data: dict[str, Any] | None) -> dict[str, Any]:
+    """Strip secrets and order keys for UI display."""
+    if not data:
+        return {}
+    cleaned = {k: v for k, v in data.items() if k not in _CONFIG_SECRET_KEYS}
+    ordered: dict[str, Any] = {}
+    for key in _CONFIG_DISPLAY_ORDER:
+        if key in cleaned:
+            ordered[key] = cleaned.pop(key)
+    for key in sorted(cleaned):
+        ordered[key] = cleaned[key]
+    return ordered
+
 
 @dataclass
 class Cac40Config:
@@ -28,6 +84,11 @@ class Cac40Config:
     lookback_1d: int = 60
     # RSI period + min 15m history before first LLM call.
     warmup_bars: int = 14
+    # Chart overlays (sent to LLM as PNG).
+    chart_show_rsi: bool = True
+    chart_show_pivots: bool = True
+    # Traditional pivot session: D=Daily, W=Weekly, M=Monthly (not drawn on 1D charts).
+    chart_pivot_period: str = "D"
     ig_acc_type: str = "DEMO"  # DEMO | LIVE
     ig_api_key: str = ""
     ig_username: str = ""
@@ -57,6 +118,10 @@ class Cac40Config:
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    def public_snapshot(self) -> dict[str, Any]:
+        """Config safe to show in UI (no credentials / tokens)."""
+        return public_config_snapshot(self.to_dict())
 
     def resolve_llm_every_bars(self) -> int:
         """Convert UI rate (every N × 15m or N × 1h) into a 15m bar stride."""

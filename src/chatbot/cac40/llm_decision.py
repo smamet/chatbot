@@ -3,14 +3,29 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+from chatbot.adapters.gemini_usage import usage_from_response
+from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
+from chatbot.application.usage_recorder_service import UsageRecorderService
 from chatbot.cac40.models import LlmAction, LlmAnalysis, LlmDecision, MarketSnapshot
 
 logger = logging.getLogger(__name__)
 
+SessionFactory = Callable[[], Session]
+
 DEFAULT_PROMPT = """You are a discretionary CAC40 mean-reversion trader analyzing candlestick charts.
+
+Profit-only exits (target ~100% win rate on closed trades):
+- NEVER close a leg at a loss. Every TP/close must realize PnL > 0 after spread.
+- Losing primary stays open under hedge protection; do not scratch both legs.
+- Close a hedge only when it can exit in profit on mean reversion; then TP the primary in profit.
+- If price keeps running: do not close the losing hedge — place a further STOP hedge_cover (pyramid protection).
+- Avoid flat/scratch exits that only pay the spread.
 
 Book continuity:
 - Read snapshot.positions and snapshot.working_orders first.
@@ -23,6 +38,7 @@ Rules:
 - Prefer LIMIT entries at support (BUY) / resistance (SELL) and LIMIT take-profits.
 - Place STOP hedge covers only to protect existing legs.
 - Do not use market orders unless explicitly told.
+- Close winning legs only; keep protection on losing legs until profitable exit.
 - Output STRICT JSON only, no markdown.
 
 JSON schema:
@@ -136,10 +152,51 @@ def _maybe_float(value: Any) -> float | None:
 class GeminiDecisionClient:
     """Thin multimodal Gemini wrapper. Fail-closed on parse errors."""
 
-    def __init__(self, *, api_key: str, model: str = "gemini-2.5-flash") -> None:
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str = "gemini-2.5-flash",
+        tenant_id: int | None = None,
+        session_factory: SessionFactory | None = None,
+    ) -> None:
         self.api_key = api_key
         self.model = model
+        self.tenant_id = tenant_id
+        self.session_factory = session_factory
         self.last_error: str | None = None
+
+    def _record_usage(self, response: object) -> None:
+        if self.tenant_id is None or self.session_factory is None:
+            return
+        session: Session | None = None
+        try:
+            usage = usage_from_response(response)
+            session = self.session_factory()
+            UsageRecorderService(SqlAlchemyApiUsageRepository(session)).record(
+                self.tenant_id,
+                "cac40",
+                self.model,
+                usage,
+            )
+            session.commit()
+        except Exception:
+            logger.exception(
+                "Failed to record CAC40 Gemini usage tenant_id=%s model=%s",
+                self.tenant_id,
+                self.model,
+            )
+            if session is not None:
+                try:
+                    session.rollback()
+                except Exception:
+                    pass
+        finally:
+            if session is not None:
+                try:
+                    session.close()
+                except Exception:
+                    pass
 
     def decide(
         self,
@@ -189,6 +246,7 @@ class GeminiDecisionClient:
                 model=self.model,
                 contents=parts,
             )
+            self._record_usage(response)
             text = getattr(response, "text", None) or ""
             if not text and getattr(response, "candidates", None):
                 text = response.candidates[0].content.parts[0].text  # type: ignore[index]
