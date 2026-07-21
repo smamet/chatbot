@@ -1,0 +1,132 @@
+# App data lives under ./data on the host (docs, catalog, LanceDB, attachments, backups).
+# Caddy is optional: ./sail up -d --profile caddy (use host nginx/Caddy otherwise).
+services:
+  db:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-chatbot}
+      MYSQL_USER: ${MYSQL_USER:-chatbot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-chatbot}
+    volumes:
+      - mysql_data:/var/lib/mysql
+    ports:
+      - "127.0.0.1:3309:3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    command: sh -c "alembic upgrade head && uvicorn chatbot.interfaces.api.main:app --host 0.0.0.0 --port 8000"
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      DATA_ROOT: /app/data
+      LANCEDB_ROOT: /app/data/lancedb
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      ADMIN_TOKEN: ${ADMIN_TOKEN:-changeme-admin}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      SESSION_SECRET: ${SESSION_SECRET:-changeme-session}
+      HOOK_POLL_SECONDS: ${HOOK_POLL_SECONDS:-5}
+    volumes:
+      - ./data:/app/data
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  worker-automation:
+    build: .
+    command: python -m chatbot.interfaces.worker_automation
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      HOOK_POLL_SECONDS: ${HOOK_POLL_SECONDS:-5}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  worker-mail:
+    build: .
+    command: python -m chatbot.interfaces.worker_mail
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-60}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  worker-catalog:
+    build: .
+    command: python -m chatbot.interfaces.worker_catalog
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      DATA_ROOT: /app/data
+      LANCEDB_ROOT: /app/data/lancedb
+      CATALOG_POLL_SECONDS: ${CATALOG_POLL_SECONDS:-300}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  worker-cac40-ohlc:
+    build: .
+    command: python -m chatbot.interfaces.worker_cac40_ohlc
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      DATA_ROOT: /app/data
+      CAC40_OHLC_POLL_SECONDS: ${CAC40_OHLC_POLL_SECONDS:-900}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  caddy:
+    profiles: [caddy]
+    image: caddy:2-alpine
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+    depends_on:
+      - api
+
+volumes:
+  mysql_data:

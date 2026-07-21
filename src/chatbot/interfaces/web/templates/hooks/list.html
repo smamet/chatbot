@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>All hooks</h1>
+  <p class="subtitle">Automation events across all bots</p>
+</div>
+<div class="table-wrap">
+  <table class="data-table validation-table">
+    <thead><tr><th>ID</th><th>Bot</th><th>Type</th><th>Status</th><th>Error</th><th></th><th></th></tr></thead>
+    <tbody>
+    {% for h in hooks %}
+    <tr class="validation-row hook-{{ status_class(h.status.value) }}" data-panel="hook-panel-{{ h.id }}" tabindex="0" role="button" aria-expanded="false" aria-controls="hook-panel-{{ h.id }}">
+      <td>{{ h.id }}</td>
+      <td><code>{{ tenants[h.tenant_id].slug if h.tenant_id in tenants else h.tenant_id }}</code></td>
+      <td><code>{{ h.type }}</code></td>
+      <td><span class="badge">{{ h.status.value }}</span></td>
+      <td class="text-muted">{{ h.error or '—' }}</td>
+      <td>
+        {% if dev_mode %}
+        <form method="post" action="/dashboard/hooks/{{ h.id }}/replay" class="no-loader" onclick="event.stopPropagation()"><button type="submit" class="btn-secondary btn-sm">Replay</button></form>
+        {% endif %}
+      </td>
+      <td class="validation-row-chevron" aria-hidden="true">▶</td>
+    </tr>
+    <tr id="hook-panel-{{ h.id }}" class="validation-expand-row" hidden>
+      <td colspan="7">
+        <div class="validation-panel">
+          <h4>Hook payload</h4>
+          <pre class="validation-message-body">{{ h.payload_json | pretty_json }}</pre>
+        </div>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty-state">No hooks</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

@@ -1,0 +1,30 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login</title>
+  <link rel="icon" href="/static/favicon-e2.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/favicon-e2.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body class="login-page">
+  <div id="page-loader" aria-hidden="true"></div>
+  <form method="post" action="/auth/login" class="login-card">
+    <img src="/static/evenor-logo-dark.svg" alt="Evenor" class="login-logo" height="48">
+    {% if error %}<p class="error">{{ error }}</p>{% endif %}
+    <label>Email <input type="email" name="email" required autocomplete="email"></label>
+    <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
+    <div class="checkbox-row login-remember-row">
+      <input type="checkbox" name="remember_me" id="remember-me" value="on">
+      <label for="remember-me">Remember me</label>
+    </div>
+    <button type="submit" class="btn-primary" data-loading="Signing in…">Sign in</button>
+  </form>
+</body>
+</html>

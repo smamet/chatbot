@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ title or "Dashboard" }}</title>
+  <link rel="icon" href="/static/favicon-e2.png" type="image/png" sizes="32x32">
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="/static/favicon-e2.png">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/dashboard.js" defer></script>
+</head>
+<body>
+  <div id="page-loader" aria-hidden="true"></div>
+  <header class="topbar">
+    <a class="brand" href="/dashboard/bots">
+      <img src="/static/evenor-logo.svg" alt="Evenor" class="brand-logo" height="48">
+    </a>
+    <nav class="nav-links">
+      <a href="/dashboard/bots" {% if request.url.path.startswith('/dashboard/bots') %}aria-current="page"{% endif %}>Bots</a>
+      {% if user and user.role == 'admin' %}
+      <a href="/dashboard/users" {% if request.url.path.startswith('/dashboard/users') %}aria-current="page"{% endif %}>Users</a>
+      <a href="/dashboard/hooks" {% if request.url.path.startswith('/dashboard/hooks') %}aria-current="page"{% endif %}>Hooks</a>
+      <a href="/dashboard/monitoring" {% if request.url.path.startswith('/dashboard/monitoring') %}aria-current="page"{% endif %}>Monitoring</a>
+      {% endif %}
+    </nav>
+    <form method="post" action="/auth/logout" class="logout-form no-loader">
+      <button type="submit" class="btn-ghost">Logout</button>
+    </form>
+  </header>
+  <main class="content">
+    {% block body %}{% endblock %}
+  </main>
+</body>
+</html>

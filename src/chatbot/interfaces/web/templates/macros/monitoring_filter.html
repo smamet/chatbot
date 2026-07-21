@@ -1,0 +1,37 @@
+{% macro monitoring_filter(usage_from, usage_to, monitoring_query_string, tab, reset_href) %}
+<form method="get" class="monitoring-filter no-loader">
+  {% if tab %}
+  <input type="hidden" name="tab" value="{{ tab }}">
+  {% endif %}
+  <div class="monitoring-filter-grid">
+    <label class="monitoring-filter-label" for="monitoring-usage-from">From</label>
+    <label class="monitoring-filter-label" for="monitoring-usage-to">To</label>
+    <span class="monitoring-filter-label monitoring-filter-label--spacer" aria-hidden="true"></span>
+    <input type="date" id="monitoring-usage-from" class="monitoring-filter-input" name="usage_from" value="{{ usage_from.isoformat() }}" required>
+    <input type="date" id="monitoring-usage-to" class="monitoring-filter-input" name="usage_to" value="{{ usage_to.isoformat() }}" required>
+    <div class="monitoring-filter-actions">
+      <button type="submit" class="btn-primary btn-sm">Apply</button>
+      <a href="{{ reset_href }}" class="btn-secondary btn-sm">Last 30 days</a>
+    </div>
+  </div>
+</form>
+{% endmacro %}
+
+{% macro monitoring_pagination(usage_from, usage_to, usage_page, usage_page_count, usage_row_total, usage_row_start, usage_row_end, monitoring_query_string, tab) %}
+{% if usage_row_total > 0 %}
+<nav class="monitoring-pagination" aria-label="Daily API usage pagination">
+  <span class="monitoring-pagination-summary">
+    Showing {{ usage_row_start }}–{{ usage_row_end }} of {{ usage_row_total | format_count }} rows
+  </span>
+  <span class="monitoring-pagination-links">
+    {% if usage_page > 1 %}
+    <a href="?{{ monitoring_query_string(since=usage_from, until=usage_to, usage_page=usage_page - 1, tab=tab) }}" class="btn-secondary btn-sm">Previous</a>
+    {% endif %}
+    <span class="monitoring-pagination-current">Page {{ usage_page }} / {{ usage_page_count }}</span>
+    {% if usage_page < usage_page_count %}
+    <a href="?{{ monitoring_query_string(since=usage_from, until=usage_to, usage_page=usage_page + 1, tab=tab) }}" class="btn-secondary btn-sm">Next</a>
+    {% endif %}
+  </span>
+</nav>
+{% endif %}
+{% endmacro %}

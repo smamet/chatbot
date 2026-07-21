@@ -14,6 +14,14 @@ from chatbot.domain.contracts.embedder import Embedder
 from chatbot.domain.contracts.vector_store import VectorRecord, VectorStore
 
 
+def file_content_hash(file_path: Path) -> str:
+    h = hashlib.sha256()
+    with file_path.open("rb") as f:
+        for block in iter(lambda: f.read(65536), b""):
+            h.update(block)
+    return h.hexdigest()
+
+
 class IngestService:
     def __init__(
         self,
@@ -22,11 +30,13 @@ class IngestService:
         embedder: Embedder,
         vector_store: VectorStore,
         session: Session,
+        tenant_id: int,
     ) -> None:
         self._settings = settings
         self._embedder = embedder
         self._store = vector_store
         self._session = session
+        self._tenant_id = tenant_id
 
     def ingest_path(self, path: Path) -> list[str]:
         path = path.resolve()
@@ -42,11 +52,7 @@ class IngestService:
         return logs
 
     def _file_hash(self, file_path: Path) -> str:
-        h = hashlib.sha256()
-        with file_path.open("rb") as f:
-            for block in iter(lambda: f.read(65536), b""):
-                h.update(block)
-        return h.hexdigest()
+        return file_content_hash(file_path)
 
     def _ingest_file(self, file_path: Path) -> list[str]:
         suffix = file_path.suffix.lower()
@@ -54,7 +60,12 @@ class IngestService:
             return [f"skip unsupported: {file_path}"]
         key = str(file_path)
         digest = self._file_hash(file_path)
-        existing = self._session.scalar(select(IngestedFileRow).where(IngestedFileRow.path == key))
+        existing = self._session.scalar(
+            select(IngestedFileRow).where(
+                IngestedFileRow.tenant_id == self._tenant_id,
+                IngestedFileRow.path == key,
+            )
+        )
         if existing and existing.content_hash == digest:
             return [f"unchanged: {file_path}"]
         text = parse_file(file_path)
@@ -84,6 +95,8 @@ class IngestService:
         if existing:
             existing.content_hash = digest
         else:
-            self._session.add(IngestedFileRow(path=key, content_hash=digest))
+            self._session.add(
+                IngestedFileRow(tenant_id=self._tenant_id, path=key, content_hash=digest)
+            )
         self._session.flush()
         return [f"ingested {len(chunks)} chunks: {file_path}"]

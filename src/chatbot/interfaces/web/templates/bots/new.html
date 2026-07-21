@@ -1,0 +1,59 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>New bot</h1>
+  <p class="subtitle">Create a new tenant</p>
+</div>
+<div class="card">
+  <form method="post" action="/dashboard/bots/new">
+    <label>Name <input type="text" name="name" value="{{ name or '' }}" required></label>
+    <label>Slug <small>(optional)</small> <input type="text" name="slug" value="{{ slug or '' }}" placeholder="auto from name"></label>
+    <label>System prompt<textarea name="prompt" rows="8">{{ prompt or 'You are a helpful assistant.' }}</textarea></label>
+
+    <div class="form-section">
+      <h3 class="form-section-title">Allowed connectors</h3>
+      <p class="text-muted">Super admin only. Choose which connector types and directions this bot may use. Leave all checked to allow everything.</p>
+      <div class="checkbox-panel">
+        <div class="checkbox-panel__actions">
+          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="all">Select all</button>
+          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="none">Deselect all</button>
+        </div>
+        <div class="checkbox-grid checkbox-grid--stack">
+          {% for cap in connector_capabilities_ui %}
+          <div class="checkbox-row">
+            <input type="checkbox" name="allowed_connector" id="cap-{{ cap.key|replace(':', '-') }}"
+                   value="{{ cap.key }}" {% if cap.checked %}checked{% endif %}>
+            <label for="cap-{{ cap.key|replace(':', '-') }}">{{ cap.label }}</label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <div class="form-section">
+      <h3 class="form-section-title">Allowed integrations</h3>
+      <p class="text-muted">Super admin only. Choose which integrations this bot may use. Leave all checked to allow everything.</p>
+      <div class="checkbox-panel">
+        <div class="checkbox-panel__actions">
+          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="all">Select all</button>
+          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="none">Deselect all</button>
+        </div>
+        <div class="checkbox-grid checkbox-grid--stack">
+          {% for cap in integration_capabilities_ui %}
+          <div class="checkbox-row">
+            <input type="checkbox" name="allowed_integration" id="int-{{ cap.key }}"
+                   value="{{ cap.key }}" {% if cap.checked %}checked{% endif %}>
+            <label for="int-{{ cap.key }}">{{ cap.label }}</label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+
+    <div class="form-actions">
+      <button type="submit" class="btn-primary" data-loading="Creating…">Create bot</button>
+    </div>
+  </form>
+</div>
+<a href="/dashboard/bots" class="back-link">← Back to bots</a>
+{% endblock %}

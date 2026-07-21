@@ -1,0 +1,24 @@
+:80 {
+    handle /c/* {
+        reverse_proxy api:8000
+    }
+    handle /admin/* {
+        reverse_proxy api:8000
+    }
+    handle /dashboard/* {
+        reverse_proxy api:8000
+    }
+    handle /auth/* {
+        reverse_proxy api:8000
+    }
+    handle /healthz {
+        reverse_proxy api:8000
+    }
+    handle /webhooks/* {
+        reverse_proxy api:8000
+    }
+    handle /static/* {
+        reverse_proxy api:8000
+    }
+    reverse_proxy api:8000
+}

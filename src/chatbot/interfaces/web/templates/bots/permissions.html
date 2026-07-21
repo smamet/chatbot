@@ -1,0 +1,60 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>{{ tenant.name }}</h1>
+  <p class="subtitle">Permissions · <code>{{ tenant.slug }}</code></p>
+</div>
+
+<div class="card">
+  <h2 class="card-title">Permissions</h2>
+  <p class="text-muted">Super admin only. Control which connectors and integrations editors may configure on this bot.</p>
+
+  <h3 class="form-section-title">Allowed connectors</h3>
+  <p class="text-muted">Unchecking a capability deactivates existing connectors of that type/direction.</p>
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connector-policy">
+    <div class="checkbox-panel">
+      <div class="checkbox-panel__actions">
+        <button type="button" class="btn-secondary btn-sm" data-checkbox-set="all">Select all</button>
+        <button type="button" class="btn-secondary btn-sm" data-checkbox-set="none">Deselect all</button>
+      </div>
+      <div class="checkbox-grid checkbox-grid--stack">
+        {% for cap in connector_capabilities_ui %}
+        <div class="checkbox-row">
+          <input type="checkbox" name="allowed_connector" id="cap-{{ cap.key|replace(':', '-') }}"
+                 value="{{ cap.key }}" {% if cap.checked %}checked{% endif %}>
+          <label for="cap-{{ cap.key|replace(':', '-') }}">{{ cap.label }}</label>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="form-actions form-actions--compact">
+      <button type="submit" class="btn-primary" data-loading="Saving…">Save connector policy</button>
+    </div>
+  </form>
+
+  <h3 class="form-section-title" style="margin-top:1.25rem">Allowed integrations</h3>
+  <p class="text-muted">Unchecking a type deactivates existing integrations of that type. The CAC40 Backtest tab appears only when CAC40 is allowed here and saved as Active on Integrations.</p>
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integration-policy">
+    <div class="checkbox-panel">
+      <div class="checkbox-panel__actions">
+        <button type="button" class="btn-secondary btn-sm" data-checkbox-set="all">Select all</button>
+        <button type="button" class="btn-secondary btn-sm" data-checkbox-set="none">Deselect all</button>
+      </div>
+      <div class="checkbox-grid checkbox-grid--stack">
+        {% for cap in integration_capabilities_ui %}
+        <div class="checkbox-row">
+          <input type="checkbox" name="allowed_integration" id="int-{{ cap.key }}"
+                 value="{{ cap.key }}" {% if cap.checked %}checked{% endif %}>
+          <label for="int-{{ cap.key }}">{{ cap.label }}</label>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="form-actions form-actions--compact">
+      <button type="submit" class="btn-primary" data-loading="Saving…">Save integration policy</button>
+    </div>
+  </form>
+</div>
+
+<a href="/dashboard/bots" class="back-link">← Back to bots</a>
+{% endblock %}

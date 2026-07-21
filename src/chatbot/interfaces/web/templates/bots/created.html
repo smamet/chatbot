@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>Bot created</h1>
+  <p class="subtitle"><strong>{{ tenant.name }}</strong> — <code>{{ tenant.slug }}</code></p>
+</div>
+<div class="token-box">
+  <p class="warn">Copy this API token now. It will not be shown again.</p>
+  <code>{{ token }}</code>
+</div>
+<p class="text-muted">Use as <code>Authorization: Bearer &lt;token&gt;</code> on <code>POST /c/{{ tenant.slug }}/chat</code>.</p>
+<div class="actions-bar">
+  <a href="/dashboard/bots/{{ tenant.slug }}" class="btn btn-primary">Open bot</a>
+  <a href="/dashboard/bots" class="btn btn-secondary">All bots</a>
+</div>
+{% endblock %}

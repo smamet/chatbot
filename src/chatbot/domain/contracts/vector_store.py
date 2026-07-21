@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 from typing import Protocol, runtime_checkable
 
 
@@ -26,6 +27,10 @@ class VectorStore(Protocol):
         """Remove all chunks for a logical source (e.g. before re-ingesting the same file)."""
         ...
 
+    def delete_by_source_path_prefix(self, prefix: str) -> None:
+        """Remove all chunks whose source_path starts with prefix (directory purge)."""
+        ...
+
     def clear_all(self) -> None:
         """Remove all indexed chunks (full index reset)."""
         ...
@@ -34,4 +39,8 @@ class VectorStore(Protocol):
         ...
 
     def search(self, query_vector: list[float], *, top_k: int) -> list[RetrievedChunk]:
+        ...
+
+    def optimize(self, *, cleanup_older_than: timedelta | None = None) -> str | None:
+        """Compact table and prune old LanceDB versions; return log line or None if skipped."""
         ...

@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
+
+from chatbot.domain.models.context_debug import ContextDebugInfo
 
 
 class MessageRole(str, Enum):
@@ -14,3 +17,5 @@ class MessageRole(str, Enum):
 class ChatMessage:
     role: MessageRole
     content: str
+    context_debug: ContextDebugInfo | None = None
+    created_at: datetime | None = None

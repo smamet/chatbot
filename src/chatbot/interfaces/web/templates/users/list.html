@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>Users</h1>
+  <p class="subtitle">Dashboard accounts and roles</p>
+</div>
+<div class="actions-bar">
+  <a href="/dashboard/users/new" class="btn btn-primary">New user</a>
+</div>
+<div class="table-wrap">
+  <table class="data-table">
+    <thead><tr><th>Email</th><th>Role</th><th>Active</th><th></th></tr></thead>
+    <tbody>
+    {% for u in users %}
+    <tr>
+      <td>{{ u.email }}</td>
+      <td><code>{{ u.role.value }}</code></td>
+      <td>{% if u.active %}<span class="badge on">yes</span>{% else %}<span class="badge off">no</span>{% endif %}</td>
+      <td><a href="/dashboard/users/{{ u.id }}" class="btn btn-secondary btn-sm">Manage</a></td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="empty-state">No users</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

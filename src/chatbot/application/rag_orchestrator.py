@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 
 from chatbot.config.settings import Settings
 from chatbot.domain.contracts.embedder import Embedder
@@ -10,6 +11,13 @@ from chatbot.domain.contracts.vector_store import VectorStore
 from chatbot.domain.models.message import ChatMessage, MessageRole
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True, slots=True)
+class RetrievalContext:
+    text: str
+    chunk_count: int = 0
+    char_count: int = 0
 
 
 def _preview(text: str, max_len: int = 160) -> str:
@@ -37,17 +45,17 @@ class RagPipeline:
         self._store = vector_store
         self._rewrite_language_gate = rewrite_language_gate
 
-    def build_retrieval_context(self, user_query: str) -> str:
+    def build_retrieval_context(self, user_query: str) -> RetrievalContext:
         v = self._settings.rag_verbose
         if not self._settings.rag_enabled:
             if v:
                 logger.info("[RAG] build_retrieval_context skipped: RAG_ENABLED=false")
-            return ""
+            return RetrievalContext(text="")
         q = user_query.strip()
         if not q:
             if v:
                 logger.info("[RAG] build_retrieval_context skipped: empty user_query")
-            return ""
+            return RetrievalContext(text="")
         if v:
             logger.info(
                 "[RAG] start user_query_preview=%r len=%s retrieval_language=%s rag_top_k=%s",
@@ -83,7 +91,7 @@ class RagPipeline:
         if not vectors:
             if v:
                 logger.info("[RAG] embedder returned no vectors -> empty context")
-            return ""
+            return RetrievalContext(text="")
         dim = len(vectors[0])
         if v:
             logger.info("[RAG] embedded dim=%s", dim)
@@ -92,7 +100,7 @@ class RagPipeline:
         if not hits:
             if v:
                 logger.info("[RAG] vector search returned 0 hits -> empty context")
-            return ""
+            return RetrievalContext(text="")
         if v:
             for i, h in enumerate(hits):
                 logger.info(
@@ -111,7 +119,8 @@ class RagPipeline:
                 lines.append(f"[{h.source_path} | chunk {h.chunk_id}]\n{h.text}")
             else:
                 lines.append(h.text)
-        return "\n\n---\n\n".join(lines)
+        text = "\n\n---\n\n".join(lines)
+        return RetrievalContext(text=text, chunk_count=len(hits), char_count=len(text))
 
     def _rewrite_query(self, user_query: str) -> str:
         lang = self._settings.retrieval_language

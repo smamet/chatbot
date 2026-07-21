@@ -1,0 +1,427 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page-header">
+  <div>
+    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}">{{ tenant.name }}</a> · Integrations</p>
+    <h1>{{ bot_symbol or 'CAC40' }} Backtest</h1>
+    <p class="subtitle">
+      Mean-reversion hedge-mode simulation (HedgeLedger). One bot = one symbol
+      (<code>{{ bot_symbol or 'CAC40' }}</code> · epic <code>{{ bot_epic or '—' }}</code>).
+      Change symbol/epic on the Integrations tab; use another bot for a different market.
+    </p>
+  </div>
+  <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}?tab=integrations">← Back</a>
+</section>
+
+{% if upload_error %}
+<section class="card">
+  <p class="badge failed">Upload failed: {{ upload_error }}</p>
+</section>
+{% endif %}
+{% if upload_ok %}
+<section class="card">
+  <p class="badge done">CSV uploaded — {{ upload_ok }} bars ready.</p>
+</section>
+{% endif %}
+{% if sync_error %}
+<section class="card">
+  <p class="badge failed">IG sync failed: {{ sync_error }}</p>
+</section>
+{% endif %}
+{% if sync_ok %}
+<section class="card">
+  <p class="badge done">IG sync — {{ sync_ok }} new 15m bar(s) appended. Check the status panel below for last candle date.</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>OHLC dataset (15m)</h2>
+  <p class="text-muted">
+    Symbol <code>{{ bot_symbol or 'CAC40' }}</code>
+    {% if ohlc.exists %}
+      · <span class="badge done">found</span> {{ ohlc.bars }} bars
+      · last candle <code>{{ ohlc.last_candle or ohlc.to or '—' }}</code>
+      {% if ohlc.candle_age_hours is not none %}({{ ohlc.candle_age_hours }}h ago){% endif %}
+    {% else %}
+      · <span class="badge failed">missing</span> upload a CSV or Sync from IG
+    {% endif %}
+    {% if ohlc_sync_status %}
+      · sync
+      {% if ohlc_sync_status.ok %}<span class="badge done">ok</span>{% else %}<span class="badge failed">error</span>{% endif %}
+      {% if ohlc_sync_status.added is defined %}(+{{ ohlc_sync_status.added }}){% endif %}
+      <code>{{ ohlc_sync_status.trigger or '—' }}</code>
+    {% endif %}
+    {% if ohlc_worker_status and ohlc_worker_status.finished_at %}
+      · worker <code>{{ ohlc_worker_status.finished_at }}</code>
+    {% endif %}
+  </p>
+
+  <details class="automation-advanced" style="margin:0.75rem 0 1rem;">
+    <summary>OHLC sync details</summary>
+    <p class="field-hint">Candles are Europe/Paris; sync/worker times are UTC. Age can be several hours when the market is closed.</p>
+    <p class="text-muted">File: <code>{{ ohlc.path }}</code></p>
+    <p class="text-muted">Range: <code>{{ ohlc.from or '—' }}</code> → <code>{{ ohlc.to or '—' }}</code></p>
+    {% if ohlc_sync_status %}
+    <p class="text-muted">
+      Last sync attempt: <code>{{ ohlc_sync_status.last_attempt_at or ohlc_sync_status.last_error_at or '—' }}</code>
+      · success <code>{{ ohlc_sync_status.last_ok_at or 'never' }}</code>
+      {% if ohlc_sync_status.fetch_from %}
+        · fetch <code>{{ ohlc_sync_status.fetch_from }}</code> → <code>{{ ohlc_sync_status.fetch_to }}</code>
+      {% endif %}
+    </p>
+    {% if ohlc_sync_status.last_error %}
+    <p class="badge failed" style="white-space:pre-wrap;">{{ ohlc_sync_status.last_error }}</p>
+    {% endif %}
+    {% else %}
+    <p class="field-hint">No sync yet.</p>
+    {% endif %}
+    <p class="text-muted">
+      Worker poll: every <code>{{ cac40_ohlc_poll_seconds }}</code>s
+      {% if ohlc_worker_status %}
+        · last cycle
+        {% if ohlc_worker_status.ok %}<span class="badge done">ok</span>{% else %}<span class="badge failed">had failures</span>{% endif %}
+        (ok {{ ohlc_worker_status.tenants_ok or 0 }} /
+        failed {{ ohlc_worker_status.tenants_failed or 0 }} /
+        skipped {{ ohlc_worker_status.tenants_skipped or 0 }})
+      {% else %}
+        · not run yet
+      {% endif %}
+    </p>
+    <p class="field-hint">
+      Test worker:
+      <code>./sail exec worker-cac40-ohlc python -m chatbot.interfaces.worker_cac40_ohlc --once</code>
+      · logs: <code>./sail logs worker-cac40-ohlc</code>
+    </p>
+    <p class="field-hint">
+      Long history:
+      <a href="https://www.backtestmarket.com/en/cac-40-15m" target="_blank" rel="noopener noreferrer">BacktestMarket CAC MX 15m</a>
+    </p>
+  </details>
+
+  <div class="form-grid" style="align-items:end; margin-bottom:1rem;">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/ohlc/sync-ig" class="stack-form">
+      <button type="submit" class="btn-primary" {% if not ig_connector_ready %}disabled{% endif %}>
+        Sync from IG
+      </button>
+      {% if not ig_connector_ready %}
+      <p class="field-hint">Configure an active IG connector on the Connectors tab first.</p>
+      {% endif %}
+    </form>
+  </div>
+
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/ohlc" enctype="multipart/form-data" class="stack-form">
+    <div class="form-grid">
+      <label>CSV source
+        <select name="source" id="ohlc-source">
+          <option value="evenor">Evenor / standard (Date,Open,High,Low,Close)</option>
+          <option value="backtestmarket" selected>BacktestMarket (MX 15m)</option>
+        </select>
+      </label>
+      <label>CSV file
+        <input type="file" name="file" accept=".csv,text/csv" required>
+      </label>
+    </div>
+    <p class="field-hint" id="ohlc-source-hint">
+      BacktestMarket: <code>DD/MM/YYYY;HH:MM:SS;O;H;L;C;V</code> (no header, GMT-6) — converted on import.
+    </p>
+    <button type="submit" class="btn-secondary">Upload CSV</button>
+  </form>
+  <script>
+    (function () {
+      const sel = document.getElementById('ohlc-source');
+      const hint = document.getElementById('ohlc-source-hint');
+      if (!sel || !hint) return;
+      const hints = {
+        evenor: 'Evenor / standard: comma CSV with header <code>Date,Open,High,Low,Close[,Volume]</code>.',
+        backtestmarket: 'BacktestMarket: <code>DD/MM/YYYY;HH:MM:SS;O;H;L;C;V</code> (no header, GMT-6) — converted on import.',
+      };
+      function sync() {
+        hint.innerHTML = hints[sel.value] || hints.evenor;
+      }
+      sel.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
+</section>
+
+<section class="card">
+  <h2>New simulation</h2>
+  <form id="cac40-run-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs"
+        class="stack-form" data-tenant="{{ tenant.slug }}">
+    <div class="form-grid">
+      <label>Period
+        <select name="period">
+          <option value="1w" {% if default_config.backtest_period == '1w' %}selected{% endif %}>1 week</option>
+          <option value="2w" {% if default_config.backtest_period == '2w' %}selected{% endif %}>2 weeks</option>
+          <option value="1m" {% if default_config.backtest_period == '1m' %}selected{% endif %}>1 month</option>
+          <option value="3m" {% if default_config.backtest_period == '3m' %}selected{% endif %}>3 months</option>
+          <option value="6m" {% if default_config.backtest_period == '6m' %}selected{% endif %}>6 months</option>
+          <option value="1y" {% if default_config.backtest_period == '1y' %}selected{% endif %}>1 year</option>
+          <option value="all" {% if default_config.backtest_period == 'all' %}selected{% endif %}>All</option>
+        </select>
+      </label>
+      <label>Max open positions
+        <input type="number" name="max_open_positions" value="{{ default_config.max_open_positions }}" min="1" max="20">
+      </label>
+      <label>Order size
+        <input type="number" step="0.01" name="order_size" value="{{ default_config.order_size }}">
+      </label>
+      <label>Spread points
+        <input type="number" step="0.1" name="spread_points" value="{{ default_config.spread_points }}">
+      </label>
+      <label>Prevent selling at a loss
+        <select name="prevent_loss_exits">
+          <option value="0" {% if not default_config.prevent_loss_exits %}selected{% endif %}>No (default)</option>
+          <option value="1" {% if default_config.prevent_loss_exits %}selected{% endif %}>Yes — block exits with PnL ≤ 0</option>
+        </select>
+        <small class="field-hint">Hard gate: reject market closes and TP/close orders that would realize a loss after spread.</small>
+      </label>
+      <label>LLM schedule
+        <select name="llm_trigger_mode" id="llm-trigger-mode">
+          <option value="levels" {% if default_config.llm_trigger_mode != 'interval' %}selected{% endif %}>
+            Adaptive — S/R approach, break, fill
+          </option>
+          <option value="interval" {% if default_config.llm_trigger_mode == 'interval' %}selected{% endif %}>
+            Fixed rate — every N bars
+          </option>
+        </select>
+      </label>
+      <label id="llm-band-wrap" class="cac40-trigger-field">Level band (points)
+        <input type="number" step="0.1" name="llm_level_band_points"
+               value="{{ default_config.llm_level_band_points or 15 }}" min="0.1" max="500">
+        <small class="field-hint">How close price must get to S/R to trigger a call.</small>
+      </label>
+      <label id="llm-every-wrap" class="cac40-trigger-field">Call every
+        <span class="llm-rate-row">
+          <input type="number" name="llm_every_n" value="{{ default_config.llm_every_n or 6 }}" min="1" max="96">
+          <select name="llm_every_unit">
+            <option value="15m" {% if default_config.llm_every_unit == '15m' %}selected{% endif %}>× 15 minutes</option>
+            <option value="1h" {% if default_config.llm_every_unit != '15m' %}selected{% endif %}>× 1 hour</option>
+          </select>
+        </span>
+        <small class="field-hint">Fixed cadence (only used when schedule is Fixed rate).</small>
+      </label>
+      <label>LLM mode
+        <select name="llm_mode">
+          <option value="live">live (call Gemini)</option>
+          <option value="charts_only">charts only (no LLM — test charts/RSI)</option>
+          <option value="replay">replay (decision cache)</option>
+        </select>
+      </label>
+      <label>LLM temperature
+        <input type="number" name="llm_temperature" step="0.05" min="0" max="1"
+               value="{{ default_config.llm_temperature if default_config.llm_temperature is not none else 0 }}">
+        <small class="field-hint">0–1 sampling for live Gemini. <strong>0</strong> = more deterministic / repeatable (still not bit-identical). <strong>1</strong> = more varied S/R and actions. Ignored for replay / charts_only.</small>
+      </label>
+      <label>Chart window 15m (bars)
+        <input type="number" name="lookback_15m" value="{{ default_config.lookback_15m }}" min="1" max="2000">
+      </label>
+      <label>Chart window 1H (bars)
+        <input type="number" name="lookback_1h" value="{{ default_config.lookback_1h }}" min="1" max="2000">
+      </label>
+      <label>Chart window 1D (bars)
+        <input type="number" name="lookback_1d" value="{{ default_config.lookback_1d }}" min="1" max="2000">
+      </label>
+      <label>Warm-up / RSI bars
+        <input type="number" name="warmup_bars" value="{{ default_config.warmup_bars }}" min="2" max="500">
+      </label>
+      <label>Show RSI on charts
+        <select name="chart_show_rsi">
+          <option value="1" {% if default_config.chart_show_rsi %}selected{% endif %}>Yes</option>
+          <option value="0" {% if not default_config.chart_show_rsi %}selected{% endif %}>No</option>
+        </select>
+      </label>
+      <label>Show Traditional pivots
+        <select name="chart_show_pivots">
+          <option value="1" {% if default_config.chart_show_pivots %}selected{% endif %}>Yes</option>
+          <option value="0" {% if not default_config.chart_show_pivots %}selected{% endif %}>No</option>
+        </select>
+      </label>
+      <label>Pivot period
+        <select name="chart_pivot_period">
+          <option value="D" {% if default_config.chart_pivot_period == 'D' %}selected{% endif %}>Daily</option>
+          <option value="W" {% if default_config.chart_pivot_period == 'W' %}selected{% endif %}>Weekly</option>
+          <option value="M" {% if default_config.chart_pivot_period == 'M' %}selected{% endif %}>Monthly</option>
+        </select>
+      </label>
+    </div>
+    <p class="field-hint">
+      OHLC file is fixed for this bot: <code>{{ ohlc_path }}</code>.
+      Period is relative to the last bar. Charts use full history as-of each decision
+      with extra bars so RSI/pivots stay valid. Your last form selections are kept in this browser.
+      <strong>Adaptive</strong> calls Gemini only on bootstrap, S/R approach/break, or a fill.
+      <strong>Fixed rate</strong> calls on a regular every-N cadence.
+    </p>
+    <div class="form-actions form-actions--compact cac40-run-actions">
+      <button type="submit" class="btn-primary" {% if not ohlc_exists %}disabled{% endif %}>Start backtest</button>
+    </div>
+    {% if not ohlc_exists %}
+    <p class="text-muted">Upload a CSV above before starting a backtest.</p>
+    {% endif %}
+  </form>
+  <script>
+    (function () {
+      const form = document.getElementById('cac40-run-form');
+      if (!form) return;
+      const key = 'cac40-run-form:' + (form.dataset.tenant || 'default');
+      const fields = form.querySelectorAll('input[name], select[name]');
+      const triggerSel = document.getElementById('llm-trigger-mode');
+      const bandWrap = document.getElementById('llm-band-wrap');
+      const everyWrap = document.getElementById('llm-every-wrap');
+
+      function syncTriggerUi() {
+        const adaptive = !triggerSel || triggerSel.value !== 'interval';
+        if (bandWrap) {
+          bandWrap.hidden = !adaptive;
+          bandWrap.classList.toggle('is-hidden', !adaptive);
+        }
+        if (everyWrap) {
+          everyWrap.hidden = adaptive;
+          everyWrap.classList.toggle('is-hidden', adaptive);
+        }
+      }
+
+      function read() {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw ? JSON.parse(raw) : null;
+        } catch (_) {
+          return null;
+        }
+      }
+
+      function write() {
+        const values = {};
+        fields.forEach((el) => {
+          if (el.name) values[el.name] = el.value;
+        });
+        try {
+          localStorage.setItem(key, JSON.stringify(values));
+        } catch (_) {
+          /* ignore quota / private mode */
+        }
+      }
+
+      const stored = read();
+      if (stored) {
+        fields.forEach((el) => {
+          if (stored[el.name] != null && stored[el.name] !== '') {
+            el.value = stored[el.name];
+          }
+        });
+      }
+
+      fields.forEach((el) => {
+        el.addEventListener('change', write);
+        el.addEventListener('input', write);
+      });
+      if (triggerSel) {
+        triggerSel.addEventListener('change', () => {
+          syncTriggerUi();
+          write();
+        });
+      }
+      syncTriggerUi();
+      form.addEventListener('submit', write);
+    })();
+  </script>
+</section>
+
+<section class="card cac40-runs-card">
+  <h2>Previous runs</h2>
+  {% set ns = namespace(has_active=false) %}
+  {% for r in runs %}
+    {% if r.status in ('running', 'stopping') %}
+      {% set ns.has_active = true %}
+    {% endif %}
+  {% endfor %}
+  {% if runs %}
+  <div class="cac40-runs">
+    <div class="cac40-runs__head" aria-hidden="true">
+      <span>Run</span>
+      <span class="cac40-runs__head-metrics">
+        <span>Equity</span>
+        <span>Max DD</span>
+        <span>Trades</span>
+        <span>Win rate</span>
+        <span>LLM calls</span>
+      </span>
+      <span></span>
+    </div>
+    <ul class="cac40-runs__list">
+      {% for r in runs %}
+      <li class="cac40-run {% if r.status == 'failed' %}cac40-run--failed{% elif r.status in ('running', 'stopping') %}cac40-run--running{% endif %}">
+        <div class="cac40-run__main">
+          <a class="cac40-run__id" href="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ r.run_id }}" title="{{ r.run_id }}">{{ r.run_id | replace('run_', '') }}</a>
+          <span class="cac40-run__status cac40-run__status--{{ r.status }}">{{ r.status }}</span>
+          <span class="cac40-run__period">{{ r.period }}</span>
+          {% if r.status in ('running', 'stopping') %}
+          <span class="cac40-run__progress">{{ '%.0f'|format((r.progress or 0) * 100) }}%</span>
+          {% endif %}
+          <span class="cac40-run__flags">
+            <span class="{% if r.chart_show_rsi %}is-on{% else %}is-off{% endif %}" title="RSI {% if r.chart_show_rsi %}on{% else %}off{% endif %}">RSI</span>
+            <span class="{% if r.chart_show_pivots %}is-on{% else %}is-off{% endif %}" title="Pivots {% if r.chart_show_pivots %}on ({{ r.chart_pivot_period }}){% else %}off{% endif %}">
+              {% if r.chart_show_pivots %}Pivots {{ r.chart_pivot_period }}{% else %}Pivots{% endif %}
+            </span>
+          </span>
+        </div>
+        <div class="cac40-run__metrics">
+          <span class="cac40-run__metric">
+            <b>{% if r.final_equity is not none %}{{ '%.2f'|format(r.final_equity) }}{% else %}—{% endif %}</b>
+            <small>Equity</small>
+          </span>
+          <span class="cac40-run__metric">
+            <b>{% if r.max_drawdown is not none %}{{ '%.2f'|format(r.max_drawdown) }}{% else %}—{% endif %}</b>
+            <small>Max DD</small>
+          </span>
+          <span class="cac40-run__metric">
+            <b>{{ r.trades if r.trades is not none else '—' }}</b>
+            <small>Trades</small>
+          </span>
+          <span class="cac40-run__metric">
+            <b>{% if r.trades and r.winrate is not none %}{{ '%.0f'|format(r.winrate * 100) }}%{% else %}—{% endif %}</b>
+            <small>Win rate</small>
+          </span>
+          <span class="cac40-run__metric">
+            <b>{{ r.llm_calls_total if r.llm_calls_total is not none else '—' }}</b>
+            <small>LLM calls</small>
+          </span>
+        </div>
+        <div class="cac40-run__actions">
+          {% if r.config %}
+          <span class="cac40-run-config" tabindex="0">
+            <span class="cac40-run-config__label">config</span>
+            <dl class="cac40-run-config__list" role="tooltip">
+              {% for key, value in r.config.items() %}
+              <div class="cac40-run-config__row">
+                <dt>{{ key }}</dt>
+                <dd><code>{{ value }}</code></dd>
+              </div>
+              {% endfor %}
+            </dl>
+          </span>
+          {% endif %}
+          {% if r.status in ('running', 'stopping') %}
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ r.run_id }}/stop"
+                class="no-loader">
+            <button type="submit" class="cac40-run__del" title="Stop run">⏹</button>
+          </form>
+          {% endif %}
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ r.run_id }}/delete"
+                class="no-loader" onsubmit="return confirm('{% if r.status in ('running', 'stopping') %}Force-delete this running backtest and all charts?{% else %}Delete this backtest and all charts?{% endif %}');">
+            <button type="submit" class="cac40-run__del" title="{% if r.status in ('running', 'stopping') %}Force delete{% else %}Delete run{% endif %}">×</button>
+          </form>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% if ns.has_active %}
+  <p class="text-muted" style="margin-top: 0.75rem;">Auto-refresh in 5s…</p>
+  <meta http-equiv="refresh" content="5">
+  {% endif %}
+  {% else %}
+  <p class="empty-state">No runs yet</p>
+  {% endif %}
+</section>
+{% endblock %}

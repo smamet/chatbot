@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>{{ target.email }}</h1>
+  <p class="subtitle">User account settings</p>
+</div>
+<a href="/dashboard/users" class="back-link" style="margin-top:0;margin-bottom:1.5rem">← Users</a>
+
+<div class="card">
+  <h2 class="card-title">Role</h2>
+  <form method="post" action="/dashboard/users/{{ target.id }}/role">
+    <label>Role
+      <select name="role">
+        {% for r in roles %}
+        <option value="{{ r.value }}" {% if target.role == r %}selected{% endif %}>{{ r.value }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save role</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2 class="card-title">Status</h2>
+  <form method="post" action="/dashboard/users/{{ target.id }}/active">
+    <div class="checkbox-row">
+      <input type="checkbox" name="active" id="user-active" {% if target.active %}checked{% endif %}>
+      <label for="user-active">Account active</label>
+    </div>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2 class="card-title">Password</h2>
+  <form method="post" action="/dashboard/users/{{ target.id }}/password">
+    <label>New password<input type="password" name="password" required minlength="6"></label>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Set password</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h2 class="card-title">Bot access</h2>
+  <form method="post" action="/dashboard/users/{{ target.id }}/access">
+    <ul class="access-list">
+    {% for t in tenants %}
+      <li>
+        <label>
+          <input type="checkbox" name="tenant_{{ t.id }}" {% if t.id in allowed_tenant_ids %}checked{% endif %}>
+          {{ t.name }} <code>{{ t.slug }}</code>
+        </label>
+      </li>
+    {% endfor %}
+    </ul>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary">Save access</button>
+    </div>
+  </form>
+</div>
+{% endblock %}

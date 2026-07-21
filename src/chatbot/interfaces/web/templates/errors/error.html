@@ -1,0 +1,20 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="card error-page">
+  <p class="error-page__code">{{ status_code }}</p>
+  <h1 class="card-title error-page__title">{{ status_title }}</h1>
+  <p class="error-page__summary">{{ summary }}</p>
+  {% if dev_mode and exc_type %}
+  <p class="text-muted error-page__meta"><code>{{ exc_type }}</code>{% if exc_message %}: {{ exc_message }}{% endif %}</p>
+  {% endif %}
+  {% if dev_mode and traceback %}
+  <details class="error-traceback-details" open>
+    <summary>Technical details</summary>
+    <pre class="error-traceback">{{ traceback }}</pre>
+  </details>
+  {% endif %}
+  <p class="error-page__actions">
+    <a href="/dashboard/bots" class="btn-secondary btn-sm">Back to bots</a>
+  </p>
+</section>
+{% endblock %}

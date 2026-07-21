@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>Import bot</h1>
+  <p class="subtitle">Restore from a ZIP export (config, connectors, documents)</p>
+</div>
+<div class="card">
+  {% if error %}<p class="error">{{ error }}</p>{% endif %}
+  <form method="post" action="/dashboard/bots/import" enctype="multipart/form-data" id="import-form">
+    <label>Bundle file (ZIP)<input type="file" name="bundle" accept=".zip,application/zip" required></label>
+
+    <fieldset class="import-mode">
+      <legend class="form-section-title">Import mode</legend>
+      <div class="checkbox-row">
+        <input type="radio" name="mode" id="mode-create" value="create" checked>
+        <label for="mode-create">Create new bot</label>
+      </div>
+      <div class="checkbox-row">
+        <input type="radio" name="mode" id="mode-overwrite" value="overwrite">
+        <label for="mode-overwrite">Overwrite existing bot</label>
+      </div>
+    </fieldset>
+
+    <div id="create-fields">
+      <label>Name override <small>(optional)</small>
+        <input type="text" name="new_name" placeholder="Leave blank to use name from export">
+      </label>
+    </div>
+
+    <div id="overwrite-fields" hidden>
+      <label>Target bot
+        <select name="target_slug">
+          <option value="">— Select bot —</option>
+          {% for t in tenants %}
+          <option value="{{ t.slug }}">{{ t.name }} ({{ t.slug }})</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Rename <small>(optional)</small>
+        <input type="text" name="new_name_overwrite" placeholder="Leave blank to keep export name">
+      </label>
+    </div>
+
+    <p class="text-muted">The ZIP contains secrets. Only import bundles you trust.</p>
+    <div class="form-actions">
+      <button type="submit" class="btn-primary" data-loading="Importing…">Import</button>
+      <a href="/dashboard/bots" class="btn btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+<script>
+  (function () {
+    const form = document.getElementById('import-form');
+    const createFields = document.getElementById('create-fields');
+    const overwriteFields = document.getElementById('overwrite-fields');
+    const createName = createFields.querySelector('[name=new_name]');
+    const overwriteName = overwriteFields.querySelector('[name=new_name_overwrite]');
+    function sync() {
+      const overwrite = document.getElementById('mode-overwrite').checked;
+      createFields.hidden = overwrite;
+      overwriteFields.hidden = !overwrite;
+      createName.disabled = overwrite;
+      overwriteFields.querySelector('[name=target_slug]').disabled = !overwrite;
+      overwriteName.disabled = !overwrite;
+    }
+    form.querySelectorAll('input[name=mode]').forEach(r => r.addEventListener('change', sync));
+    form.addEventListener('submit', () => {
+      if (document.getElementById('mode-overwrite').checked) {
+        createName.removeAttribute('name');
+        overwriteName.setAttribute('name', 'new_name');
+      } else {
+        overwriteName.removeAttribute('name');
+        createName.setAttribute('name', 'new_name');
+      }
+    });
+    sync();
+  })();
+</script>
+{% endblock %}
