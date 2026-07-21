@@ -88,3 +88,73 @@ def test_connector_test_mailjet(mock_client_cls) -> None:
 def test_connector_test_unsupported_type() -> None:
     result = run_connector_connection_test("whatsapp", "in", {})
     assert result.ok is False
+    assert result.error == "unsupported_connector"
+
+
+def test_connector_test_ig_missing_credentials() -> None:
+    result = run_connector_connection_test("ig", "both", {"username": "u"})
+    assert result.ok is False
+    assert result.error == "missing_credentials"
+
+
+@patch("chatbot.cac40.ig_connector.IgConnector")
+def test_connector_test_ig_login_ok(mock_cls) -> None:
+    import pandas as pd
+
+    mock_ig = MagicMock()
+    mock_ig._cst = "cst"
+    mock_ig._security = "sec"
+    mock_ig.get_ohlc.return_value = pd.DataFrame(
+        {"open": [1.0], "high": [1.0], "low": [1.0], "close": [8310.5]},
+        index=pd.DatetimeIndex(["2026-07-21 12:00:00+02:00"]),
+    )
+    mock_cls.return_value = mock_ig
+    result = run_connector_connection_test(
+        "ig",
+        "both",
+        {
+            "api_key": "k",
+            "username": "u",
+            "password": "p",
+            "acc_type": "DEMO",
+            "epic": "IX.D.CAC.DAILY.IP",
+        },
+    )
+    assert result.ok is True
+    assert "login OK" in result.message
+    assert "8310.50" in result.message
+    assert "env=DEMO" in result.message
+    mock_ig.login.assert_called_once()
+    mock_ig.close.assert_called_once()
+
+
+@patch("chatbot.cac40.ig_connector.IgConnector")
+def test_connector_test_ig_auth_error_details(mock_cls) -> None:
+    from chatbot.cac40.ig_connector import IgAuthError
+
+    mock_ig = MagicMock()
+    mock_ig.login.side_effect = IgAuthError(
+        "IG login failed: HTTP 401\n"
+        "URL: https://demo-api.ig.com/gateway/deal/session\n"
+        "IG errorCode: error.security.invalid-details\n"
+        "Hint: Check username/password (demo login, not email)."
+    )
+    mock_cls.return_value = mock_ig
+    result = run_connector_connection_test(
+        "ig",
+        "both",
+        {
+            "api_key": "abcd1234efgh5678",
+            "username": "samsam114",
+            "password": "secret",
+            "acc_type": "DEMO",
+            "epic": "IX.D.CAC.DAILY.IP",
+        },
+    )
+    assert result.ok is False
+    assert "HTTP 401" in result.message
+    assert "error.security.invalid-details" in result.message
+    assert "Hint:" in result.message
+    assert result.error is not None
+    assert "username=samsam114" in result.error
+    assert "abcd" in result.error  # masked key prefix

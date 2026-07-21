@@ -38,22 +38,117 @@ def run_connector_connection_test(
     tenant_id: int | None = None,
     settings: Settings | None = None,
 ) -> ConnectorTestResult:
-    if connector_type != "email":
+    try:
+        if connector_type == "ig":
+            return _test_ig(config)
+        if connector_type == "email":
+            if direction == "in":
+                return _test_imap(config, session=session, tenant_id=tenant_id, settings=settings)
+            if direction == "out":
+                return _test_outbound(config, session=session, tenant_id=tenant_id, settings=settings)
+            return ConnectorTestResult(
+                ok=False, message="Invalid connector direction.", error="invalid_direction"
+            )
         return ConnectorTestResult(
             ok=False,
-            message="Connection test is only available for email connectors.",
+            message="Connection test is only available for email and IG connectors.",
             error="unsupported_connector",
         )
-    try:
-        if direction == "in":
-            return _test_imap(config, session=session, tenant_id=tenant_id, settings=settings)
-        if direction == "out":
-            return _test_outbound(config, session=session, tenant_id=tenant_id, settings=settings)
-        return ConnectorTestResult(ok=False, message="Invalid connector direction.", error="invalid_direction")
     except (ImapError, EmailSendError, MailOAuthError) as exc:
         return ConnectorTestResult(ok=False, message="Connection failed.", error=str(exc))
     except Exception as exc:
         return ConnectorTestResult(ok=False, message="Connection failed.", error=str(exc))
+
+
+def _mask_secret(value: str, *, keep: int = 4) -> str:
+    raw = (value or "").strip()
+    if not raw:
+        return "(empty)"
+    if len(raw) <= keep * 2:
+        return "*" * len(raw)
+    return f"{raw[:keep]}…{raw[-keep:]} ({len(raw)} chars)"
+
+
+def _test_ig(config: dict) -> ConnectorTestResult:
+    """Login to IG and fetch a couple of 15m bars for the configured epic."""
+    import httpx
+
+    from chatbot.cac40.config import Cac40Config
+    from chatbot.cac40.ig_connector import IgAuthError, IgConnector, _IG_HOSTS, format_ig_http_error
+
+    api_key = str(config.get("api_key", "")).strip()
+    username = str(config.get("username", "")).strip()
+    password = str(config.get("password", "")).strip()
+    if not api_key or not username or not password:
+        return ConnectorTestResult(
+            ok=False,
+            message="IG API key, username, and password are required (save first, or fill them).",
+            error="missing_credentials",
+        )
+    acc_type = str(config.get("acc_type", "DEMO") or "DEMO").strip().upper()
+    if acc_type not in ("DEMO", "LIVE"):
+        acc_type = "DEMO"
+    epic = str(config.get("epic", "") or "IX.D.CAC.DAILY.IP").strip()
+    account_id = str(config.get("account_id", "")).strip()
+    base_url = _IG_HOSTS.get(acc_type, _IG_HOSTS["DEMO"])
+    context = (
+        f"env={acc_type}\n"
+        f"host={base_url}\n"
+        f"username={username}\n"
+        f"api_key={_mask_secret(api_key)}\n"
+        f"password={'(set)' if password else '(empty)'}\n"
+        f"account_id={account_id or '(none)'}\n"
+        f"epic={epic}"
+    )
+    cfg = Cac40Config(
+        ig_api_key=api_key,
+        ig_username=username,
+        ig_password=password,
+        ig_account_id=account_id,
+        ig_acc_type=acc_type,
+        epic=epic,
+    )
+    ig = IgConnector(cfg, dry_run=True)
+    logged_in = False
+    try:
+        ig.login()
+        logged_in = True
+        if not ig._cst or not ig._security:
+            return ConnectorTestResult(
+                ok=False,
+                message="IG login failed (no session tokens returned).",
+                error=context,
+            )
+        df = ig.get_ohlc("15m", 2)
+        if df.empty:
+            return ConnectorTestResult(
+                ok=True,
+                message=(
+                    f"IG {acc_type} login OK for {epic}, but no 15m prices returned.\n\n{context}"
+                ),
+            )
+        last = float(df["close"].iloc[-1])
+        ts = df.index[-1]
+        return ConnectorTestResult(
+            ok=True,
+            message=(
+                f"IG {acc_type} login OK · {epic} last 15m close {last:.2f} @ {ts}\n\n{context}"
+            ),
+        )
+    except IgAuthError as exc:
+        prefix = "IG login OK, but next step failed.\n" if logged_in else ""
+        return ConnectorTestResult(ok=False, message=f"{prefix}{exc}", error=context)
+    except httpx.HTTPStatusError as exc:
+        detail = format_ig_http_error(exc.response, action="request", url=str(exc.request.url))
+        return ConnectorTestResult(ok=False, message=detail, error=context)
+    except httpx.RequestError as exc:
+        return ConnectorTestResult(
+            ok=False,
+            message=f"IG network error: {exc}",
+            error=context,
+        )
+    finally:
+        ig.close()
 
 
 def run_mail_connection_test(

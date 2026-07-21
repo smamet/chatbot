@@ -1605,7 +1605,13 @@ def bot_detail(
         ),
         "dev_mode": settings.dev_mode,
         "mail_poll_seconds": settings.mail_poll_seconds,
-        "mailpit_web_url": settings.dev_mailpit_web_url if settings.dev_mode else None,
+        # Mailpit is the email OUT SMTP sink in dev — never show for IG-only bots.
+        "mailpit_web_url": (
+            settings.dev_mailpit_web_url
+            if settings.dev_mode
+            and any(c.type == ConnectorType.EMAIL and c.active for c in connectors)
+            else None
+        ),
         "bot_dev_mode": tenant.config.dev_mode,
     }
     if tab == "documents":
@@ -3694,6 +3700,10 @@ def validation_reply_detail(
     reply_timeline = ValidationAuditService(session).list_timeline_for_reply(
         tenant.id, reply.id
     )
+    has_email_connector = any(
+        c.type == ConnectorType.EMAIL and c.active
+        for c in SqlAlchemyConnectorRepository(session).list_for_tenant(tenant.id)
+    )
     return templates.TemplateResponse(
         request,
         "validation/detail.html",
@@ -3709,7 +3719,11 @@ def validation_reply_detail(
             "attachment_rows": attachment_rows,
             "attachment_max_bytes": settings.attachment_max_bytes,
             "attachment_max_total_bytes": settings.attachment_max_total_bytes,
-            "mailpit_web_url": settings.dev_mailpit_web_url if settings.dev_mode else None,
+            "mailpit_web_url": (
+                settings.dev_mailpit_web_url
+                if settings.dev_mode and has_email_connector
+                else None
+            ),
             "validation_error": request.session.pop("validation_error", None),
             "validation_warning": request.session.pop("validation_warning", None),
             "quote_pdf_stale": quote_pdf_stale,

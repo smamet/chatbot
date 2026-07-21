@@ -23,6 +23,59 @@ _IG_HOSTS = {
 }
 
 
+class IgApiError(RuntimeError):
+    """IG HTTP failure with a human-readable message."""
+
+
+# Back-compat alias used by connector tests / callers.
+IgAuthError = IgApiError
+
+
+def format_ig_http_error(resp: httpx.Response, *, action: str, url: str) -> str:
+    """Build a detailed error string from an IG HTTP response."""
+    status = resp.status_code
+    body_text = (resp.text or "").strip()
+    error_code = ""
+    detail = body_text
+    try:
+        payload = resp.json()
+        if isinstance(payload, dict):
+            error_code = str(
+                payload.get("errorCode")
+                or payload.get("error")
+                or payload.get("message")
+                or ""
+            ).strip()
+            detail = error_code or str(payload)
+    except Exception:
+        if body_text.lstrip().lower().startswith("<!doctype") or "<html" in body_text[:80].lower():
+            detail = "(HTML 404 page — usually wrong endpoint path or API version)"
+
+    hints: list[str] = []
+    code_l = error_code.lower()
+    if status == 401 or "invalid-details" in code_l or "authentication" in code_l:
+        hints.append("Check username/password (Web API demo login details, not email).")
+        hints.append("API key must be created for the same environment (Demo vs Live).")
+        hints.append("Demo key + Demo env, or Live key + Live env — do not mix.")
+    elif status == 403:
+        hints.append("API key may be disabled, or this account cannot use the REST API.")
+    elif status == 404:
+        hints.append("Confirm epic exists on Demo (search the market in IG) and Environment=Demo.")
+        hints.append("Prices use GET /prices/{epic}?resolution=&max= (API v3).")
+
+    lines = [
+        f"IG {action} failed: HTTP {status}",
+        f"URL: {url}",
+    ]
+    if error_code:
+        lines.append(f"IG errorCode: {error_code}")
+    elif detail and detail != error_code:
+        lines.append(f"Body: {detail[:300]}")
+    for hint in hints:
+        lines.append(f"Hint: {hint}")
+    return "\n".join(lines)
+
+
 class IgConnector:
     """
     IG Markets REST connector.
@@ -51,18 +104,49 @@ class IgConnector:
         if not self.config.ig_api_key or not self.config.ig_username:
             logger.warning("IG credentials missing; connector stays in offline/dry mode")
             return
+        url = f"{self.base_url}/session"
         resp = self._client.post(
-            f"{self.base_url}/session",
+            url,
             headers=self._headers(version="2"),
             json={
                 "identifier": self.config.ig_username,
                 "password": self.config.ig_password,
             },
         )
-        resp.raise_for_status()
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="login", url=url))
         self._cst = resp.headers.get("CST")
         self._security = resp.headers.get("X-SECURITY-TOKEN")
         logger.info("IG session opened (%s)", self.config.ig_acc_type)
+        if self.config.ig_account_id:
+            self.switch_account(self.config.ig_account_id)
+
+    def switch_account(self, account_id: str, *, default: bool = False) -> None:
+        """Switch the active IG account for this session (needed for demo CFD accounts)."""
+        account_id = (account_id or "").strip()
+        if not account_id or not self._cst:
+            return
+        url = f"{self.base_url}/session"
+        resp = self._client.put(
+            url,
+            headers=self._headers(version="1"),
+            json={"accountId": account_id, "defaultAccount": default},
+        )
+        if resp.is_error:
+            # Already on this account after login — not a failure.
+            try:
+                code = str((resp.json() or {}).get("errorCode") or "")
+            except Exception:
+                code = ""
+            if resp.status_code == 412 and "accountId-must-be-different" in code:
+                logger.info("IG already on account %s", account_id)
+                return
+            raise IgApiError(format_ig_http_error(resp, action="switch_account", url=url))
+        if resp.headers.get("CST"):
+            self._cst = resp.headers.get("CST")
+        if resp.headers.get("X-SECURITY-TOKEN"):
+            self._security = resp.headers.get("X-SECURITY-TOKEN")
+        logger.info("IG switched to account %s", account_id)
 
     def _headers(self, *, version: str = "1") -> dict[str, str]:
         h = {
@@ -88,9 +172,17 @@ class IgConnector:
         }.get(timeframe, "MINUTE_15")
         if not self._cst:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-        url = f"{self.base_url}/prices/{self.config.epic}/{resolution}/{lookback}"
-        resp = self._client.get(url, headers=self._headers(version="3"))
-        resp.raise_for_status()
+        # IG API v3: GET /prices/{epic}?resolution=&max=&pageSize=
+        # (path /prices/{epic}/{resolution}/{n} is v2 only — v3 returns HTML 404)
+        n = max(1, int(lookback))
+        url = f"{self.base_url}/prices/{self.config.epic}"
+        resp = self._client.get(
+            url,
+            headers=self._headers(version="3"),
+            params={"resolution": resolution, "max": n, "pageSize": n},
+        )
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="prices", url=str(resp.request.url)))
         prices = resp.json().get("prices", [])
         rows = []
         for p in prices:

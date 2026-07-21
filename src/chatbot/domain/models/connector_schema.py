@@ -600,6 +600,7 @@ def connector_schemas_for_template(
                 "help": field.help,
                 "input_type": field.input_type,
                 "required": field.required,
+                "secret": field.secret,
                 "placeholder": field.placeholder or field.key,
                 "default": field.default,
                 "directions": list(field.directions),

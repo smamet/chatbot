@@ -58,59 +58,6 @@
     </form>
   </div>
 
-  {% if is_admin %}
-  <div class="card">
-    <h2 class="card-title">Permissions</h2>
-    <p class="text-muted">Admin only. Control which connectors and integrations editors may configure on this bot.</p>
-
-    <h3 class="form-section-title">Allowed connectors</h3>
-    <p class="text-muted">Unchecking a capability deactivates existing connectors of that type/direction.</p>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connector-policy">
-      <div class="checkbox-panel">
-        <div class="checkbox-panel__actions">
-          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="all">Select all</button>
-          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="none">Deselect all</button>
-        </div>
-        <div class="checkbox-grid checkbox-grid--stack">
-          {% for cap in connector_capabilities_ui %}
-          <div class="checkbox-row">
-            <input type="checkbox" name="allowed_connector" id="cap-{{ cap.key|replace(':', '-') }}"
-                   value="{{ cap.key }}" {% if cap.checked %}checked{% endif %}>
-            <label for="cap-{{ cap.key|replace(':', '-') }}">{{ cap.label }}</label>
-          </div>
-          {% endfor %}
-        </div>
-      </div>
-      <div class="form-actions form-actions--compact">
-        <button type="submit" class="btn-primary" data-loading="Saving…">Save connector policy</button>
-      </div>
-    </form>
-
-    <h3 class="form-section-title" style="margin-top:1.25rem">Allowed integrations</h3>
-    <p class="text-muted">Unchecking a type deactivates existing integrations of that type. The CAC40 Backtest tab appears only when CAC40 is allowed here and saved as Active on Integrations.</p>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integration-policy">
-      <div class="checkbox-panel">
-        <div class="checkbox-panel__actions">
-          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="all">Select all</button>
-          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="none">Deselect all</button>
-        </div>
-        <div class="checkbox-grid checkbox-grid--stack">
-          {% for cap in integration_capabilities_ui %}
-          <div class="checkbox-row">
-            <input type="checkbox" name="allowed_integration" id="int-{{ cap.key }}"
-                   value="{{ cap.key }}" {% if cap.checked %}checked{% endif %}>
-            <label for="int-{{ cap.key }}">{{ cap.label }}</label>
-          </div>
-          {% endfor %}
-        </div>
-      </div>
-      <div class="form-actions form-actions--compact">
-        <button type="submit" class="btn-primary" data-loading="Saving…">Save integration policy</button>
-      </div>
-    </form>
-  </div>
-  {% endif %}
-
   <div class="card">
     <h2 class="card-title">Prompt</h2>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/config">
@@ -643,7 +590,7 @@
     {% if not connector_schemas %}
     <p class="text-muted">No connector types are allowed for this bot. An admin can update the allowlist under Config.</p>
     {% else %}
-    <p class="text-muted">Use <strong>Edit</strong> on a row to load that connector below, change settings (including <strong>Process emails since</strong> for inbound email), then <strong>Save connector</strong>. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).</p>
+    <p class="text-muted" id="connector-form-hint">Use <strong>Edit</strong> on a row to load that connector below, change settings, then <strong>Save connector</strong>. Secret fields left blank keep their current value.</p>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form" data-bot-slug="{{ tenant.slug }}" data-process-since-default="{{ process_since_default }}">
       <div class="connector-flow" id="connector-flow" aria-hidden="false">
         <div class="connector-flow__node" id="flow-source">
@@ -780,6 +727,11 @@
           smtp_use_tls: false,
         };
         const greenmailBtn = document.getElementById('greenmail-autofill');
+        const formHint = document.getElementById('connector-form-hint');
+        const FORM_HINT_DEFAULT =
+          'Use Edit on a row to load that connector below, change settings, then Save connector. Secret fields left blank keep their current value.';
+        const FORM_HINT_EMAIL =
+          'Use Edit on a row to load that connector below, change settings (including Process emails since for inbound email), then Save connector. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).';
         let selectedAuthType = null;
 
         function directionsForType(ctype) {
@@ -936,6 +888,18 @@
           return ctype + ':' + direction;
         }
 
+        function connectorIsSaved(ctype, direction) {
+          if (Object.prototype.hasOwnProperty.call(saved, recordKey(ctype, direction))) {
+            return true;
+          }
+          // Legacy IG rows were stored as ig:in / ig:out before bidirectional.
+          return ctype === 'ig' && (
+            Object.prototype.hasOwnProperty.call(saved, 'ig:both')
+            || Object.prototype.hasOwnProperty.call(saved, 'ig:out')
+            || Object.prototype.hasOwnProperty.call(saved, 'ig:in')
+          );
+        }
+
         function recordFor(ctype, direction) {
           let rec = saved[recordKey(ctype, direction)];
           if (!rec && ctype === 'ig' && direction === 'both') {
@@ -977,11 +941,14 @@
           container.replaceChildren();
           const fields = allFields.filter((field) => fieldVisible(field, direction, provider, authType));
 
+          const hasSaved = connectorIsSaved(ctype, direction);
           for (const field of fields) {
+            const isSecret = field.secret || field.input_type === 'password';
+            const requireField = field.required && !(isSecret && hasSaved);
             const label = document.createElement('label');
             label.className = 'connector-field';
             label.appendChild(
-              document.createTextNode(field.label + (field.required ? ' *' : ''))
+              document.createTextNode(field.label + (requireField ? ' *' : ''))
             );
             let control;
             if (field.input_type === 'checkbox') {
@@ -1029,7 +996,6 @@
             } else {
               control = document.createElement('input');
               control.type = field.input_type || 'text';
-              control.placeholder = field.placeholder || '';
               if (field.input_type === 'datetime-local') {
                 control.step = '60';
               }
@@ -1038,7 +1004,16 @@
               control.name = field.key;
             }
             control.title = field.help || '';
-            if (field.required) control.required = true;
+            // Secrets stay in DB when left blank on update — don't block submit.
+            if (isSecret && hasSaved) {
+              control.placeholder = 'Leave blank to keep';
+              control.autocomplete = 'new-password';
+            } else if (field.input_type !== 'checkbox' && field.input_type !== 'select') {
+              control.placeholder = field.placeholder || '';
+            }
+            if (requireField) {
+              control.required = true;
+            }
             if (field.key === 'outbound_provider') {
               control.addEventListener('change', renderFields);
             }
@@ -1080,6 +1055,7 @@
             }
           }
           updateGreenmailButton();
+          updateFormHint();
           updateConnectorOAuthUi();
         }
 
@@ -1099,12 +1075,12 @@
         function updateConnectorOAuthUi() {
           const panel = document.getElementById('connector-oauth-panel');
           const testPanel = document.getElementById('connector-test-panel');
-          if (!panel) return;
           const ctype = typeSel.value;
           const authType = ctype === 'email' ? currentAuthType() : 'password';
           const isOauth = usesMailConnection(authType);
-          panel.hidden = ctype !== 'email' || !isOauth;
-          if (testPanel) testPanel.hidden = ctype !== 'email';
+          if (panel) panel.hidden = ctype !== 'email' || !isOauth;
+          // Email + IG support connection tests (IMAP/SMTP or IG login + prices).
+          if (testPanel) testPanel.hidden = !(ctype === 'email' || ctype === 'ig');
         }
 
         function setFieldValue(name, value) {
@@ -1117,17 +1093,27 @@
           }
         }
 
+        function updateFormHint() {
+          if (!formHint) return;
+          formHint.textContent =
+            typeSel.value === 'email' ? FORM_HINT_EMAIL : FORM_HINT_DEFAULT;
+        }
+
         function updateGreenmailButton() {
           if (!greenmailBtn) return;
           const show = typeSel.value === 'email';
           greenmailBtn.hidden = !show;
+          // Belt-and-suspenders: author button { display:inline-flex } can beat [hidden].
+          greenmailBtn.style.display = show ? '' : 'none';
+          if (!show) return;
           const direction = getDirection();
           greenmailBtn.textContent =
             direction === 'in' ? 'Fill GreenMail IMAP (dev)' : 'Fill Mailpit SMTP (dev)';
         }
 
         function fillGreenmail() {
-          typeSel.value = 'email';
+          // Dev presets are email-only (GreenMail IN / Mailpit OUT) — never IG.
+          if (typeSel.value !== 'email') return;
           const direction = getDirection();
           if (direction === 'out') {
             renderFields();

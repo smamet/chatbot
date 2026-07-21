@@ -262,6 +262,16 @@ button,
   line-height: 1.4;
 }
 
+/* Author `display: inline-flex` on buttons beats UA `[hidden] { display: none }`. */
+button[hidden],
+.btn[hidden],
+details[hidden],
+.connector-oauth-panel[hidden],
+#greenmail-autofill[hidden],
+#connector-test-panel[hidden] {
+  display: none !important;
+}
+
 button:not([class]),
 .btn-primary {
   background: var(--color-accent);
