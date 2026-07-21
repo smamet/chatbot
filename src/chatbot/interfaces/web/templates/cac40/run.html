@@ -2,7 +2,7 @@
 {% block body %}
 <section class="page-header">
   <div>
-    <p class="eyebrow"><a href="/dashboard/bots/{{ tenant.slug }}/cac40">CAC40 Backtest</a></p>
+    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40">← CAC40 Backtest</a></p>
     <h1>{{ run.run_id }}</h1>
     <p class="subtitle">Status: <span class="badge {{ run.state.status }}">{{ run.state.status }}</span>
       · Progress {{ '%.0f'|format((run.state.progress or 0) * 100) }}%
@@ -127,9 +127,14 @@
           {% for c in d.charts %}
           <figure class="cac40-chart">
             <figcaption>{{ c.tf }}</figcaption>
-            <a href="{{ c.url }}" target="_blank" rel="noopener">
+            <button type="button"
+                    class="cac40-chart__open"
+                    data-src="{{ c.url }}"
+                    data-caption="{{ c.tf }} · {{ d.ts }}"
+                    data-filename="{{ c.file }}"
+                    aria-label="Open chart {{ c.tf }} fullscreen">
               <img src="{{ c.url }}" alt="Chart {{ c.tf }} at {{ d.ts }}" loading="lazy">
-            </a>
+            </button>
           </figure>
           {% endfor %}
         </div>
@@ -198,4 +203,88 @@
   <meta http-equiv="refresh" content="10">
   {% endif %}
 </section>
+
+<dialog id="cac40-lightbox" class="cac40-lightbox" aria-label="Chart viewer">
+  <div class="cac40-lightbox__bar">
+    <p class="cac40-lightbox__caption" id="cac40-lightbox-caption"></p>
+    <div class="cac40-lightbox__bar-actions">
+      <a class="btn-secondary" id="cac40-lightbox-download" href="#" download>Download</a>
+      <button type="button" class="btn-secondary" id="cac40-lightbox-close" aria-label="Close">Close</button>
+    </div>
+  </div>
+  <div class="cac40-lightbox__stage">
+    <button type="button" class="cac40-lightbox__hit cac40-lightbox__hit--prev" id="cac40-lightbox-prev" aria-label="Previous chart"></button>
+    <img id="cac40-lightbox-img" class="cac40-lightbox__img" alt="">
+    <button type="button" class="cac40-lightbox__hit cac40-lightbox__hit--next" id="cac40-lightbox-next" aria-label="Next chart"></button>
+  </div>
+</dialog>
+
+<script>
+(function () {
+  const openers = Array.from(document.querySelectorAll('.cac40-chart__open'));
+  if (!openers.length) return;
+
+  const dialog = document.getElementById('cac40-lightbox');
+  const img = document.getElementById('cac40-lightbox-img');
+  const caption = document.getElementById('cac40-lightbox-caption');
+  const download = document.getElementById('cac40-lightbox-download');
+  const btnClose = document.getElementById('cac40-lightbox-close');
+  const btnPrev = document.getElementById('cac40-lightbox-prev');
+  const btnNext = document.getElementById('cac40-lightbox-next');
+  let index = 0;
+
+  function show(i) {
+    if (!openers.length) return;
+    index = (i + openers.length) % openers.length;
+    const el = openers[index];
+    const src = el.dataset.src || '';
+    const name = el.dataset.filename || 'chart.png';
+    img.src = src;
+    img.alt = el.dataset.caption || name;
+    caption.textContent = el.dataset.caption || name;
+    const sep = src.includes('?') ? '&' : '?';
+    download.href = src + sep + 'download=1';
+    download.setAttribute('download', name);
+  }
+
+  function openAt(i) {
+    show(i);
+    if (typeof dialog.showModal === 'function') {
+      dialog.showModal();
+    } else {
+      dialog.setAttribute('open', '');
+    }
+  }
+
+  function close() {
+    if (typeof dialog.close === 'function') {
+      dialog.close();
+    } else {
+      dialog.removeAttribute('open');
+    }
+  }
+
+  openers.forEach(function (btn, i) {
+    btn.addEventListener('click', function () { openAt(i); });
+  });
+  btnPrev.addEventListener('click', function (e) {
+    e.stopPropagation();
+    show(index - 1);
+  });
+  btnNext.addEventListener('click', function (e) {
+    e.stopPropagation();
+    show(index + 1);
+  });
+  btnClose.addEventListener('click', close);
+  dialog.addEventListener('click', function (e) {
+    if (e.target === dialog) close();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (!dialog.open) return;
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft') show(index - 1);
+    else if (e.key === 'ArrowRight') show(index + 1);
+  });
+})();
+</script>
 {% endblock %}

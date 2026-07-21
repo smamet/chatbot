@@ -362,6 +362,7 @@ def cac40_run_chart(
     user_service: UserService = Depends(get_user_service),
     settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
+    download: int = 0,
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
@@ -369,7 +370,10 @@ def cac40_run_chart(
     path = resolve_chart_file(settings, slug, run_id, chart_key, filename)
     if path is None:
         raise HTTPException(status_code=404, detail="Chart not found")
-    return FileResponse(path, media_type="image/png", filename=filename)
+    # Default: inline display for <img> / lightbox. ?download=1 forces attachment.
+    if download:
+        return FileResponse(path, media_type="image/png", filename=filename)
+    return FileResponse(path, media_type="image/png")
 
 
 @router.post("/bots/{slug}/cac40/runs/{run_id}/delete")

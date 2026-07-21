@@ -2,7 +2,7 @@
 {% block body %}
 <section class="page-header">
   <div>
-    <p class="eyebrow"><a href="/dashboard/bots/{{ tenant.slug }}">{{ tenant.name }}</a> · Integrations</p>
+    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}">{{ tenant.name }}</a> · Integrations</p>
     <h1>{{ bot_symbol or 'CAC40' }} Backtest</h1>
     <p class="subtitle">
       Mean-reversion hedge-mode simulation (HedgeLedger). One bot = one symbol
