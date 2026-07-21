@@ -151,6 +151,300 @@ def _test_ig(config: dict) -> ConnectorTestResult:
         ig.close()
 
 
+def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> ConnectorTestResult:
+    """
+    DEMO-only smoke test: place far working orders, wait, cancel them.
+
+    No market open/close — only LIMIT/STOP working orders away from mid.
+    """
+    import httpx
+    import time
+
+    from chatbot.cac40.config import Cac40Config
+    from chatbot.cac40.ig_connector import IgAuthError, IgConnector, _IG_HOSTS, format_ig_http_error
+    from chatbot.cac40.models import OrderPurpose, OrderType, Side, WorkingOrder
+
+    api_key = str(config.get("api_key", "")).strip()
+    username = str(config.get("username", "")).strip()
+    password = str(config.get("password", "")).strip()
+    if not api_key or not username or not password:
+        return ConnectorTestResult(
+            ok=False,
+            message="IG API key, username, and password are required (save first, or fill them).",
+            error="missing_credentials",
+        )
+    acc_type = str(config.get("acc_type", "DEMO") or "DEMO").strip().upper()
+    if acc_type != "DEMO":
+        return ConnectorTestResult(
+            ok=False,
+            message=(
+                "Working-order test is DEMO-only for safety. "
+                "Switch Environment to DEMO (and use a Demo API key) before running this."
+            ),
+            error="live_blocked",
+        )
+    epic = str(config.get("epic", "") or "IX.D.CAC.DAILY.IP").strip()
+    account_id = str(config.get("account_id", "")).strip()
+    size = float(config.get("order_size") or 1.0)
+    if size <= 0:
+        size = 1.0
+    context = (
+        f"env={acc_type}\n"
+        f"host={_IG_HOSTS.get(acc_type)}\n"
+        f"epic={epic}\n"
+        f"account_id={account_id or '(none)'}\n"
+        f"hold_seconds={hold_seconds}"
+    )
+    cfg = Cac40Config(
+        ig_api_key=api_key,
+        ig_username=username,
+        ig_password=password,
+        ig_account_id=account_id,
+        ig_acc_type=acc_type,
+        epic=epic,
+        order_size=size,
+    )
+    ig = IgConnector(cfg, dry_run=False)
+    placed: list[WorkingOrder] = []
+    lines: list[str] = []
+    try:
+        ig.login()
+        if not ig._cst:
+            return ConnectorTestResult(
+                ok=False, message="IG login failed (no session tokens).", error="no_session"
+            )
+        account = ig.get_active_account()
+        account_type = str(account.get("accountType") or "").strip().upper() or "—"
+        account_ccy = str(
+            account.get("currency") or account.get("preferredCurrency") or ""
+        ).strip().upper() or "—"
+        configured_epic = epic
+        epic_hint = ig.epic_product_hint(epic)
+        if not ig.epic_compatible_with_account(epic=epic, account_type=account_type):
+            lines.append(
+                f"Epic/account mismatch: account={account_type} ({account_ccy}) "
+                f"but epic {epic} looks like {epic_hint} "
+                f"(DAILY/GBP-only = spread bet; CFS/IFS/EUR = CFD)."
+            )
+            alt, seen = ig.find_compatible_epic(account_type=account_type)
+            if alt and alt != epic:
+                lines.append(f"Switching test epic {epic} → {alt}")
+                epic = alt
+                ig.config.epic = alt
+                if hasattr(ig, "_market_cache"):
+                    ig._market_cache.clear()
+            else:
+                lines.append(
+                    "Could not auto-find a compatible France 40 epic. "
+                    "In IG, open France 40 on this CFD account, then copy its epic "
+                    "(often IX.D.CAC.IFS.IP or similar — not …DAILY.IP)."
+                )
+                if seen:
+                    lines.append(f"Search saw: {', '.join(seen[:12])}")
+                lines.append("")
+                lines.append(
+                    f"env={acc_type}\naccount_type={account_type}\n"
+                    f"configured_epic={configured_epic}\nepic_hint={epic_hint}"
+                )
+                return ConnectorTestResult(
+                    ok=False,
+                    message="\n".join(lines),
+                    error="epic_account_mismatch",
+                )
+
+        mid = ig.sync_price()
+        if mid <= 0:
+            return ConnectorTestResult(
+                ok=False, message="Could not read a mid price for the epic.", error="no_price"
+            )
+        currency = ig.resolve_order_currency()
+        min_size = ig.resolve_min_deal_size()
+        expiry = ig.resolve_order_expiry()
+        allowed_ccy = ig.market_currency_codes()
+        market = ig.get_market()
+        snapshot = (market.get("snapshot") or {}) if isinstance(market, dict) else {}
+        market_status = str(snapshot.get("marketStatus") or "—")
+        size = max(size, min_size)
+        offset = max(80.0, float(ig.snap_level(mid * 0.01)))
+        specs = [
+            (OrderType.LIMIT, Side.BUY, ig.snap_level(mid - offset), "BUY LIMIT below"),
+            (OrderType.LIMIT, Side.SELL, ig.snap_level(mid + offset), "SELL LIMIT above"),
+            (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above"),
+            (OrderType.STOP, Side.SELL, ig.snap_level(mid - offset), "SELL STOP below"),
+        ]
+        # Only probe currencies the market actually lists (plus resolved pick).
+        currency_candidates: list[str] = []
+        for c in [currency, *allowed_ccy]:
+            c = str(c or "").strip().upper()
+            if c and c not in currency_candidates:
+                currency_candidates.append(c)
+        if not currency_candidates:
+            currency_candidates = [currency or "EUR"]
+
+        context = (
+            f"env={acc_type}\n"
+            f"host={_IG_HOSTS.get(acc_type)}\n"
+            f"account_type={account_type}\n"
+            f"account_currency={account_ccy}\n"
+            f"configured_epic={configured_epic}\n"
+            f"epic={epic}\n"
+            f"epic_hint={ig.epic_product_hint(epic)}\n"
+            f"account_id={account_id or '(none)'}\n"
+            f"market_status={market_status}\n"
+            f"expiry={expiry}\n"
+            f"allowed_currencies={','.join(allowed_ccy) or '—'}\n"
+            f"currency_tried={','.join(currency_candidates)}\n"
+            f"size={size} (minDealSize={min_size})\n"
+            f"hold_seconds={hold_seconds}"
+        )
+        lines.append(f"IG DEMO working-order test · {epic}")
+        if epic != configured_epic:
+            lines.append(f"(configured epic was {configured_epic})")
+        lines.append(
+            f"Account={account_type} {account_ccy} · Mid≈{mid:.2f} · offset={offset:.1f} · "
+            f"size={size} · expiry={expiry} · market={market_status}"
+        )
+        lines.append(f"Currencies allowed by market: {', '.join(allowed_ccy) or '—'}")
+        lines.append("")
+
+        working_currency = currency_candidates[0]
+        probe_type, probe_side, probe_level, probe_label = specs[0]
+        probe_ok = False
+        for ccy in currency_candidates:
+            try:
+                order = ig.place_order(
+                    WorkingOrder(
+                        id="",
+                        type=probe_type,
+                        side=probe_side,
+                        level=float(probe_level),
+                        size=size,
+                        purpose=OrderPurpose.ENTRY,
+                    ),
+                    currency=ccy,
+                )
+                placed.append(order)
+                working_currency = ccy
+                probe_ok = True
+                lines.append(
+                    f"ACCEPTED {probe_label} @ {order.level:.2f} · currency={ccy} "
+                    f"· dealId={order.deal_id or '—'} · ref={order.client_ref or '—'}"
+                )
+                break
+            except IgAuthError as exc:
+                lines.append(f"REJECTED {probe_label} with currency={ccy}: {exc}")
+        if not probe_ok:
+            lines.append("")
+            lines.append(
+                "Could not place a working order. If account is CFD, set Epic to the "
+                "France 40 CFD instrument (not …DAILY.IP). Save the connector, then retry."
+            )
+            lines.append("")
+            lines.append(context)
+            return ConnectorTestResult(ok=False, message="\n".join(lines), error=context)
+
+        accepted = 1
+        rejected = 0
+        for otype, side, level, label in specs[1:]:
+            try:
+                order = ig.place_order(
+                    WorkingOrder(
+                        id="",
+                        type=otype,
+                        side=side,
+                        level=float(level),
+                        size=size,
+                        purpose=OrderPurpose.ENTRY,
+                    ),
+                    currency=working_currency,
+                )
+                placed.append(order)
+                accepted += 1
+                lines.append(
+                    f"ACCEPTED {label} @ {order.level:.2f} · currency={working_currency} "
+                    f"· dealId={order.deal_id or '—'} · ref={order.client_ref or '—'}"
+                )
+            except IgAuthError as exc:
+                rejected += 1
+                lines.append(f"REJECTED {label} @ {level:.2f}: {exc}")
+        lines.append("")
+        lines.append(f"Using currency={working_currency} for this test.")
+        lines.append("")
+        open_orders = ig.list_working_orders()
+        lines.append(f"Open working orders on account now: {len(open_orders)}")
+        for row in open_orders:
+            lines.append(
+                f"  · dealId={row.get('dealId') or '—'} "
+                f"{row.get('direction') or ''} {row.get('orderType') or row.get('type') or ''} "
+                f"@ {row.get('orderLevel') or row.get('level') or '—'} "
+                f"epic={row.get('epic') or '—'}"
+            )
+        if not open_orders:
+            lines.append("  (none)")
+        lines.append("")
+        lines.append(f"Holding {hold_seconds:.0f}s before cancel…")
+        time.sleep(max(0.5, float(hold_seconds)))
+        lines.append("")
+        open_after = ig.list_working_orders()
+        cancel_ids = [
+            str(row.get("dealId") or "").strip()
+            for row in open_after
+            if str(row.get("dealId") or "").strip()
+        ]
+        if not cancel_ids:
+            cancel_ids = [o.deal_id for o in placed if o.deal_id]
+        cancel_ok = 0
+        cancel_fail = 0
+        if not cancel_ids:
+            lines.append("Nothing to cancel (no open working orders / no dealIds).")
+        for deal_id in cancel_ids:
+            try:
+                ig.cancel_working_order(deal_id)
+                cancel_ok += 1
+                lines.append(f"Cancelled dealId={deal_id}")
+            except Exception as exc:
+                cancel_fail += 1
+                lines.append(f"Cancel FAILED dealId={deal_id}: {exc}")
+        remaining = ig.list_working_orders()
+        lines.append("")
+        lines.append(
+            f"Done · accepted={accepted} · rejected={rejected} · "
+            f"cancelled={cancel_ok} · cancel_failed={cancel_fail} · "
+            f"still_open={len(remaining)}"
+        )
+        lines.append("")
+        lines.append(context)
+        ok = accepted > 0 and rejected == 0 and cancel_fail == 0 and len(remaining) == 0
+        return ConnectorTestResult(ok=ok, message="\n".join(lines), error=None if ok else context)
+    except IgAuthError as exc:
+        return ConnectorTestResult(ok=False, message=str(exc), error=context)
+    except httpx.HTTPStatusError as exc:
+        detail = format_ig_http_error(exc.response, action="request", url=str(exc.request.url))
+        return ConnectorTestResult(ok=False, message=detail, error=context)
+    except httpx.RequestError as exc:
+        return ConnectorTestResult(ok=False, message=f"IG network error: {exc}", error=context)
+    except Exception as exc:
+        try:
+            for row in ig.list_working_orders():
+                did = str(row.get("dealId") or "").strip()
+                if did:
+                    try:
+                        ig.cancel_working_order(did)
+                    except Exception:
+                        pass
+        except Exception:
+            pass
+        for order in placed:
+            if order.deal_id:
+                try:
+                    ig.cancel_working_order(order.deal_id)
+                except Exception:
+                    pass
+        return ConnectorTestResult(ok=False, message=f"Working-order test failed: {exc}", error=context)
+    finally:
+        ig.close()
+
+
 def run_mail_connection_test(
     connection: MailConnection,
     *,

@@ -670,11 +670,49 @@
       <details id="connector-test-panel" class="integration-test connector-test" hidden>
         <summary>Test connection</summary>
         <div class="integration-test__body">
-          <button type="button" class="btn-secondary btn-sm" id="connector-test-btn" data-slug="{{ tenant.slug }}">Test connection</button>
+          <div class="connector-test-actions">
+            <button type="button" class="btn-secondary btn-sm" id="connector-test-btn" data-slug="{{ tenant.slug }}">Test connection</button>
+            <button type="button" class="btn-secondary btn-sm" id="connector-test-orders-btn" data-slug="{{ tenant.slug }}" hidden>Test working orders</button>
+          </div>
+          <p class="field-hint" id="connector-test-orders-hint" hidden>
+            Places BUY/SELL LIMIT + BUY/SELL STOP far from market on <strong>DEMO</strong>, waits 15s (watch IG Working Orders), then cancels them. No market open/close.
+          </p>
           <pre class="connector-test-result integration-test-result" hidden></pre>
         </div>
       </details>
     </form>
+
+    <dialog id="ig-order-test-dialog" class="confirm-dialog" aria-labelledby="ig-order-test-title">
+      <div class="confirm-dialog__form">
+        <header class="confirm-dialog__header">
+          <p class="confirm-dialog__eyebrow"><span class="badge done">DEMO only</span></p>
+          <h3 id="ig-order-test-title">Test IG working orders</h3>
+          <p class="confirm-dialog__lead">Uses your form credentials and epic. Orders stay open ~15s so you can see them on IG, then they are cancelled.</p>
+        </header>
+        <div class="confirm-dialog__body">
+          <ol class="confirm-dialog__steps">
+            <li>
+              <span class="confirm-dialog__step-num">1</span>
+              <span>Place 4 working orders far from mid (BUY/SELL LIMIT + BUY/SELL STOP)</span>
+            </li>
+            <li>
+              <span class="confirm-dialog__step-num">2</span>
+              <span>Wait 15 seconds — no market open, close, or fills</span>
+            </li>
+            <li>
+              <span class="confirm-dialog__step-num">3</span>
+              <span>Cancel all four orders and report deal IDs here</span>
+            </li>
+          </ol>
+          <p class="confirm-dialog__note">LIVE is blocked. Confirm Environment = DEMO and the Demo API key before continuing. Leave the Working Orders tab open on IG while the test runs.</p>
+        </div>
+        <div class="confirm-dialog__actions">
+          <button type="button" class="btn-secondary" id="ig-order-test-cancel">Cancel</button>
+          <button type="button" class="btn-primary" id="ig-order-test-confirm">Run test</button>
+        </div>
+      </div>
+    </dialog>
+
     <script>
       (function () {
         const schemas = JSON.parse(document.getElementById('connector-schemas-data').textContent);
@@ -1075,12 +1113,17 @@
         function updateConnectorOAuthUi() {
           const panel = document.getElementById('connector-oauth-panel');
           const testPanel = document.getElementById('connector-test-panel');
+          const ordersBtn = document.getElementById('connector-test-orders-btn');
+          const ordersHint = document.getElementById('connector-test-orders-hint');
           const ctype = typeSel.value;
           const authType = ctype === 'email' ? currentAuthType() : 'password';
           const isOauth = usesMailConnection(authType);
           if (panel) panel.hidden = ctype !== 'email' || !isOauth;
           // Email + IG support connection tests (IMAP/SMTP or IG login + prices).
           if (testPanel) testPanel.hidden = !(ctype === 'email' || ctype === 'ig');
+          const showOrders = ctype === 'ig';
+          if (ordersBtn) ordersBtn.hidden = !showOrders;
+          if (ordersHint) ordersHint.hidden = !showOrders;
         }
 
         function setFieldValue(name, value) {

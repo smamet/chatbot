@@ -392,7 +392,11 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
         ConnectorField(
             key="epic",
             label="Epic",
-            help="IG market epic for this bot's symbol (match the CAC40 integration epic).",
+            help=(
+                "IG market epic for this bot. Must match account type: "
+                "CFD accounts need a CFD epic (often IX.D.CAC.IFS.IP / …CFS…); "
+                "…DAILY.IP is usually UK spread bet (GBP)."
+            ),
             default="IX.D.CAC.DAILY.IP",
             directions=(ConnectorDirection.BOTH.value,),
         ),

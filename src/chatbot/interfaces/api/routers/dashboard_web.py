@@ -138,7 +138,11 @@ from chatbot.adapters.oauth_state import (
     verify_connector_oauth_state,
     verify_mail_connection_oauth_state,
 )
-from chatbot.application.connector_test_service import run_connector_connection_test, run_mail_connection_test
+from chatbot.application.connector_test_service import (
+    run_connector_connection_test,
+    run_ig_working_order_test,
+    run_mail_connection_test,
+)
 from chatbot.application.mail_inbox_preview_service import preview_mail_connection_inbox
 from chatbot.application.mail_imap_seen_service import mark_imap_seen_for_pending_reply
 from chatbot.application.mail_connection_service import (
@@ -2323,6 +2327,37 @@ async def test_connector_connection(
     result = run_connector_connection_test(
         connector_type, direction, cfg, session=session, tenant_id=tenant.id, settings=settings
     )
+    return JSONResponse(result.to_dict())
+
+
+@router.post("/bots/{slug}/connectors/test-orders")
+async def test_connector_working_orders(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    """DEMO-only: place far working orders, wait 5s, cancel them."""
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    connector_type = str(form.get("connector_type", "")).strip()
+    direction = str(form.get("direction", "both")).strip()
+    if connector_type != "ig":
+        return JSONResponse(
+            {"ok": False, "message": "Working-order test is only available for IG.", "error": "unsupported"},
+            status_code=400,
+        )
+    _ctype, _cdir, _cmode, cfg, _outbound_provider = await _connector_config_from_request(
+        form,
+        tenant_id=tenant.id,
+        session=session,
+        connector_type=connector_type,
+        direction=direction,
+    )
+    result = run_ig_working_order_test(cfg, hold_seconds=15.0)
     return JSONResponse(result.to_dict())
 
 

@@ -300,21 +300,360 @@ class IgConnector:
             self.sync_price()
         return self.ledger.get_snapshot()
 
-    def place_order(self, order: WorkingOrder) -> WorkingOrder:
+    def get_accounts(self) -> list[dict[str, Any]]:
+        if not self._cst:
+            return []
+        url = f"{self.base_url}/accounts"
+        resp = self._client.get(url, headers=self._headers(version="1"))
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="accounts", url=url))
+        payload = resp.json() if resp.content else {}
+        rows = (payload or {}).get("accounts") or []
+        return [r for r in rows if isinstance(r, dict)]
+
+    def get_active_account(self) -> dict[str, Any]:
+        """Return the account matching ig_account_id, else preferred/enabled."""
+        accounts = self.get_accounts()
+        wanted = str(self.config.ig_account_id or "").strip()
+        if wanted:
+            for acc in accounts:
+                if str(acc.get("accountId") or "").strip() == wanted:
+                    return acc
+        for acc in accounts:
+            if acc.get("preferred"):
+                return acc
+        for acc in accounts:
+            if str(acc.get("accountStatus") or "").upper() == "ENABLED":
+                return acc
+        return accounts[0] if accounts else {}
+
+    def resolve_account_type(self) -> str:
+        """CFD | SPREADBET | PHYSICAL | … from GET /accounts."""
+        acc = self.get_active_account()
+        return str(acc.get("accountType") or "").strip().upper()
+
+    def get_market(self, epic: str | None = None) -> dict[str, Any]:
+        """GET /markets/{epic} — instrument currencies, min size, etc."""
+        if not self._cst:
+            return {}
+        ep = (epic or self.config.epic or "").strip()
+        if not ep:
+            return {}
+        if not hasattr(self, "_market_cache"):
+            self._market_cache: dict[str, dict[str, Any]] = {}
+        if ep in self._market_cache:
+            return self._market_cache[ep]
+        url = f"{self.base_url}/markets/{ep}"
+        resp = self._client.get(url, headers=self._headers(version="3"))
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="markets", url=url))
+        payload = resp.json() if resp.content else {}
+        market = payload if isinstance(payload, dict) else {}
+        self._market_cache[ep] = market
+        return market
+
+    def search_markets(self, search_term: str) -> list[dict[str, Any]]:
+        """GET /markets?searchTerm= — light market rows (epic, instrumentName, …)."""
+        term = (search_term or "").strip()
+        if not term or not self._cst:
+            return []
+        url = f"{self.base_url}/markets"
+        resp = self._client.get(
+            url,
+            headers=self._headers(version="1"),
+            params={"searchTerm": term},
+        )
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="search_markets", url=url))
+        payload = resp.json() if resp.content else {}
+        rows = (payload or {}).get("markets") or []
+        return [r for r in rows if isinstance(r, dict)]
+
+    def market_currency_codes(self, *, epic: str | None = None) -> list[str]:
+        market = self.get_market(epic)
+        instrument = (market.get("instrument") or {}) if isinstance(market, dict) else {}
+        codes: list[str] = []
+        for row in instrument.get("currencies") or []:
+            if isinstance(row, dict) and row.get("code"):
+                code = str(row["code"]).strip().upper()
+                if code and code not in codes:
+                    codes.append(code)
+        return codes
+
+    def epic_product_hint(self, epic: str | None = None, *, market: dict[str, Any] | None = None) -> str:
+        """
+        Rough product family for an epic: SPREADBET | CFD | UNKNOWN.
+
+        DAILY.* / GBP-only index epics are typically UK spread bets.
+        CFS / IFS / IDF / CASH tags (and EUR/USD currencies) are typically CFDs.
+        """
+        ep = (epic or self.config.epic or "").strip().upper()
+        parts = ep.split(".")
+        tag = parts[3] if len(parts) >= 4 else ""
+        if tag in ("DAILY", "TODAY") or "DAILY" in ep:
+            return "SPREADBET"
+        if tag in ("CFS", "IFS", "IDF", "IFA", "CASH", "CFD") or any(
+            t in ep for t in (".CFS.", ".IFS.", ".IDF.", ".CASH.", ".CFD.")
+        ):
+            return "CFD"
+        allowed = self.market_currency_codes(epic=epic) if market is None else []
+        if market is not None:
+            instrument = (market.get("instrument") or {}) if isinstance(market, dict) else {}
+            for row in instrument.get("currencies") or []:
+                if isinstance(row, dict) and row.get("code"):
+                    code = str(row["code"]).strip().upper()
+                    if code and code not in allowed:
+                        allowed.append(code)
+        if allowed == ["GBP"]:
+            return "SPREADBET"
+        if any(c in allowed for c in ("EUR", "USD")) and "GBP" not in allowed:
+            return "CFD"
+        return "UNKNOWN"
+
+    def epic_compatible_with_account(
+        self, *, epic: str | None = None, account_type: str | None = None
+    ) -> bool:
+        """False when CFD account + spread-bet epic (or the reverse)."""
+        acc = (account_type or self.resolve_account_type() or "").strip().upper()
+        hint = self.epic_product_hint(epic)
+        if not acc or hint == "UNKNOWN":
+            return True
+        if acc == "CFD" and hint == "SPREADBET":
+            return False
+        if acc == "SPREADBET" and hint == "CFD":
+            return False
+        return True
+
+    def find_compatible_epic(
+        self,
+        *,
+        search_terms: list[str] | None = None,
+        account_type: str | None = None,
+    ) -> tuple[str | None, list[str]]:
+        """
+        Search IG markets for an epic matching the account product type.
+
+        Returns (chosen_epic_or_None, candidate_epics_seen).
+        """
+        acc = (account_type or self.resolve_account_type() or "").strip().upper()
+        want_sb = acc == "SPREADBET"
+        want_cfd = acc == "CFD"
+        terms = search_terms or ["France 40", "CAC 40", "CAC40"]
+        seen: list[str] = []
+        candidates: list[tuple[int, str]] = []
+        for term in terms:
+            try:
+                rows = self.search_markets(term)
+            except IgApiError:
+                continue
+            for row in rows:
+                ep = str(row.get("epic") or "").strip()
+                if not ep or ep in seen:
+                    continue
+                seen.append(ep)
+                hint = self.epic_product_hint(ep)
+                name = str(row.get("instrumentName") or "").upper()
+                status = str(row.get("marketStatus") or "").upper()
+                score = 0
+                if want_cfd and hint == "CFD":
+                    score += 10
+                if want_sb and hint == "SPREADBET":
+                    score += 10
+                if want_cfd and hint == "SPREADBET":
+                    score -= 20
+                if want_sb and hint == "CFD":
+                    score -= 20
+                if "FRANCE 40" in name or "CAC" in name:
+                    score += 3
+                if status == "TRADEABLE":
+                    score += 2
+                if score > 0:
+                    candidates.append((score, ep))
+        candidates.sort(key=lambda t: (-t[0], t[1]))
+        chosen = candidates[0][1] if candidates else None
+        return chosen, seen
+
+    def resolve_order_currency(self, *, epic: str | None = None) -> str:
+        """Pick a currency IG accepts for working orders on this epic/account."""
+        configured = str(getattr(self.config, "ig_currency", "") or "").strip().upper()
+        if configured:
+            return configured
+        allowed = self.market_currency_codes(epic=epic)
+        account_ccy = ""
+        try:
+            acc = self.get_active_account()
+            account_ccy = str(
+                acc.get("currency") or acc.get("preferredCurrency") or ""
+            ).strip().upper()
+        except IgApiError:
+            account_ccy = ""
+        if account_ccy and (not allowed or account_ccy in allowed):
+            return account_ccy
+        for prefer in ("EUR", "USD", "GBP"):
+            if prefer in allowed:
+                return prefer
+        return allowed[0] if allowed else (account_ccy or "EUR")
+
+    def resolve_order_expiry(self, *, epic: str | None = None) -> str:
+        """
+        Instrument expiry for working orders.
+
+        Spread bets (DAILY) usually need DFB. Undated CFDs use "-".
+        Prefer the market's own expiry; only default when missing.
+        """
+        market = self.get_market(epic)
+        instrument = (market.get("instrument") or {}) if isinstance(market, dict) else {}
+        expiry = str(instrument.get("expiry") or "").strip()
+        if expiry and expiry not in ("null", "None"):
+            return expiry
+        hint = self.epic_product_hint(epic, market=market)
+        return "DFB" if hint == "SPREADBET" else "-"
+
+    def resolve_min_deal_size(self, *, epic: str | None = None) -> float:
+        market = self.get_market(epic)
+        rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
+        min_deal = rules.get("minDealSize") or {}
+        if isinstance(min_deal, dict) and min_deal.get("value") is not None:
+            try:
+                return float(min_deal["value"])
+            except (TypeError, ValueError):
+                pass
+        return float(self.config.order_size or 1.0)
+
+    def resolve_price_step(self, *, epic: str | None = None) -> float:
+        """Minimum price increment from dealingRules (fallback 0.1 for indices)."""
+        market = self.get_market(epic)
+        rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
+        for key in ("minStepDistance", "minDealDistance", "minNormalStopOrLimitDistance"):
+            row = rules.get(key) or {}
+            if isinstance(row, dict) and row.get("value") is not None:
+                try:
+                    step = float(row["value"])
+                    if step > 0:
+                        return step
+                except (TypeError, ValueError):
+                    pass
+        return 0.1
+
+    def snap_level(self, level: float, *, epic: str | None = None) -> float:
+        """Round a price level to the instrument step (avoids float noise like …000001)."""
+        from decimal import Decimal, ROUND_HALF_UP
+
+        step = self.resolve_price_step(epic=epic)
+        if step <= 0:
+            return float(level)
+        d_level = Decimal(str(level))
+        d_step = Decimal(str(step))
+        snapped = (d_level / d_step).quantize(Decimal("1"), rounding=ROUND_HALF_UP) * d_step
+        # Keep a sensible number of decimals for JSON (no binary float junk).
+        return float(snapped)
+
+    def place_order(self, order: WorkingOrder, *, currency: str | None = None) -> WorkingOrder:
         placed = self.ledger.place_order(order)
         if self.dry_run or not self._cst:
             logger.info("IG dry-run place %s", placed.to_dict())
             return placed
-        body = self._ig_working_order_body(placed)
+        body = self._ig_working_order_body(placed, currency=currency)
         resp = self._client.post(
             f"{self.base_url}/workingorders/otc",
             headers=self._headers(version="2"),
             json=body,
         )
-        resp.raise_for_status()
-        deal = resp.json()
-        placed.client_ref = str(deal.get("dealReference") or placed.client_ref)
+        if resp.is_error:
+            raise IgApiError(
+                format_ig_http_error(resp, action="place_working_order", url=str(resp.request.url))
+            )
+        deal = resp.json() if resp.content else {}
+        placed.client_ref = str((deal or {}).get("dealReference") or placed.client_ref)
+        if placed.client_ref:
+            confirmed = self.confirm_deal(placed.client_ref)
+            deal_status = str(confirmed.get("dealStatus") or "").upper()
+            reason = str(confirmed.get("reason") or "").strip()
+            placed.deal_id = str(confirmed.get("dealId") or "")
+            if placed.id in self.ledger.working_orders:
+                self.ledger.working_orders[placed.id].client_ref = placed.client_ref
+                self.ledger.working_orders[placed.id].deal_id = placed.deal_id
+            if deal_status and deal_status != "ACCEPTED":
+                raise IgApiError(
+                    "IG working order rejected: "
+                    f"dealStatus={deal_status or '—'} reason={reason or '—'} "
+                    f"dealId={placed.deal_id or '—'} "
+                    f"currency={body.get('currencyCode')} expiry={body.get('expiry')} "
+                    f"forceOpen={body.get('forceOpen')} "
+                    f"({placed.side.value} {placed.type.value} @ {placed.level}) "
+                    f"confirm={confirmed}"
+                )
         return placed
+
+    def confirm_deal(self, deal_reference: str, *, retries: int = 8, pause: float = 0.35) -> dict[str, Any]:
+        """Poll GET /confirms/{dealReference} until dealStatus is present."""
+        ref = (deal_reference or "").strip()
+        if not ref or not self._cst:
+            return {}
+        url = f"{self.base_url}/confirms/{ref}"
+        last: dict[str, Any] = {}
+        for _attempt in range(max(1, retries)):
+            resp = self._client.get(url, headers=self._headers(version="1"))
+            if resp.status_code == 404:
+                time.sleep(pause)
+                continue
+            if resp.is_error:
+                raise IgApiError(format_ig_http_error(resp, action="confirm_deal", url=url))
+            payload = resp.json() if resp.content else {}
+            last = payload if isinstance(payload, dict) else {}
+            # Wait until IG has finished deciding (ACCEPTED or REJECTED).
+            if last.get("dealStatus"):
+                return last
+            time.sleep(pause)
+        return last
+
+    def list_working_orders(self) -> list[dict[str, Any]]:
+        """Return IG working-order rows for the active account."""
+        if not self._cst:
+            return []
+        url = f"{self.base_url}/workingorders"
+        resp = self._client.get(url, headers=self._headers(version="2"))
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="list_working_orders", url=url))
+        payload = resp.json() if resp.content else {}
+        rows = (payload or {}).get("workingOrders") or []
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            data = row.get("workingOrderData") or row
+            if isinstance(data, dict):
+                out.append(data)
+        return out
+
+    def cancel_working_order(self, deal_id: str) -> dict[str, Any]:
+        """DELETE /workingorders/otc/{dealId}."""
+        did = (deal_id or "").strip()
+        if not did:
+            raise IgApiError("IG cancel requires dealId")
+        if self.dry_run or not self._cst:
+            logger.info("IG dry-run cancel dealId=%s", did)
+            return {"dealId": did, "dry_run": True}
+        url = f"{self.base_url}/workingorders/otc/{did}"
+        # API v1 and v2 both exist; try v2 then v1.
+        last_exc: IgApiError | None = None
+        for version in ("2", "1"):
+            resp = self._client.delete(url, headers=self._headers(version=version))
+            if not resp.is_error:
+                payload = resp.json() if resp.content else {}
+                return payload if isinstance(payload, dict) else {"raw": payload}
+            last_exc = IgApiError(
+                format_ig_http_error(resp, action="cancel_working_order", url=url)
+            )
+            code = ""
+            try:
+                code = str((resp.json() or {}).get("errorCode") or "")
+            except Exception:
+                pass
+            if "not.found" not in code.lower():
+                raise last_exc
+        assert last_exc is not None
+        raise last_exc
 
     def amend_order(self, order_id: str, *, level: float) -> WorkingOrder:
         order = self.ledger.amend_order(order_id, level=level)
@@ -325,10 +664,16 @@ class IgConnector:
         return order
 
     def cancel_order(self, order_id: str) -> None:
+        order = self.ledger.working_orders.get(order_id)
+        deal_id = (order.deal_id if order else "") or ""
         self.ledger.cancel_order(order_id)
         if self.dry_run or not self._cst:
             return
-        logger.info("IG cancel requested for %s", order_id)
+        if not deal_id:
+            # Best-effort: match by client_ref via open working orders
+            logger.warning("IG cancel skipped (no dealId) for local order %s", order_id)
+            return
+        self.cancel_working_order(deal_id)
 
     def close_position(
         self,
@@ -364,17 +709,24 @@ class IgConnector:
     def market_close(self, position_id: str) -> None:
         self.ledger.market_close(position_id)
 
-    def _ig_working_order_body(self, order: WorkingOrder) -> dict[str, Any]:
+    def _ig_working_order_body(
+        self, order: WorkingOrder, *, currency: str | None = None
+    ) -> dict[str, Any]:
+        ccy = (currency or self.resolve_order_currency()).strip().upper()
+        expiry = self.resolve_order_expiry()
+        level = self.snap_level(float(order.level))
+        order.level = level
         return {
             "epic": self.config.epic,
-            "expiry": "-",
+            "expiry": expiry,
             "direction": "BUY" if order.side == Side.BUY else "SELL",
-            "size": order.size,
-            "level": order.level,
+            "size": float(order.size),
+            "level": level,
             "type": "LIMIT" if order.type == OrderType.LIMIT else "STOP",
-            "currencyCode": "EUR",
+            "currencyCode": ccy,
             "timeInForce": "GOOD_TILL_CANCELLED",
             "guaranteedStop": False,
+            # IG requires forceOpen=true for LIMIT working orders.
             "forceOpen": True,
         }
 

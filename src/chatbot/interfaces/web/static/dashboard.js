@@ -704,7 +704,7 @@
   if (connectorTestBtn) {
     connectorTestBtn.addEventListener("click", async () => {
       const form = document.getElementById("connector-form");
-      const resultEl = document.querySelector(".connector-test-result");
+      const resultEl = document.querySelector("#connector-test-panel .connector-test-result");
       if (!form || !resultEl) return;
       const slug = connectorTestBtn.dataset.slug;
       const fd = new FormData(form);
@@ -731,6 +731,78 @@
       } finally {
         connectorTestBtn.disabled = false;
       }
+    });
+  }
+
+  const connectorOrdersBtn = document.getElementById("connector-test-orders-btn");
+  const igOrderDialog = document.getElementById("ig-order-test-dialog");
+  const igOrderConfirm = document.getElementById("ig-order-test-confirm");
+  const igOrderCancel = document.getElementById("ig-order-test-cancel");
+
+  function closeIgOrderDialog() {
+    if (!igOrderDialog) return;
+    if (typeof igOrderDialog.close === "function") {
+      igOrderDialog.close();
+    } else {
+      igOrderDialog.removeAttribute("open");
+    }
+  }
+
+  async function runIgWorkingOrderTest() {
+    const form = document.getElementById("connector-form");
+    const panel = document.getElementById("connector-test-panel");
+    const resultEl = document.querySelector("#connector-test-panel .connector-test-result");
+    if (!form || !resultEl || !connectorOrdersBtn) return;
+    if (panel) panel.open = true;
+    const slug = connectorOrdersBtn.dataset.slug;
+    const fd = new FormData(form);
+    connectorOrdersBtn.disabled = true;
+    if (igOrderConfirm) igOrderConfirm.disabled = true;
+    resultEl.hidden = false;
+    resultEl.className = "connector-test-result integration-test-result";
+    resultEl.textContent =
+      "Placing working orders on IG DEMO… watch Working Orders for ~15s, then they cancel.";
+    resultEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+    try {
+      const res = await fetch(`/dashboard/bots/${slug}/connectors/test-orders`, {
+        method: "POST",
+        body: fd,
+        credentials: "same-origin",
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok && !data.message) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+      resultEl.classList.add(data.ok ? "ok" : "err");
+      if (data.error && !data.ok) {
+        resultEl.textContent = `${data.message || "Failed"}\n${data.error}`;
+      } else {
+        resultEl.textContent = data.message || "Done";
+      }
+    } catch (err) {
+      resultEl.classList.add("err");
+      resultEl.textContent = String(err);
+    } finally {
+      connectorOrdersBtn.disabled = false;
+      if (igOrderConfirm) igOrderConfirm.disabled = false;
+    }
+  }
+
+  if (connectorOrdersBtn && igOrderDialog) {
+    connectorOrdersBtn.addEventListener("click", () => {
+      if (typeof igOrderDialog.showModal === "function") {
+        igOrderDialog.showModal();
+      } else {
+        igOrderDialog.setAttribute("open", "");
+      }
+    });
+    igOrderCancel?.addEventListener("click", closeIgOrderDialog);
+    igOrderConfirm?.addEventListener("click", async () => {
+      closeIgOrderDialog();
+      await runIgWorkingOrderTest();
+    });
+    igOrderDialog.addEventListener("click", (e) => {
+      if (e.target === igOrderDialog) closeIgOrderDialog();
     });
   }
 })();

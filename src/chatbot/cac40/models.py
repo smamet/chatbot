@@ -39,6 +39,7 @@ class WorkingOrder:
     purpose: OrderPurpose
     position_id: str | None = None  # linked leg for TP/close
     client_ref: str = ""
+    deal_id: str = ""  # IG dealId after confirm (live)
     active_from_bar: int = 0
 
     def to_dict(self) -> dict[str, Any]:
@@ -50,6 +51,9 @@ class WorkingOrder:
             "size": self.size,
             "purpose": self.purpose.value,
             "position_id": self.position_id,
+            "client_ref": self.client_ref,
+            "deal_id": self.deal_id,
+            "active_from_bar": self.active_from_bar,
         }
 
 
