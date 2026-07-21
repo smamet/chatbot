@@ -18,7 +18,15 @@
 </div>
 <div class="table-wrap">
   <table class="data-table validation-table">
-    <thead><tr><th>Name</th><th>Slug</th><th>Hooks</th><th></th></tr></thead>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Slug</th>
+        <th>Hooks</th>
+        {% if user.role == 'admin' %}<th></th>{% endif %}
+        <th></th>
+      </tr>
+    </thead>
     <tbody>
     {% for t in tenants %}
     <tr class="validation-row validation-inbox-row"
@@ -28,10 +36,15 @@
       <td><strong>{{ t.name }}</strong></td>
       <td><code>{{ t.slug }}</code></td>
       <td>{% if t.hooks_enabled %}<span class="badge on">ON</span>{% else %}<span class="badge off">OFF</span>{% endif %}</td>
+      {% if user.role == 'admin' %}
+      <td class="bot-list-actions">
+        <a href="/dashboard/bots/{{ t.slug }}/permissions" class="btn-secondary btn-sm">Edit</a>
+      </td>
+      {% endif %}
       <td class="validation-row-chevron" aria-hidden="true">▶</td>
     </tr>
     {% else %}
-    <tr><td colspan="4" class="empty-state">No bots yet</td></tr>
+    <tr><td colspan="{% if user.role == 'admin' %}5{% else %}4{% endif %}" class="empty-state">No bots yet</td></tr>
     {% endfor %}
     </tbody>
   </table>

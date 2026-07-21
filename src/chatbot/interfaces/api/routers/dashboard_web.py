@@ -1113,6 +1113,33 @@ def bots_list(
     )
 
 
+@router.get("/bots/{slug}/permissions", response_class=HTMLResponse)
+def bot_permissions(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_admin),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    return templates.TemplateResponse(
+        request,
+        "bots/permissions.html",
+        {
+            "user": user,
+            "tenant": tenant,
+            "title": f"Permissions · {tenant.name}",
+            "connector_capabilities_ui": connector_capabilities_for_ui(
+                tenant.config.allowed_connectors
+            ),
+            "integration_capabilities_ui": integration_capabilities_for_ui(
+                tenant.config.allowed_integrations
+            ),
+        },
+    )
+
+
 def _allowed_connectors_from_form(form) -> tuple[str, ...]:
     raw = form.getlist("allowed_connector") if hasattr(form, "getlist") else []
     values = [str(v) for v in raw]
@@ -1523,9 +1550,6 @@ def bot_detail(
         "connector_schemas_json": json.dumps(connector_schemas),
         "show_connectors_tab": show_connectors_tab,
         "show_mail_connections": show_mail_connections,
-        "connector_capabilities_ui": connector_capabilities_for_ui(
-            tenant.config.allowed_connectors
-        ),
         "connectors_denied_keys": {
             f"{c.type.value}:{c.direction.value}"
             for c in connectors
@@ -1562,9 +1586,6 @@ def bot_detail(
         "integration_endpoint": _integration_endpoint,
         "is_quickbooks_connected": is_quickbooks_connected,
         "integration_types_list": filter_integration_types(tenant.config.allowed_integrations),
-        "integration_capabilities_ui": integration_capabilities_for_ui(
-            tenant.config.allowed_integrations
-        ),
         "integrations_denied_keys": {
             i.type.value
             for i in integrations
@@ -1976,7 +1997,7 @@ async def bot_save_connector_policy(
     tenant = _tenant_or_404(tenant_service, slug)
     _deactivate_denied_connectors(session, tenant)
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+    return RedirectResponse(url=f"/dashboard/bots/{slug}/permissions", status_code=303)
 
 
 @router.post("/bots/{slug}/integration-policy")
@@ -1999,7 +2020,7 @@ async def bot_save_integration_policy(
     tenant = _tenant_or_404(tenant_service, slug)
     _deactivate_denied_integrations(session, tenant)
     session.commit()
-    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+    return RedirectResponse(url=f"/dashboard/bots/{slug}/permissions", status_code=303)
 
 
 @router.post("/bots/{slug}/automation-config")
