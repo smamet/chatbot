@@ -29,6 +29,10 @@ def pretty_json(value: str | None) -> str:
         return str(value)
 
 
+def dumps_json(value: object) -> str:
+    return json.dumps(value, indent=2, ensure_ascii=False, default=str)
+
+
 TEMPLATES_DIR = Path(__file__).resolve().parent / "templates"
 templates = Jinja2Templates(directory=str(TEMPLATES_DIR))
 templates.env.filters["session_label"] = session_display_label
@@ -41,4 +45,5 @@ templates.env.filters["format_bytes"] = format_bytes
 templates.env.filters["format_count"] = format_count
 templates.env.filters["format_usd"] = format_usd
 templates.env.filters["pretty_json"] = pretty_json
+templates.env.filters["dumps_json"] = dumps_json
 templates.env.filters["channel_label"] = channel_label

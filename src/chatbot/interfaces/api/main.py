@@ -18,6 +18,7 @@ from chatbot.interfaces.api.error_handlers import register_exception_handlers
 from chatbot.interfaces.api.routers import (
     admin,
     auth_web,
+    cac40_web,
     chat,
     dashboard_web,
     instagram_webhook,
@@ -104,6 +105,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_web.router)
     app.include_router(dashboard_web.router)
+    app.include_router(cac40_web.router)
     app.include_router(chat.router, tags=["chat"])
     app.include_router(admin.router, tags=["admin"])
     app.include_router(whatsapp_webhook.router, tags=["whatsapp"])

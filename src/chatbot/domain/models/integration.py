@@ -9,6 +9,7 @@ from typing import Any
 class IntegrationType(StrEnum):
     ERPNEXT = "erpnext"
     QUICKBOOKS = "quickbooks"
+    CAC40_BACKTEST = "cac40_backtest"
 
 
 @dataclass(frozen=True)

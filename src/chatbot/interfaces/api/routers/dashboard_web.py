@@ -189,8 +189,11 @@ from chatbot.domain.models.connector import Connector, ConnectorDirection, Conne
 from chatbot.domain.models.connector_schema import (
     EmailAuthType,
     EmailOutboundProvider,
+    connector_capabilities_for_ui,
     connector_schemas_for_template,
     fields_for,
+    is_connector_allowed,
+    normalize_allowed_connectors,
     oauth_managed_connector_keys,
     secret_connector_keys,
 )
@@ -198,9 +201,13 @@ from chatbot.domain.models.hook import HookStatus
 from chatbot.domain.models.integration import Integration, IntegrationType
 from chatbot.domain.models.integration_schema import (
     fields_for as integration_fields_for,
+    filter_integration_types,
+    integration_capabilities_for_ui,
     integration_meta_for_template,
     integration_schemas_for_template,
+    is_integration_allowed,
     is_quickbooks_connected,
+    normalize_allowed_integrations,
     secret_integration_keys,
 )
 from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
@@ -353,12 +360,13 @@ async def _connector_config_from_request(
 ) -> tuple[ConnectorType, ConnectorDirection, ConnectorMode, dict, str | None]:
     try:
         ctype = ConnectorType(connector_type)
+        if ctype == ConnectorType.IG:
+            direction = ConnectorDirection.BOTH.value
         cdir = ConnectorDirection(direction)
-        cmode = (
-            ConnectorMode.DIRECT
-            if cdir == ConnectorDirection.IN
-            else ConnectorMode(str(form.get("mode", "validation")))
-        )
+        if cdir in (ConnectorDirection.IN, ConnectorDirection.BOTH) or ctype == ConnectorType.IG:
+            cmode = ConnectorMode.DIRECT
+        else:
+            cmode = ConnectorMode(str(form.get("mode", "validation")))
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid connector") from exc
     outbound_provider: str | None = None
@@ -367,16 +375,18 @@ async def _connector_config_from_request(
             str(form.get("outbound_provider", EmailOutboundProvider.SMTP.value)).strip()
             or EmailOutboundProvider.SMTP.value
         )
-    schema_fields = fields_for(connector_type, direction, outbound_provider=outbound_provider)
+    schema_fields = fields_for(connector_type, cdir.value, outbound_provider=outbound_provider)
     field_values = {field.key: str(form.get(field.key, "")).strip() for field in schema_fields}
     for field in schema_fields:
         if field.input_type == "checkbox":
             field_values[field.key] = "on" if form.get(field.key) == "on" else ""
     incoming = _connector_config_from_form(
-        connector_type, direction, field_values, outbound_provider=outbound_provider
+        connector_type, cdir.value, field_values, outbound_provider=outbound_provider
     )
     svc = ConnectorService(SqlAlchemyConnectorRepository(session))
     existing = svc.find(tenant_id, direction=cdir, type=ctype)
+    if existing is None and ctype == ConnectorType.IG:
+        existing = svc.find_ig(tenant_id)
     cfg = _merge_connector_config(existing.config if existing else None, incoming)
     if ctype == ConnectorType.EMAIL and cdir == ConnectorDirection.IN:
         if not str(cfg.get("process_since", "")).strip():
@@ -1103,15 +1113,63 @@ def bots_list(
     )
 
 
+def _allowed_connectors_from_form(form) -> tuple[str, ...]:
+    raw = form.getlist("allowed_connector") if hasattr(form, "getlist") else []
+    values = [str(v) for v in raw]
+    return normalize_allowed_connectors(values)
+
+
+def _allowed_integrations_from_form(form) -> tuple[str, ...]:
+    raw = form.getlist("allowed_integration") if hasattr(form, "getlist") else []
+    values = [str(v) for v in raw]
+    return normalize_allowed_integrations(values)
+
+
+def _deactivate_denied_connectors(session: Session, tenant: Tenant) -> int:
+    svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    deactivated = 0
+    for conn in svc.list_for_tenant(tenant.id):
+        if is_connector_allowed(
+            tenant.config.allowed_connectors,
+            conn.type.value,
+            conn.direction.value,
+        ):
+            continue
+        if conn.active:
+            svc.set_active(conn.id, False)
+            deactivated += 1
+    return deactivated
+
+
+def _deactivate_denied_integrations(session: Session, tenant: Tenant) -> int:
+    svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+    deactivated = 0
+    for integration in svc.list_for_tenant(tenant.id):
+        if is_integration_allowed(tenant.config.allowed_integrations, integration.type.value):
+            continue
+        if integration.active:
+            svc.set_active(integration.id, False)
+            deactivated += 1
+    return deactivated
+
+
 @router.get("/bots/new", response_class=HTMLResponse)
 def bot_new_form(request: Request, user: User = Depends(require_admin)):
     return templates.TemplateResponse(
-        request, "bots/new.html", {"user": user, "title": "New bot", "error": None}
+        request,
+        "bots/new.html",
+        {
+            "user": user,
+            "title": "New bot",
+            "error": None,
+            "connector_capabilities_ui": connector_capabilities_for_ui(()),
+            "integration_capabilities_ui": integration_capabilities_for_ui(()),
+        },
     )
 
 
 @router.post("/bots/new", response_class=HTMLResponse)
-def bot_new_submit(
+async def bot_new_submit(
     request: Request,
     name: str = Form(...),
     slug: str = Form(""),
@@ -1120,7 +1178,18 @@ def bot_new_submit(
     tenant_service: TenantService = Depends(get_tenant_service),
     session: Session = Depends(get_session),
 ):
-    result = tenant_service.create_tenant(name=name, slug=slug.strip() or None, prompt=prompt)
+    form = await request.form()
+    allowed_connectors = _allowed_connectors_from_form(form)
+    allowed_integrations = _allowed_integrations_from_form(form)
+    result = tenant_service.create_tenant(
+        name=name,
+        slug=slug.strip() or None,
+        prompt=prompt,
+        config=TenantConfig(
+            allowed_connectors=allowed_connectors,
+            allowed_integrations=allowed_integrations,
+        ),
+    )
     session.commit()
     return templates.TemplateResponse(
         request,
@@ -1416,7 +1485,10 @@ def bot_detail(
     _require_access(user, user_service, tenant)
     if user_service.is_validation_only(user) and tab != "validation":
         return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
-    connectors = ConnectorService(SqlAlchemyConnectorRepository(session)).list_for_tenant(tenant.id)
+    connector_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    if connector_svc.migrate_ig_to_both(tenant.id):
+        session.commit()
+    connectors = connector_svc.list_for_tenant(tenant.id)
     mail_conn_svc = MailConnectionService(session)
     mail_connections = mail_conn_svc.list_client_views(tenant.id)
     integrations = IntegrationService(SqlAlchemyIntegrationRepository(session)).list_for_tenant(
@@ -1424,6 +1496,11 @@ def bot_detail(
     )
     pending_repo = SqlAlchemyPendingReplyRepository(session)
     hooks = SqlAlchemyHookEventRepository(session, tenant.id).list_by_tenant(limit=50)
+    connector_schemas = connector_schemas_for_template(tenant.config.allowed_connectors)
+    show_connectors_tab = bool(connector_schemas) or bool(connectors)
+    show_mail_connections = "email" in connector_schemas
+    if tab == "connectors" and not show_connectors_tab:
+        return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
     ctx: dict = {
         "user": user,
         "tenant": tenant,
@@ -1442,8 +1519,20 @@ def bot_detail(
         "connector_directions": ConnectorDirection,
         "connector_modes": ConnectorMode,
         "webhook_channels": _WEBHOOK_CHANNELS,
-        "connector_schemas": connector_schemas_for_template(),
-        "connector_schemas_json": json.dumps(connector_schemas_for_template()),
+        "connector_schemas": connector_schemas,
+        "connector_schemas_json": json.dumps(connector_schemas),
+        "show_connectors_tab": show_connectors_tab,
+        "show_mail_connections": show_mail_connections,
+        "connector_capabilities_ui": connector_capabilities_for_ui(
+            tenant.config.allowed_connectors
+        ),
+        "connectors_denied_keys": {
+            f"{c.type.value}:{c.direction.value}"
+            for c in connectors
+            if not is_connector_allowed(
+                tenant.config.allowed_connectors, c.type.value, c.direction.value
+            )
+        },
         "connector_configs_json": json.dumps(_connector_configs_for_client(connectors)),
         "process_since_default": format_for_datetime_local(process_since_now_iso()),
         "mail_connections": mail_connections,
@@ -1466,11 +1555,28 @@ def bot_detail(
         "platform_google_mail_oauth": platform_google_mail_oauth_configured(settings),
         "mail_oauth_callback_url": f"{_public_base_url(request, settings)}/dashboard/mail-oauth/callback",
         "integration_types": IntegrationType,
-        "integration_schemas": integration_schemas_for_template(),
+        "integration_schemas": integration_schemas_for_template(
+            tenant.config.allowed_integrations
+        ),
         "integration_meta": integration_meta_for_template(),
         "integration_endpoint": _integration_endpoint,
         "is_quickbooks_connected": is_quickbooks_connected,
-        "integration_types_list": [t.value for t in IntegrationType],
+        "integration_types_list": filter_integration_types(tenant.config.allowed_integrations),
+        "integration_capabilities_ui": integration_capabilities_for_ui(
+            tenant.config.allowed_integrations
+        ),
+        "integrations_denied_keys": {
+            i.type.value
+            for i in integrations
+            if not is_integration_allowed(tenant.config.allowed_integrations, i.type.value)
+        },
+        "cac40_active": (
+            is_integration_allowed(
+                tenant.config.allowed_integrations, IntegrationType.CAC40_BACKTEST.value
+            )
+            and IntegrationType.CAC40_BACKTEST.value
+            in _active_integration_types(integrations)
+        ),
         "pending_count": pending_repo.count_pending(tenant.id),
         "has_validation_connectors": any(c.mode == ConnectorMode.VALIDATION for c in connectors),
         "automation_modules_ui": _automation_modules_for_ui(integrations),
@@ -1622,20 +1728,25 @@ def bot_detail(
         qb = by_type.get(IntegrationType.QUICKBOOKS.value)
         ctx["quickbooks_connected"] = is_quickbooks_connected(qb.config) if qb else False
         ctx["quickbooks_redirect_uri"] = _quickbooks_redirect_uri(request, settings, slug)
+        allowed_types = set(filter_integration_types(tenant.config.allowed_integrations))
         requested = request.query_params.get("integration_type", "").strip()
-        if requested in {t.value for t in IntegrationType}:
+        if requested in allowed_types:
             selected = requested
-        elif by_type:
-            selected = next(iter(IntegrationType)).value
+        elif allowed_types:
+            selected = next(iter(allowed_types))
             for itype in IntegrationType:
-                if itype.value in by_type:
+                if itype.value in allowed_types and itype.value in by_type:
                     selected = itype.value
                     break
+            else:
+                selected = next(iter(allowed_types))
         else:
-            selected = IntegrationType.ERPNEXT.value
+            selected = ""
         ctx["selected_integration_type"] = selected
         ctx["integrations_config_json"] = json.dumps(_integration_configs_for_client(integrations))
-        ctx["integration_schemas_json"] = json.dumps(integration_schemas_for_template())
+        ctx["integration_schemas_json"] = json.dumps(
+            integration_schemas_for_template(tenant.config.allowed_integrations)
+        )
         ctx["integration_meta_json"] = json.dumps(integration_meta_for_template())
     elif tab == "monitoring":
         if not user_service.can_edit(user):
@@ -1834,6 +1945,53 @@ def bot_save_config(
         gemini_api_key=gemini_api_key.strip() or None,
         update_gemini_api_key=bool(gemini_api_key.strip()),
     )
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.post("/bots/{slug}/connector-policy")
+async def bot_save_connector_policy(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_admin),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    from dataclasses import replace
+
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    allowed = _allowed_connectors_from_form(form)
+    updated_cfg = replace(tenant.config, allowed_connectors=allowed)
+    tenant_service.update_tenant(tenant.id, config=updated_cfg)
+    # Reload tenant config for deactivation check
+    tenant = _tenant_or_404(tenant_service, slug)
+    _deactivate_denied_connectors(session, tenant)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.post("/bots/{slug}/integration-policy")
+async def bot_save_integration_policy(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_admin),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    from dataclasses import replace
+
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    form = await request.form()
+    allowed = _allowed_integrations_from_form(form)
+    updated_cfg = replace(tenant.config, allowed_integrations=allowed)
+    tenant_service.update_tenant(tenant.id, config=updated_cfg)
+    tenant = _tenant_or_404(tenant_service, slug)
+    _deactivate_denied_integrations(session, tenant)
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
 
@@ -2082,6 +2240,13 @@ async def save_connector(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    if connector_type == ConnectorType.IG.value:
+        direction = ConnectorDirection.BOTH.value
+    if not is_connector_allowed(tenant.config.allowed_connectors, connector_type, direction):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Connector {connector_type}:{direction} is not allowed for this bot",
+        )
     form = await request.form()
     ctype, cdir, cmode, cfg, _outbound_provider = await _connector_config_from_request(
         form,
@@ -2091,14 +2256,17 @@ async def save_connector(
         direction=direction,
     )
     svc = ConnectorService(SqlAlchemyConnectorRepository(session))
-    svc.upsert(
-        tenant_id=tenant.id,
-        direction=cdir,
-        type=ctype,
-        mode=cmode,
-        config=cfg,
-        active=active == "on",
-    )
+    if ctype == ConnectorType.IG:
+        svc.upsert_ig(tenant_id=tenant.id, config=cfg, active=active == "on")
+    else:
+        svc.upsert(
+            tenant_id=tenant.id,
+            direction=cdir,
+            type=ctype,
+            mode=cmode,
+            config=cfg,
+            active=active == "on",
+        )
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
 
@@ -2709,6 +2877,11 @@ async def save_integration(
         itype = IntegrationType(integration_type)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail="Invalid integration") from exc
+    if not is_integration_allowed(tenant.config.allowed_integrations, itype.value):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Integration {itype.value} is not allowed for this bot",
+        )
     form = await request.form()
     schema_fields = integration_fields_for(integration_type)
     field_values = {
@@ -2729,6 +2902,8 @@ async def save_integration(
         else False
     )
     cfg = _merge_integration_config(existing.config if existing else None, incoming)
+    if itype == IntegrationType.CAC40_BACKTEST:
+        cfg["bot_id"] = tenant.slug
     saved = svc.upsert(tenant_id=tenant.id, type=itype, config=cfg, active=active == "on")
     if itype == IntegrationType.ERPNEXT:
         now_enabled = catalog_rag_effective_enabled(active=saved.active, config=saved.config)
@@ -2766,12 +2941,20 @@ def toggle_integration(
     integration = svc.get(integration_id)
     if integration is None or integration.tenant_id != tenant.id:
         raise HTTPException(status_code=404)
+    activating = not integration.active
+    if activating and not is_integration_allowed(
+        tenant.config.allowed_integrations, integration.type.value
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Integration {integration.type.value} is not allowed for this bot",
+        )
     prev_enabled = (
         catalog_rag_effective_enabled(active=integration.active, config=integration.config)
         if integration.type == IntegrationType.ERPNEXT
         else False
     )
-    updated = svc.set_active(integration_id, not integration.active)
+    updated = svc.set_active(integration_id, activating)
     if updated and updated.type == IntegrationType.ERPNEXT:
         now_enabled = catalog_rag_effective_enabled(active=updated.active, config=updated.config)
         apply_catalog_rag_transition(
@@ -3325,6 +3508,13 @@ def quickbooks_connect(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    if not is_integration_allowed(
+        tenant.config.allowed_integrations, IntegrationType.QUICKBOOKS.value
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="Integration quickbooks is not allowed for this bot",
+        )
     svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
     integration = svc.find(tenant.id, type=IntegrationType.QUICKBOOKS)
     if integration is None:
@@ -3441,7 +3631,15 @@ def toggle_connector(
     conn = svc.get(connector_id)
     if conn is None or conn.tenant_id != tenant.id:
         raise HTTPException(status_code=404)
-    svc.set_active(connector_id, not conn.active)
+    activating = not conn.active
+    if activating and not is_connector_allowed(
+        tenant.config.allowed_connectors, conn.type.value, conn.direction.value
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Connector {conn.type.value}:{conn.direction.value} is not allowed for this bot",
+        )
+    svc.set_active(connector_id, activating)
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=connectors", status_code=303)
 

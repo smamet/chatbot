@@ -461,6 +461,79 @@ def mail_connection_migrate_cmd(
         )
 
 
+cac40_app = typer.Typer(no_args_is_help=True, help="CAC40 mean-reversion bot / backtest.")
+app.add_typer(cac40_app, name="cac40")
+
+
+@cac40_app.command("backtest")
+def cac40_backtest_cmd(
+    ohlc: Annotated[Path, typer.Argument(help="15m OHLCV CSV path")],
+    out: Annotated[Path, typer.Option("--out", help="Run output directory")] = Path("data/cac40/cli_runs"),
+    max_open_positions: Annotated[int, typer.Option("--max-open-positions")] = 4,
+    llm_mode: Annotated[str, typer.Option("--llm-mode")] = "replay",
+    llm_every_bars: Annotated[int, typer.Option("--llm-every-bars")] = 4,
+    spread_points: Annotated[float, typer.Option("--spread-points")] = 1.5,
+) -> None:
+    """Run a hedge-mode CAC40 backtest (HedgeLedger)."""
+    from chatbot.cac40.backtest_engine import BacktestEngine, new_run_dir
+    from chatbot.cac40.config import Cac40Config
+
+    settings = get_settings()
+    cfg = Cac40Config(
+        max_open_positions=max_open_positions,
+        llm_mode=llm_mode,
+        llm_every_bars=llm_every_bars,
+        spread_points=spread_points,
+    )
+    run_dir = new_run_dir(out)
+    engine = BacktestEngine(
+        cfg,
+        ohlc_path=ohlc,
+        run_dir=run_dir,
+        api_key=settings.gemini_api_key or "",
+    )
+    report = engine.run()
+    typer.echo(f"run_dir={run_dir}")
+    typer.echo(
+        f"equity={report['final_equity']:.2f} dd={report['max_drawdown']:.2f} "
+        f"trades={report['trades']} winrate={report['winrate']:.0%}"
+    )
+
+
+@cac40_app.command("live")
+def cac40_live_cmd(
+    config_json: Annotated[
+        Path | None,
+        typer.Option("--config", help="JSON config file (Cac40Config fields)"),
+    ] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run/--no-dry-run")] = True,
+    once: Annotated[bool, typer.Option("--once", help="Single cycle then exit")] = False,
+    sleep_seconds: Annotated[int, typer.Option("--sleep-seconds")] = 900,
+) -> None:
+    """Run the 15m live/demo loop (fail-closed)."""
+    import json as _json
+
+    from chatbot.cac40.config import Cac40Config
+    from chatbot.cac40.scheduler import LiveScheduler
+
+    settings = get_settings()
+    data = _json.loads(config_json.read_text()) if config_json else {}
+    cfg = Cac40Config.from_dict(data)
+    journal = settings.data_root / "cac40" / "live"
+    sched = LiveScheduler(
+        cfg,
+        api_key=settings.gemini_api_key or "",
+        journal_dir=journal,
+        dry_run=dry_run,
+        sleep_seconds=sleep_seconds,
+    )
+    if once:
+        payload = sched.run_once()
+        typer.echo(_json.dumps(payload, indent=2, default=str))
+    else:
+        sched.run_forever()
+
+
 @app.command("serve")
 def serve_cmd(
     host: Annotated[str, typer.Option("--host", "-h")] = "0.0.0.0",

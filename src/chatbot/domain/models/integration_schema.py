@@ -34,6 +34,10 @@ INTEGRATION_META: dict[str, IntegrationMeta] = {
         label="QuickBooks Online",
         description="Connect via Intuit OAuth and enrich replies with invoices and estimates.",
     ),
+    IntegrationType.CAC40_BACKTEST.value: IntegrationMeta(
+        label="CAC40 Backtest",
+        description="Mean-reversion hedge-mode backtest UI and config (OHLC, LLM, Fund Manager heartbeat).",
+    ),
 }
 
 INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
@@ -244,6 +248,35 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
             oauth_managed=True,
         ),
     ],
+    IntegrationType.CAC40_BACKTEST.value: [
+        IntegrationField(
+            key="fundmanager_url",
+            label="Fund Manager base URL",
+            help="e.g. https://fm.example.com — heartbeat posts to /jessebot/notify-up",
+            placeholder="https://fundmanager.example.com",
+        ),
+        IntegrationField(
+            key="fundmanager_token",
+            label="Notify token",
+            help="Matches JESSEBOT_NOTIFY_TOKEN on Fund Manager (header X-Notify-Token).",
+            input_type="password",
+            secret=True,
+        ),
+        # bot_id is always the tenant slug — set server-side, not shown in UI.
+        IntegrationField(
+            key="max_open_positions",
+            label="Max open legs",
+            help="Hedge-mode leg cap (not net position).",
+            input_type="number",
+            default="4",
+        ),
+        IntegrationField(
+            key="epic",
+            label="IG epic",
+            help="IG market epic for CAC40 CFD.",
+            default="IX.D.CAC.DAILY.IP",
+        ),
+    ],
 }
 
 
@@ -272,7 +305,10 @@ def integration_meta_for_template() -> dict[str, dict[str, str]]:
     }
 
 
-def integration_schemas_for_template() -> dict[str, list[dict]]:
+def integration_schemas_for_template(
+    allowed: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, list[dict]]:
+    types = filter_integration_types(allowed)
     return {
         integration_type: [
             {
@@ -290,9 +326,77 @@ def integration_schemas_for_template() -> dict[str, list[dict]]:
             }
             for field in fields_for(integration_type)
         ]
-        for integration_type in INTEGRATION_SCHEMAS
+        for integration_type in types
     }
 
 
 def is_quickbooks_connected(config: dict) -> bool:
     return bool(str(config.get("realm_id", "")).strip() and str(config.get("refresh_token", "")).strip())
+
+
+# Stored alone in allowed_integrations when admin denies every integration type.
+INTEGRATION_ALLOWLIST_NONE = "__none__"
+
+
+def all_integration_types() -> tuple[str, ...]:
+    return tuple(INTEGRATION_SCHEMAS.keys())
+
+
+def is_integration_allowed(
+    allowed: tuple[str, ...] | list[str] | None,
+    integration_type: str,
+) -> bool:
+    """Empty / missing allowlist means all integration types are allowed."""
+    if not allowed:
+        return True
+    allowed_set = {str(item).strip().lower() for item in allowed if str(item).strip()}
+    if allowed_set == {INTEGRATION_ALLOWLIST_NONE}:
+        return False
+    return str(integration_type).strip().lower() in allowed_set
+
+
+def normalize_allowed_integrations(selected: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """
+    Normalize checkbox selection:
+    - all types selected → () (allow-all)
+    - none selected → (INTEGRATION_ALLOWLIST_NONE,)
+    - otherwise → explicit type keys
+    """
+    selected_set = {
+        str(item).strip().lower()
+        for item in selected
+        if str(item).strip() and str(item).strip().lower() != INTEGRATION_ALLOWLIST_NONE
+    }
+    all_keys = set(all_integration_types())
+    if not selected_set:
+        return (INTEGRATION_ALLOWLIST_NONE,)
+    if selected_set >= all_keys:
+        return ()
+    return tuple(sorted(selected_set & all_keys))
+
+
+def filter_integration_types(
+    allowed: tuple[str, ...] | list[str] | None,
+) -> list[str]:
+    if not allowed:
+        return list(all_integration_types())
+    return [t for t in all_integration_types() if is_integration_allowed(allowed, t)]
+
+
+def integration_capabilities_for_ui(
+    allowed: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, object]]:
+    """Checkbox rows for admin integration allowlist UI."""
+    allowed_set = {str(item).strip().lower() for item in (allowed or ()) if str(item).strip()}
+    allow_all = not allowed_set
+    rows: list[dict[str, object]] = []
+    for integration_type in all_integration_types():
+        meta = INTEGRATION_META.get(integration_type)
+        rows.append(
+            {
+                "key": integration_type,
+                "label": meta.label if meta else integration_type,
+                "checked": allow_all or integration_type in allowed_set,
+            }
+        )
+    return rows

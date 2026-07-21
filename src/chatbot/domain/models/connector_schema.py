@@ -348,6 +348,63 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
             options=(("us", "US (api.mailgun.net)"), ("eu", "EU (api.eu.mailgun.net)")),
         ),
     ],
+    ConnectorType.IG.value: [
+        ConnectorField(
+            key="api_key",
+            label="IG API key",
+            help="IG Labs API key. Leave blank on update to keep current value.",
+            input_type="password",
+            secret=True,
+            required=True,
+            directions=(ConnectorDirection.BOTH.value,),
+        ),
+        ConnectorField(
+            key="username",
+            label="IG username",
+            help="IG account username / identifier.",
+            required=True,
+            directions=(ConnectorDirection.BOTH.value,),
+        ),
+        ConnectorField(
+            key="password",
+            label="IG password",
+            help="IG account password. Leave blank on update to keep current value.",
+            input_type="password",
+            secret=True,
+            required=True,
+            directions=(ConnectorDirection.BOTH.value,),
+        ),
+        ConnectorField(
+            key="account_id",
+            label="IG account id",
+            help="Optional account id to switch after login.",
+            directions=(ConnectorDirection.BOTH.value,),
+        ),
+        ConnectorField(
+            key="acc_type",
+            label="Environment",
+            help="DEMO or LIVE.",
+            input_type="select",
+            default="DEMO",
+            options=(("DEMO", "Demo"), ("LIVE", "Live")),
+            directions=(ConnectorDirection.BOTH.value,),
+        ),
+        ConnectorField(
+            key="epic",
+            label="Epic",
+            help="Market epic (CAC40 CFD).",
+            default="IX.D.CAC.DAILY.IP",
+            directions=(ConnectorDirection.BOTH.value,),
+        ),
+        ConnectorField(
+            key="dry_run",
+            label="Dry run",
+            help="When enabled, orders stay in HedgeLedger only (no IG order API calls).",
+            input_type="checkbox",
+            default="true",
+            directions=(ConnectorDirection.BOTH.value,),
+        ),
+    ],
 }
 
 
@@ -406,7 +463,135 @@ def secret_connector_keys() -> frozenset[str]:
     return frozenset(keys | {"oauth_refresh_token", "oauth_access_token"})
 
 
-def connector_schemas_for_template() -> dict[str, list[dict]]:
+# Stored alone in allowed_connectors when admin denies every capability.
+CONNECTOR_ALLOWLIST_NONE = "__none__"
+
+_LEGACY_IG_CAPABILITY_KEYS = frozenset({"ig:in", "ig:out"})
+_IG_BOTH_CAPABILITY_KEY = "ig:both"
+
+
+def connector_capability_key(connector_type: str, direction: str) -> str:
+    return f"{connector_type.strip().lower()}:{direction.strip().lower()}"
+
+
+def _canonicalize_capability_key(key: str) -> str:
+    normalized = key.strip().lower()
+    if normalized in _LEGACY_IG_CAPABILITY_KEYS:
+        return _IG_BOTH_CAPABILITY_KEY
+    return normalized
+
+
+def all_connector_capabilities() -> list[tuple[str, str]]:
+    """Return (type, direction) pairs exposed by CONNECTOR_SCHEMAS."""
+    caps: list[tuple[str, str]] = []
+    for connector_type, fields in CONNECTOR_SCHEMAS.items():
+        directions: set[str] = set()
+        for field in fields:
+            directions.update(field.directions)
+        if ConnectorDirection.BOTH.value in directions:
+            caps.append((connector_type, ConnectorDirection.BOTH.value))
+            continue
+        for direction in (ConnectorDirection.IN.value, ConnectorDirection.OUT.value):
+            if direction in directions:
+                caps.append((connector_type, direction))
+    return caps
+
+
+def all_connector_capability_keys() -> tuple[str, ...]:
+    return tuple(connector_capability_key(t, d) for t, d in all_connector_capabilities())
+
+
+def is_connector_allowed(
+    allowed: tuple[str, ...] | list[str] | None,
+    connector_type: str,
+    direction: str,
+) -> bool:
+    """Empty / missing allowlist means all capabilities are allowed."""
+    if not allowed:
+        return True
+    allowed_set = {str(item).strip().lower() for item in allowed if str(item).strip()}
+    if allowed_set == {CONNECTOR_ALLOWLIST_NONE}:
+        return False
+    ctype = connector_type.strip().lower()
+    cdir = direction.strip().lower()
+    key = connector_capability_key(ctype, cdir)
+    if key in allowed_set:
+        return True
+    # IG is bidirectional: ig:both ↔ legacy ig:in / ig:out.
+    if ctype == ConnectorType.IG.value and cdir in (
+        ConnectorDirection.BOTH.value,
+        ConnectorDirection.IN.value,
+        ConnectorDirection.OUT.value,
+    ):
+        return bool(allowed_set & (_LEGACY_IG_CAPABILITY_KEYS | {_IG_BOTH_CAPABILITY_KEY}))
+    return False
+
+
+def normalize_allowed_connectors(selected: list[str] | tuple[str, ...]) -> tuple[str, ...]:
+    """
+    Normalize checkbox selection:
+    - all capabilities selected → () (allow-all)
+    - none selected → (CONNECTOR_ALLOWLIST_NONE,)
+    - otherwise → explicit keys
+    """
+    selected_set = {
+        _canonicalize_capability_key(str(item))
+        for item in selected
+        if str(item).strip() and str(item).strip().lower() != CONNECTOR_ALLOWLIST_NONE
+    }
+    all_keys = set(all_connector_capability_keys())
+    if not selected_set:
+        return (CONNECTOR_ALLOWLIST_NONE,)
+    if selected_set >= all_keys:
+        return ()
+    return tuple(sorted(selected_set))
+
+
+def filter_connector_schemas(
+    allowed: tuple[str, ...] | list[str] | None,
+) -> dict[str, list[ConnectorField]]:
+    """Return CONNECTOR_SCHEMAS filtered to allowed type×direction field sets."""
+    if not allowed:
+        return dict(CONNECTOR_SCHEMAS)
+    out: dict[str, list[ConnectorField]] = {}
+    for connector_type, fields in CONNECTOR_SCHEMAS.items():
+        kept: list[ConnectorField] = []
+        for field in fields:
+            dirs = tuple(
+                d
+                for d in field.directions
+                if is_connector_allowed(allowed, connector_type, d)
+            )
+            if not dirs:
+                continue
+            if dirs == field.directions:
+                kept.append(field)
+            else:
+                kept.append(
+                    ConnectorField(
+                        key=field.key,
+                        label=field.label,
+                        help=field.help,
+                        input_type=field.input_type,
+                        required=field.required,
+                        placeholder=field.placeholder,
+                        default=field.default,
+                        directions=dirs,
+                        secret=field.secret,
+                        providers=field.providers,
+                        options=field.options,
+                    )
+                )
+        if kept:
+            out[connector_type] = kept
+    return out
+
+
+def connector_schemas_for_template(
+    allowed: tuple[str, ...] | list[str] | None = None,
+) -> dict[str, list[dict]]:
+    """Build template/JS schema map. Empty allowlist = all schemas."""
+    schemas = filter_connector_schemas(allowed)
     return {
         connector_type: [
             {
@@ -425,5 +610,36 @@ def connector_schemas_for_template() -> dict[str, list[dict]]:
             }
             for field in fields
         ]
-        for connector_type, fields in CONNECTOR_SCHEMAS.items()
+        for connector_type, fields in schemas.items()
     }
+
+
+def connector_capabilities_for_ui(
+    allowed: tuple[str, ...] | list[str] | None = None,
+) -> list[dict[str, object]]:
+    """Checkbox rows for admin allowlist UI."""
+    allowed_set = {
+        _canonicalize_capability_key(str(item))
+        for item in (allowed or ())
+        if str(item).strip()
+    }
+    allow_all = not allowed_set
+    rows: list[dict[str, object]] = []
+    for connector_type, direction in all_connector_capabilities():
+        key = connector_capability_key(connector_type, direction)
+        if direction == ConnectorDirection.BOTH.value:
+            label = connector_type.upper() if connector_type == ConnectorType.IG.value else (
+                f"{connector_type.capitalize()} (bidirectional)"
+            )
+        else:
+            label = f"{connector_type.capitalize()} ({direction})"
+        rows.append(
+            {
+                "key": key,
+                "type": connector_type,
+                "direction": direction,
+                "label": label,
+                "checked": allow_all or key in allowed_set,
+            }
+        )
+    return rows

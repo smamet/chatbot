@@ -9,6 +9,7 @@ from typing import Any
 class ConnectorDirection(StrEnum):
     IN = "in"
     OUT = "out"
+    BOTH = "both"
 
 
 class ConnectorType(StrEnum):
@@ -17,6 +18,7 @@ class ConnectorType(StrEnum):
     MESSENGER = "messenger"
     INSTAGRAM = "instagram"
     CHAT = "chat"
+    IG = "ig"
 
 
 class ConnectorMode(StrEnum):

@@ -22,6 +22,10 @@ class TenantConfig:
     automation_modules: tuple[str, ...] = ("core.orders",)
     hook_instructions_extra: str = ""
     email_blocked_senders: tuple[str, ...] = ()
+    # Empty = all connector type×direction capabilities allowed (backward compatible).
+    allowed_connectors: tuple[str, ...] = ()
+    # Empty = all integration types allowed (backward compatible).
+    allowed_integrations: tuple[str, ...] = ()
 
     def to_json(self) -> str:
         return json.dumps(
@@ -40,6 +44,8 @@ class TenantConfig:
                 "automation_modules": list(self.automation_modules),
                 "hook_instructions_extra": self.hook_instructions_extra,
                 "email_blocked_senders": list(self.email_blocked_senders),
+                "allowed_connectors": list(self.allowed_connectors),
+                "allowed_integrations": list(self.allowed_integrations),
             },
             ensure_ascii=True,
         )
@@ -75,6 +81,22 @@ class TenantConfig:
             )
         else:
             email_blocked_senders = ()
+        allowed_raw = data.get("allowed_connectors")
+        if "allowed_connectors" in data and isinstance(allowed_raw, list):
+            allowed_connectors = tuple(
+                str(item).strip().lower() for item in allowed_raw if str(item).strip()
+            )
+        else:
+            allowed_connectors = ()
+        allowed_integrations_raw = data.get("allowed_integrations")
+        if "allowed_integrations" in data and isinstance(allowed_integrations_raw, list):
+            allowed_integrations = tuple(
+                str(item).strip().lower()
+                for item in allowed_integrations_raw
+                if str(item).strip()
+            )
+        else:
+            allowed_integrations = ()
         return cls(
             chat_model=str(data.get("chat_model", cls.chat_model)),
             embedding_model=str(data.get("embedding_model", cls.embedding_model)),
@@ -90,6 +112,8 @@ class TenantConfig:
             automation_modules=automation_modules,
             hook_instructions_extra=str(data.get("hook_instructions_extra", "")),
             email_blocked_senders=email_blocked_senders,
+            allowed_connectors=allowed_connectors,
+            allowed_integrations=allowed_integrations,
         )
 
 

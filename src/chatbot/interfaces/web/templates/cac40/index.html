@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page-header">
+  <div>
+    <p class="eyebrow"><a href="/dashboard/bots/{{ tenant.slug }}">{{ tenant.name }}</a> · Integrations</p>
+    <h1>CAC40 Backtest</h1>
+    <p class="subtitle">Mean-reversion hedge-mode simulation (HedgeLedger). Not wired to IG execution.</p>
+  </div>
+  <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}?tab=integrations">← Back</a>
+</section>
+
+{% if upload_error %}
+<section class="card">
+  <p class="badge failed">Upload failed: {{ upload_error }}</p>
+</section>
+{% endif %}
+{% if upload_ok %}
+<section class="card">
+  <p class="badge done">CSV uploaded — {{ upload_ok }} bars ready.</p>
+</section>
+{% endif %}
+{% if fetch_error %}
+<section class="card">
+  <p class="badge failed">Yahoo fetch failed: {{ fetch_error }}</p>
+</section>
+{% endif %}
+{% if fetch_ok %}
+<section class="card">
+  <p class="badge done">Yahoo Finance (^FCHI) — {{ fetch_ok }} bars of 15m data ready.</p>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>OHLC dataset (15m)</h2>
+  <p class="text-muted">
+    Recommended free source: <strong>Yahoo Finance</strong> ticker <code>{{ yahoo_source.ticker }}</code>
+    (CAC 40 cash index), {{ yahoo_source.period }} of {{ yahoo_source.interval }} bars
+    (~last 60 trading days). For multi-year history, buy a futures CSV and upload it below.
+  </p>
+  <p class="field-hint">
+    Long history (from 2000):
+    <a href="https://www.backtestmarket.com/en/cac-40-15m" target="_blank" rel="noopener noreferrer">Buy CAC 40 (MX) 15m CSV on BacktestMarket</a>
+    — pick <strong>BacktestMarket (MX 15m)</strong> as source below; import converts it automatically.
+  </p>
+  <p class="text-muted">Stored at: <code>{{ ohlc.path }}</code>
+    {% if ohlc.exists %}
+      <span class="badge done">found</span>
+      — {{ ohlc.bars }} bars
+      {% if ohlc.from %} ({{ ohlc.from }} → {{ ohlc.to }}){% endif %}
+    {% else %}
+      <span class="badge failed">missing</span>
+    {% endif %}
+  </p>
+
+  <div class="form-grid" style="align-items:end; margin-bottom:1rem;">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/ohlc/fetch-yahoo" class="stack-form">
+      <button type="submit" class="btn-primary">Fetch from Yahoo Finance (^FCHI)</button>
+      <p class="field-hint">Downloads ~60 days of 15m OHLC automatically. No account needed.</p>
+    </form>
+  </div>
+
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/ohlc" enctype="multipart/form-data" class="stack-form">
+    <div class="form-grid">
+      <label>CSV source
+        <select name="source" id="ohlc-source">
+          <option value="evenor">Evenor / standard (Date,Open,High,Low,Close)</option>
+          <option value="backtestmarket" selected>BacktestMarket (MX 15m)</option>
+        </select>
+      </label>
+      <label>CSV file
+        <input type="file" name="file" accept=".csv,text/csv" required>
+      </label>
+    </div>
+    <p class="field-hint" id="ohlc-source-hint">
+      BacktestMarket: <code>DD/MM/YYYY;HH:MM:SS;O;H;L;C;V</code> (no header, GMT-6) — converted on import.
+    </p>
+    <button type="submit" class="btn-secondary">Upload CSV</button>
+  </form>
+  <script>
+    (function () {
+      const sel = document.getElementById('ohlc-source');
+      const hint = document.getElementById('ohlc-source-hint');
+      if (!sel || !hint) return;
+      const hints = {
+        evenor: 'Evenor / standard: comma CSV with header <code>Date,Open,High,Low,Close[,Volume]</code>.',
+        backtestmarket: 'BacktestMarket: <code>DD/MM/YYYY;HH:MM:SS;O;H;L;C;V</code> (no header, GMT-6) — converted on import.',
+      };
+      function sync() {
+        hint.innerHTML = hints[sel.value] || hints.evenor;
+      }
+      sel.addEventListener('change', sync);
+      sync();
+    })();
+  </script>
+</section>
+
+<section class="card">
+  <h2>New simulation</h2>
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs" class="stack-form">
+    <div class="form-grid">
+      <label>Period
+        <select name="period">
+          <option value="1w" {% if default_config.backtest_period == '1w' %}selected{% endif %}>1 week</option>
+          <option value="2w" {% if default_config.backtest_period == '2w' %}selected{% endif %}>2 weeks</option>
+          <option value="1m" {% if default_config.backtest_period == '1m' %}selected{% endif %}>1 month</option>
+          <option value="3m" {% if default_config.backtest_period == '3m' %}selected{% endif %}>3 months</option>
+          <option value="6m" {% if default_config.backtest_period == '6m' %}selected{% endif %}>6 months</option>
+          <option value="1y" {% if default_config.backtest_period == '1y' %}selected{% endif %}>1 year</option>
+          <option value="all" {% if default_config.backtest_period == 'all' %}selected{% endif %}>All</option>
+        </select>
+      </label>
+      <label>Max open positions
+        <input type="number" name="max_open_positions" value="{{ default_config.max_open_positions }}" min="1" max="20">
+      </label>
+      <label>Order size
+        <input type="number" step="0.01" name="order_size" value="{{ default_config.order_size }}">
+      </label>
+      <label>Spread points
+        <input type="number" step="0.1" name="spread_points" value="{{ default_config.spread_points }}">
+      </label>
+      <label>LLM call every
+        <span class="llm-rate-row">
+          <input type="number" name="llm_every_n" value="{{ default_config.llm_every_n or 6 }}" min="1" max="96">
+          <select name="llm_every_unit">
+            <option value="15m" {% if default_config.llm_every_unit == '15m' %}selected{% endif %}>× 15 minutes</option>
+            <option value="1h" {% if default_config.llm_every_unit != '15m' %}selected{% endif %}>× 1 hour</option>
+          </select>
+        </span>
+      </label>
+      <label>LLM mode
+        <select name="llm_mode">
+          <option value="live">live (call Gemini)</option>
+          <option value="charts_only">charts only (no LLM — test charts/RSI)</option>
+          <option value="replay">replay (decision cache)</option>
+        </select>
+      </label>
+      <label>Chart window 15m (bars)
+        <input type="number" name="lookback_15m" value="{{ default_config.lookback_15m }}" min="1" max="2000">
+      </label>
+      <label>Chart window 1H (bars)
+        <input type="number" name="lookback_1h" value="{{ default_config.lookback_1h }}" min="1" max="2000">
+      </label>
+      <label>Chart window 1D (bars)
+        <input type="number" name="lookback_1d" value="{{ default_config.lookback_1d }}" min="1" max="2000">
+      </label>
+      <label>Warm-up / RSI bars
+        <input type="number" name="warmup_bars" value="{{ default_config.warmup_bars }}" min="2" max="500">
+      </label>
+      <label>OHLC CSV override (optional path)
+        <input type="text" name="ohlc_file" placeholder="{{ ohlc_path }}">
+      </label>
+    </div>
+    <p class="field-hint">
+      Period is relative to the last bar. Charts use full history as-of each decision (not only the trade period),
+      with extra bars so RSI is valid across the whole window.
+      LLM waits until at least <strong>warm-up</strong> 15m bars exist before the current bar (default RSI 14).
+      Use <strong>charts only</strong> to generate PNGs without calling Gemini.
+      Defaults: <strong>1 week</strong>, LLM every <strong>6 × 1 hour</strong>.
+    </p>
+    <div class="form-actions form-actions--compact cac40-run-actions">
+      <button type="submit" class="btn-primary" {% if not ohlc_exists %}disabled{% endif %}>Start backtest</button>
+    </div>
+    {% if not ohlc_exists %}
+    <p class="text-muted">Upload a CSV above before starting a backtest.</p>
+    {% endif %}
+  </form>
+</section>
+
+<section class="card">
+  <h2>Previous runs</h2>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Run</th>
+        <th>Period</th>
+        <th>Status</th>
+        <th>Progress</th>
+        <th>Equity</th>
+        <th>Max DD</th>
+        <th>Trades</th>
+        <th>Winrate</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in runs %}
+      <tr>
+        <td><a href="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ r.run_id }}">{{ r.run_id }}</a></td>
+        <td>{{ r.period }}</td>
+        <td><span class="badge {{ r.status }}">{{ r.status }}</span></td>
+        <td>{{ '%.0f'|format((r.progress or 0) * 100) }}%</td>
+        <td>{{ r.final_equity if r.final_equity is not none else '—' }}</td>
+        <td>{{ r.max_drawdown if r.max_drawdown is not none else '—' }}</td>
+        <td>{{ r.trades if r.trades is not none else '—' }}</td>
+        <td>{% if r.winrate is not none %}{{ '%.0f'|format(r.winrate * 100) }}%{% else %}—{% endif %}</td>
+        <td class="actions">
+          {% if r.status != 'running' %}
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ r.run_id }}/delete"
+                class="no-loader" onsubmit="return confirm('Delete this backtest and all charts?');">
+            <button type="submit" class="btn-secondary btn-sm">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="empty-state">No runs yet</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

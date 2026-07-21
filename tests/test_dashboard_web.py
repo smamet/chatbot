@@ -27,6 +27,7 @@ from chatbot.domain.models.fulfillment import FulfillmentKind
 from chatbot.domain.models.hook import HookStatus
 from chatbot.domain.models.integration import IntegrationType
 from chatbot.domain.models.message import ChatMessage, MessageRole
+from chatbot.domain.models.tenant import TenantConfig
 from chatbot.domain.models.user import UserRole
 from chatbot.interfaces.api.deps import _build_chat_service
 from chatbot.interfaces.api.main import create_app, refresh_genai_clients_if_needed
@@ -1334,6 +1335,206 @@ def test_email_in_connector_sets_process_since_on_save(dashboard_env) -> None:
     assert "connector-configs-data" in r.text
     assert "email:in" in r.text
     assert "process_since" in r.text
+
+
+def test_create_bot_persists_allowed_connectors(dashboard_env) -> None:
+    client, admin, _, _slug, _tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        "/dashboard/bots/new",
+        data={
+            "name": "Allowlist Bot",
+            "slug": "allowlist-bot",
+            "prompt": "You are helpful.",
+            "allowed_connector": ["whatsapp:in", "email:out"],
+            "allowed_integration": ["erpnext", "cac40_backtest"],
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 200
+    assert "allowlist-bot" in r.text
+    with factory() as session:
+        saved = SqlAlchemyTenantRepository(session).find_by_slug("allowlist-bot")
+        assert saved is not None
+        assert saved.config.allowed_connectors == ("email:out", "whatsapp:in")
+        assert saved.config.allowed_integrations == ("cac40_backtest", "erpnext")
+
+
+def test_save_connector_forbidden_when_not_allowed(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    with factory() as session:
+        TenantService(SqlAlchemyTenantRepository(session)).update_tenant(
+            tenant_id,
+            config=TenantConfig(allowed_connectors=("email:in",)),
+        )
+        session.commit()
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/connectors",
+        data={
+            "connector_type": "whatsapp",
+            "direction": "in",
+            "mode": "direct",
+            "active": "on",
+            "verify_token": "vt",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+
+def test_connector_policy_deactivates_denied_connectors(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        from chatbot.application.connector_service import ConnectorService
+
+        conn = ConnectorService(SqlAlchemyConnectorRepository(session)).upsert(
+            tenant_id=tenant_id,
+            direction=ConnectorDirection.IN,
+            type=ConnectorType.WHATSAPP,
+            mode=ConnectorMode.DIRECT,
+            config={"verify_token": "vt"},
+            active=True,
+        )
+        session.commit()
+        conn_id = conn.id
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/connector-policy",
+        data={"allowed_connector": ["email:in"]},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with factory() as session:
+        from chatbot.application.connector_service import ConnectorService
+
+        saved_tenant = SqlAlchemyTenantRepository(session).find_by_slug(slug)
+        assert saved_tenant is not None
+        assert saved_tenant.config.allowed_connectors == ("email:in",)
+        conn = ConnectorService(SqlAlchemyConnectorRepository(session)).get(conn_id)
+        assert conn is not None
+        assert conn.active is False
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/connectors/{conn_id}/toggle",
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+    r = client.get(f"/dashboard/bots/{slug}?tab=connectors")
+    assert r.status_code == 200
+    assert "Not allowed" in r.text
+
+
+def test_cac40_tab_only_when_integration_active(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+
+    r = client.get(f"/dashboard/bots/{slug}?tab=config")
+    assert r.status_code == 200
+    assert "Permissions" in r.text
+    assert f'/dashboard/bots/{slug}/cac40"' not in r.text
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/integrations",
+        data={
+            "integration_type": "cac40_backtest",
+            "active": "on",
+            "fundmanager_url": "https://fundmanager.example.com",
+            "fundmanager_token": "token",
+            "max_open_positions": "4",
+            "epic": "IX.D.CAC.DAILY.IP",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+
+    with factory() as session:
+        svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+        integration = svc.find(tenant_id, type=IntegrationType.CAC40_BACKTEST)
+        assert integration is not None
+        assert integration.config.get("bot_id") == slug
+
+    r = client.get(f"/dashboard/bots/{slug}?tab=integrations")
+    assert r.status_code == 200
+    assert f'/dashboard/bots/{slug}/cac40"' in r.text
+    assert "Bot id" not in r.text
+
+    with factory() as session:
+        svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
+        integration = svc.find(tenant_id, type=IntegrationType.CAC40_BACKTEST)
+        assert integration is not None
+        svc.set_active(integration.id, False)
+        session.commit()
+
+    r = client.get(f"/dashboard/bots/{slug}?tab=integrations")
+    assert f'/dashboard/bots/{slug}/cac40"' not in r.text
+
+
+def test_save_integration_forbidden_when_not_allowed(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    _login(client, admin.email, "admin-pass")
+    with factory() as session:
+        TenantService(SqlAlchemyTenantRepository(session)).update_tenant(
+            tenant_id,
+            config=TenantConfig(allowed_integrations=("quickbooks",)),
+        )
+        session.commit()
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/integrations",
+        data={
+            "integration_type": "erpnext",
+            "active": "on",
+            "url": "https://erp.example.com",
+            "api_key": "k",
+            "api_secret": "s",
+        },
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+
+def test_integration_policy_deactivates_denied_integrations(dashboard_env) -> None:
+    client, admin, _, slug, tenant_id, _data, factory = dashboard_env
+    with factory() as session:
+        integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).upsert(
+            tenant_id=tenant_id,
+            type=IntegrationType.ERPNEXT,
+            config={"url": "https://erp.example.com", "api_key": "k", "api_secret": "s"},
+            active=True,
+        )
+        session.commit()
+        integration_id = integration.id
+
+    _login(client, admin.email, "admin-pass")
+    r = client.post(
+        f"/dashboard/bots/{slug}/integration-policy",
+        data={"allowed_integration": ["quickbooks"]},
+        follow_redirects=False,
+    )
+    assert r.status_code == 303
+    with factory() as session:
+        saved_tenant = SqlAlchemyTenantRepository(session).find_by_slug(slug)
+        assert saved_tenant is not None
+        assert saved_tenant.config.allowed_integrations == ("quickbooks",)
+        integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).get(
+            integration_id
+        )
+        assert integration is not None
+        assert integration.active is False
+
+    r = client.post(
+        f"/dashboard/bots/{slug}/integrations/{integration_id}/toggle",
+        follow_redirects=False,
+    )
+    assert r.status_code == 403
+
+    r = client.get(f"/dashboard/bots/{slug}?tab=integrations")
+    assert r.status_code == 200
+    assert "Not allowed" in r.text
 
 
 def test_connectors_page_exposes_process_since_default(dashboard_env) -> None:

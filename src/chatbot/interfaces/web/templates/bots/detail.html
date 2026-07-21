@@ -18,8 +18,13 @@
 <nav class="tabs">
   <a href="?tab=config" class="{% if tab=='config' %}active{% endif %}">Config</a>
   <a href="?tab=documents" class="{% if tab=='documents' %}active{% endif %}">Documents</a>
+  {% if show_connectors_tab %}
   <a href="?tab=connectors" class="{% if tab=='connectors' %}active{% endif %}">Connectors</a>
+  {% endif %}
   <a href="?tab=integrations" class="{% if tab=='integrations' %}active{% endif %}">Integrations</a>
+  {% if cac40_active %}
+  <a href="/dashboard/bots/{{ tenant.slug }}/cac40">CAC40 Backtest</a>
+  {% endif %}
   {% if has_validation_connectors or pending_count %}
   <a href="?tab=validation" class="{% if tab=='validation' %}active{% endif %}">Validation{% if pending_count %} <span class="tab-badge">{{ pending_count }}</span>{% endif %}</a>
   {% endif %}
@@ -52,6 +57,59 @@
       </div>
     </form>
   </div>
+
+  {% if is_admin %}
+  <div class="card">
+    <h2 class="card-title">Permissions</h2>
+    <p class="text-muted">Admin only. Control which connectors and integrations editors may configure on this bot.</p>
+
+    <h3 class="form-section-title">Allowed connectors</h3>
+    <p class="text-muted">Unchecking a capability deactivates existing connectors of that type/direction.</p>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connector-policy">
+      <div class="checkbox-panel">
+        <div class="checkbox-panel__actions">
+          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="all">Select all</button>
+          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="none">Deselect all</button>
+        </div>
+        <div class="checkbox-grid checkbox-grid--stack">
+          {% for cap in connector_capabilities_ui %}
+          <div class="checkbox-row">
+            <input type="checkbox" name="allowed_connector" id="cap-{{ cap.key|replace(':', '-') }}"
+                   value="{{ cap.key }}" {% if cap.checked %}checked{% endif %}>
+            <label for="cap-{{ cap.key|replace(':', '-') }}">{{ cap.label }}</label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save connector policy</button>
+      </div>
+    </form>
+
+    <h3 class="form-section-title" style="margin-top:1.25rem">Allowed integrations</h3>
+    <p class="text-muted">Unchecking a type deactivates existing integrations of that type. The CAC40 Backtest tab appears only when CAC40 is allowed here and saved as Active on Integrations.</p>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integration-policy">
+      <div class="checkbox-panel">
+        <div class="checkbox-panel__actions">
+          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="all">Select all</button>
+          <button type="button" class="btn-secondary btn-sm" data-checkbox-set="none">Deselect all</button>
+        </div>
+        <div class="checkbox-grid checkbox-grid--stack">
+          {% for cap in integration_capabilities_ui %}
+          <div class="checkbox-row">
+            <input type="checkbox" name="allowed_integration" id="int-{{ cap.key }}"
+                   value="{{ cap.key }}" {% if cap.checked %}checked{% endif %}>
+            <label for="int-{{ cap.key }}">{{ cap.label }}</label>
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save integration policy</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
 
   <div class="card">
     <h2 class="card-title">Prompt</h2>
@@ -276,7 +334,7 @@
   </div>
   {% endif %}
 
-  {% if can_edit %}
+  {% if can_edit and show_mail_connections %}
   <div class="card" id="mail-connections-panel">
     <h2 class="card-title">Mail connections</h2>
     <p class="text-muted">One OAuth connection per mailbox (Microsoft 365 or Gmail). Connect once — IMAP and SMTP scopes together — then attach the same connection to inbound and outbound email connectors.</p>
@@ -525,16 +583,21 @@
       <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Provider</th><th>Mode</th><th>Status</th><th>Since</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
       <tbody>
       {% for c in connectors %}
-      <tr>
+      {% set cap_key = c.type.value ~ ':' ~ c.direction.value %}
+      {% set denied = cap_key in connectors_denied_keys %}
+      <tr {% if denied %}class="connector-row-denied"{% endif %}>
         <td>{{ c.id }}</td>
         <td>{{ c.direction.value }}</td>
-        <td>{{ c.type.value }}</td>
+        <td>
+          {{ c.type.value }}
+          {% if denied %}<span class="badge failed">Not allowed</span>{% endif %}
+        </td>
         <td>
           {% if c.type.value == 'email' and c.direction.value == 'out' %}
           <code>{{ c.config.get('outbound_provider', 'smtp') }}</code>
           {% else %}—{% endif %}
         </td>
-        <td>{% if c.direction.value == 'out' %}{{ c.mode.value }}{% else %}—{% endif %}</td>
+        <td>{% if c.direction.value == 'out' %}{{ c.mode.value }}{% elif c.direction.value == 'both' %}direct{% else %}—{% endif %}</td>
         <td>{% if c.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}</td>
         <td>
           {% if c.type.value == 'email' and c.direction.value == 'in' %}
@@ -548,13 +611,19 @@
         </td>
         {% if can_edit %}
         <td class="actions">
+          {% if not denied %}
           <button type="button" class="btn-secondary btn-sm connector-edit-btn"
                   data-type="{{ c.type.value }}"
                   data-direction="{{ c.direction.value }}"
                   data-mode="{{ c.mode.value }}">Edit</button>
+          {% endif %}
+          {% if c.active or not denied %}
           <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/toggle" class="no-loader">
-            <button type="submit" class="btn-secondary btn-sm">{% if c.active %}Deactivate{% else %}Activate{% endif %}</button>
+            <button type="submit" class="btn-secondary btn-sm" {% if denied and not c.active %}disabled{% endif %}>
+              {% if c.active %}Deactivate{% else %}Activate{% endif %}
+            </button>
           </form>
+          {% endif %}
           <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/delete" class="no-loader">
             <button type="submit" class="btn-secondary btn-sm">Delete</button>
           </form>
@@ -571,6 +640,9 @@
   {% if can_edit %}
   <div class="card">
     <h2 class="card-title">Add / update connector</h2>
+    {% if not connector_schemas %}
+    <p class="text-muted">No connector types are allowed for this bot. An admin can update the allowlist under Config.</p>
+    {% else %}
     <p class="text-muted">Use <strong>Edit</strong> on a row to load that connector below, change settings (including <strong>Process emails since</strong> for inbound email), then <strong>Save connector</strong>. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).</p>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form" data-bot-slug="{{ tenant.slug }}" data-process-since-default="{{ process_since_default }}">
       <div class="connector-flow" id="connector-flow" aria-hidden="false">
@@ -669,14 +741,19 @@
         const typeSel = document.getElementById('connector-type');
         const dirInput = document.getElementById('connector-direction');
         const dirTabs = document.querySelectorAll('.connector-direction-tabs [data-direction]');
+        const dirTabsNav = document.querySelector('.connector-direction-tabs');
+        const dirHint = document.querySelector('.connector-direction-hint');
         const modeWrap = document.getElementById('connector-mode-wrap');
         const modeSel = document.getElementById('connector-mode');
         const container = document.getElementById('connector-fields');
+        const flowEl = document.getElementById('connector-flow');
         const flowSourceText = document.getElementById('flow-source-text');
         const flowSourceHint = document.getElementById('flow-source-hint');
         const flowDestText = document.getElementById('flow-dest-text');
         const flowArrowIn = document.getElementById('flow-arrow-in');
         const flowArrowOut = document.getElementById('flow-arrow-out');
+        const flowBotStrong = document.querySelector('.connector-flow__node--bot strong');
+        const botDisplayName = flowBotStrong ? flowBotStrong.textContent : '';
 
         const WEBHOOK_TYPES = new Set(['whatsapp', 'messenger', 'instagram']);
         const FLOW_LABELS = {
@@ -684,6 +761,7 @@
           messenger: { in: 'Meta webhook', out: 'Messenger user' },
           instagram: { in: 'Meta webhook', out: 'Instagram user' },
           email: { in: 'IMAP inbox', out: 'Email recipient (SMTP / Mailjet / Mailgun)' },
+          ig: { both: 'IG Markets' },
         };
         const GREENMAIL_IN = {
           imap_host: 'greenmail',
@@ -704,7 +782,19 @@
         const greenmailBtn = document.getElementById('greenmail-autofill');
         let selectedAuthType = null;
 
+        function directionsForType(ctype) {
+          const fields = schemas[ctype] || [];
+          const dirs = new Set();
+          fields.forEach((field) => (field.directions || []).forEach((d) => dirs.add(d)));
+          return dirs;
+        }
+
+        function isBidirectional(ctype) {
+          return directionsForType(ctype).has('both');
+        }
+
         function getDirection() {
+          if (dirInput.value === 'both') return 'both';
           return dirInput.value === 'out' ? 'out' : 'in';
         }
 
@@ -712,6 +802,34 @@
           if (value === true || value === false) return value;
           const raw = String(value ?? defaultVal ?? '').toLowerCase();
           return ['1', 'true', 'on', 'yes'].includes(raw);
+        }
+
+        function syncDirectionTabs() {
+          const allowed = directionsForType(typeSel.value);
+          const bi = allowed.has('both');
+          if (dirTabsNav) dirTabsNav.hidden = bi;
+          if (dirHint) dirHint.hidden = bi;
+          if (bi) {
+            if (getDirection() !== 'both') {
+              setDirection('both');
+              return;
+            }
+            updateFlowDiagram(typeSel.value, 'both');
+            return;
+          }
+          dirTabs.forEach((tab) => {
+            const ok = allowed.has(tab.dataset.direction);
+            tab.hidden = !ok;
+            tab.disabled = !ok;
+          });
+          const current = getDirection();
+          if (!allowed.has(current)) {
+            const fallback = allowed.has('in') ? 'in' : (allowed.has('out') ? 'out' : current);
+            if (fallback !== current) {
+              setDirection(fallback);
+              return;
+            }
+          }
         }
 
         function setDirection(value) {
@@ -728,7 +846,11 @@
 
         function loadConnector(ctype, direction, mode) {
           selectedAuthType = null;
+          if (ctype === 'ig' && (direction === 'in' || direction === 'out')) {
+            direction = 'both';
+          }
           typeSel.value = ctype;
+          syncDirectionTabs();
           setDirection(direction);
           if (direction === 'out' && mode) {
             modeSel.value = mode;
@@ -737,6 +859,15 @@
         }
 
         function updateFlowDiagram(ctype, direction) {
+          const bi = direction === 'both' || isBidirectional(ctype);
+          if (flowEl) flowEl.classList.toggle('connector-flow--both', bi);
+          if (bi) {
+            if (flowBotStrong) flowBotStrong.textContent = 'IG Markets';
+            flowSourceHint.hidden = true;
+            flowSourceHint.textContent = '';
+            return;
+          }
+          if (flowBotStrong) flowBotStrong.textContent = botDisplayName;
           const labels = FLOW_LABELS[ctype] || { in: 'Source', out: 'Destination' };
           flowSourceText.textContent = labels.in;
           flowDestText.textContent = labels.out;
@@ -806,7 +937,11 @@
         }
 
         function recordFor(ctype, direction) {
-          return saved[recordKey(ctype, direction)] || { active: true, mode: 'validation', config: {} };
+          let rec = saved[recordKey(ctype, direction)];
+          if (!rec && ctype === 'ig' && direction === 'both') {
+            rec = saved['ig:out'] || saved['ig:in'];
+          }
+          return rec || { active: true, mode: direction === 'out' ? 'validation' : 'direct', config: {} };
         }
 
         function applySavedValues(ctype, direction) {
@@ -1022,15 +1157,18 @@
         });
         typeSel.addEventListener('change', () => {
           selectedAuthType = null;
+          syncDirectionTabs();
           updateFlowDiagram(typeSel.value, getDirection());
           renderFields();
         });
+        syncDirectionTabs();
         updateFlowDiagram(typeSel.value, getDirection());
         renderFields();
         updateGreenmailButton();
         window.updateConnectorTestButtons = updateConnectorOAuthUi;
       })();
     </script>
+    {% endif %}
   </div>
   {% endif %}
 
@@ -1047,10 +1185,14 @@
       <h3 class="integration-list__title">Configured</h3>
       <ul class="integration-list__items">
         {% for i in integrations %}
+        {% set denied = i.type.value in integrations_denied_keys %}
         <li>
           <a href="?tab=integrations&amp;integration_type={{ i.type.value }}"
              class="integration-list__link{% if selected_integration_type == i.type.value %} is-selected{% endif %}">
-            <span class="integration-list__name">{{ integration_meta.get(i.type.value, {}).get('label', i.type.value) }}</span>
+            <span class="integration-list__name">
+              {{ integration_meta.get(i.type.value, {}).get('label', i.type.value) }}
+              {% if denied %}<span class="badge failed">Not allowed</span>{% endif %}
+            </span>
             <span class="integration-list__meta">
               {% if i.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}
               <code title="{{ integration_endpoint(i) }}">{{ integration_endpoint(i) }}</code>
@@ -1058,9 +1200,11 @@
           </a>
           {% if can_edit %}
           <div class="integration-list__actions">
+            {% if i.active or not denied %}
             <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integrations/{{ i.id }}/toggle" class="no-loader">
-              <button type="submit" class="btn-secondary btn-sm">Toggle</button>
+              <button type="submit" class="btn-secondary btn-sm" {% if denied and not i.active %}disabled{% endif %}>Toggle</button>
             </form>
+            {% endif %}
             <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integrations/{{ i.id }}/delete" class="no-loader">
               <button type="submit" class="btn-secondary btn-sm">Delete</button>
             </form>
@@ -1075,6 +1219,9 @@
 
     {% if can_edit %}
     <div class="integration-editor card">
+      {% if not integration_types_list %}
+      <p class="text-muted">No integration types are allowed for this bot. An admin can update the allowlist under Config.</p>
+      {% else %}
       <div class="integration-editor__header">
         <label>Type
           <select id="integration-type-select">
@@ -1177,7 +1324,6 @@
           <pre class="integration-catalog-sync-result integration-test-result" hidden></pre>
         </div>
       </details>
-    </div>
 
     <script type="application/json" id="integration-schemas-data">{{ integration_schemas_json|safe }}</script>
     <script type="application/json" id="integration-configs-data">{{ integrations_config_json|safe }}</script>
@@ -1394,6 +1540,8 @@
         renderFields();
       })();
     </script>
+      {% endif %}
+    </div>
     {% endif %}
   </div>
 

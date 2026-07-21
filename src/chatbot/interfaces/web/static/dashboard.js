@@ -689,6 +689,17 @@
 
   initDocUploadDropzone();
 
+  document.addEventListener("click", (event) => {
+    const btn = event.target.closest("[data-checkbox-set]");
+    if (!(btn instanceof HTMLElement)) return;
+    const panel = btn.closest(".checkbox-panel");
+    if (!panel) return;
+    const checked = btn.dataset.checkboxSet === "all";
+    panel.querySelectorAll('input[type="checkbox"]').forEach((input) => {
+      input.checked = checked;
+    });
+  });
+
   const connectorTestBtn = document.getElementById("connector-test-btn");
   if (connectorTestBtn) {
     connectorTestBtn.addEventListener("click", async () => {

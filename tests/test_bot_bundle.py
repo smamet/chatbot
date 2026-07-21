@@ -34,7 +34,12 @@ def bundle_ctx(test_settings):
         prompt="Custom prompt",
         hook_instructions="Hook me",
         gemini_api_key="tenant-gemini-key",
-        config=TenantConfig(rag_enabled=True, rag_top_k=7),
+        config=TenantConfig(
+            rag_enabled=True,
+            rag_top_k=7,
+            allowed_connectors=("whatsapp:in", "email:out"),
+            allowed_integrations=("erpnext", "cac40_backtest"),
+        ),
     )
     tenant_svc.update_tenant(result.tenant.id, active=True)
     tenant_svc.add_blocked_sender(result.tenant.id, "spammer@evil.com")
@@ -79,6 +84,14 @@ def test_build_export_contains_manifest_and_documents(bundle_ctx) -> None:
         assert manifest["bot"]["gemini_api_key"] == "tenant-gemini-key"
         assert manifest["bot"]["config"]["rag_enabled"] is True
         assert manifest["bot"]["config"]["rag_top_k"] == 7
+        assert manifest["bot"]["config"]["allowed_connectors"] == [
+            "whatsapp:in",
+            "email:out",
+        ]
+        assert manifest["bot"]["config"]["allowed_integrations"] == [
+            "erpnext",
+            "cac40_backtest",
+        ]
         assert manifest["email_blocked_senders"] == ["noise@test.com", "spammer@evil.com"]
         assert BLACKLIST_NAME in zf.namelist()
         assert zf.read(BLACKLIST_NAME).decode("utf-8") == "noise@test.com\nspammer@evil.com\n"
@@ -109,6 +122,8 @@ def test_import_create_round_trip(bundle_ctx) -> None:
     assert imported.hook_instructions == "Hook me"
     assert imported.gemini_api_key == "tenant-gemini-key"
     assert imported.config.rag_top_k == 7
+    assert imported.config.allowed_connectors == ("whatsapp:in", "email:out")
+    assert imported.config.allowed_integrations == ("erpnext", "cac40_backtest")
     assert imported.config.email_blocked_senders == ("noise@test.com", "spammer@evil.com")
 
     docs_dir = tenant_docs_dir(settings, imported.slug)

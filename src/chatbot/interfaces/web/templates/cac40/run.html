@@ -1,0 +1,171 @@
+{% extends "base.html" %}
+{% block body %}
+<section class="page-header">
+  <div>
+    <p class="eyebrow"><a href="/dashboard/bots/{{ tenant.slug }}/cac40">CAC40 Backtest</a></p>
+    <h1>{{ run.run_id }}</h1>
+    <p class="subtitle">Status: <span class="badge {{ run.state.status }}">{{ run.state.status }}</span>
+      · Progress {{ '%.0f'|format((run.state.progress or 0) * 100) }}%
+      ({{ run.state.current_bar }}/{{ run.state.total_bars }})
+      {% if run.report and run.report.config %}
+      · Period {{ run.report.config.backtest_period or '—' }}
+      · LLM every {{ run.report.config.llm_every_n or '?' }} × {{ run.report.config.llm_every_unit or '15m' }}
+      {% endif %}
+    </p>
+  </div>
+  <div class="header-actions cac40-run-header-actions">
+    {% if run.state.status == 'running' %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/stop">
+      <button type="submit" class="btn-secondary">Stop</button>
+    </form>
+    {% endif %}
+    {% if run.state.status != 'running' %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/delete"
+          onsubmit="return confirm('Delete this backtest and all charts?');">
+      <button type="submit" class="btn-danger">Delete run</button>
+    </form>
+    {% endif %}
+    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40">All runs</a>
+  </div>
+</section>
+
+{% if run.state.error %}
+<section class="card">
+  <h2>Error</h2>
+  <pre>{{ run.state.error }}</pre>
+</section>
+{% endif %}
+
+{% set report = run.report %}
+{% if report %}
+<section class="card">
+  <h2>Report</h2>
+  <div class="stat-grid">
+    <div><strong>Final equity</strong><br>{{ '%.2f'|format(report.final_equity or 0) }}</div>
+    <div><strong>Realized PnL</strong><br>{{ '%.2f'|format(report.realized_pnl or 0) }}</div>
+    <div><strong>Max DD</strong><br>{{ '%.2f'|format(report.max_drawdown or 0) }}</div>
+    <div><strong>Trades</strong><br>{{ report.trades }} (WR {{ '%.0f'|format((report.winrate or 0) * 100) }}%)</div>
+    <div><strong>LLM decisions</strong><br>{{ report.decisions_count or (run.decisions|length) }}</div>
+  </div>
+</section>
+
+<section class="card">
+  <h2>Closed trades (per leg)</h2>
+  <table class="data-table">
+    <thead>
+      <tr><th>ID</th><th>Side</th><th>Role</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Bars</th></tr>
+    </thead>
+    <tbody>
+      {% for t in report.closed_trades or [] %}
+      <tr>
+        <td>{{ t.id }}</td>
+        <td>{{ t.side }}</td>
+        <td>{{ t.role }}</td>
+        <td>{{ t.entry }}</td>
+        <td>{{ t.exit }}</td>
+        <td>{{ '%.2f'|format(t.pnl) }}</td>
+        <td>{{ t.bars_held }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="7" class="empty-state">No closed trades</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>LLM decisions &amp; charts</h2>
+  <p class="text-muted">Charts below are exactly what was sent to Gemini at each decision point, with the model analysis and RiskGate result. “Accepted” means RiskGate placed/amended/cancelled working orders — not candle fills.</p>
+  {% if run.decisions %}
+  <div class="cac40-decision-list">
+    {% for d in run.decisions %}
+    <details class="cac40-decision" {% if loop.first %}open{% endif %}>
+      <summary>
+        <span class="cac40-decision__ts">{{ d.ts }}</span>
+        <span class="badge">{{ d.bias or 'no decision' }}</span>
+        <span class="text-muted">S={{ d.support if d.support is not none else '—' }} · R={{ d.resistance if d.resistance is not none else '—' }}</span>
+        <span class="text-muted">{{ d.actions|length }} actions</span>
+        {% if d.executed %}<span class="badge done">{{ d.executed|length }} accepted</span>{% endif %}
+        {% if d.rejected %}<span class="badge failed">{{ d.rejected|length }} rej</span>{% endif %}
+        {% set book = d.book or {} %}
+        <span class="text-muted">{{ book.positions|default(0) }} legs · {{ book.working_orders|default(0) }} orders</span>
+      </summary>
+      <div class="cac40-decision__body">
+        {% if d.charts %}
+        <div class="cac40-chart-grid">
+          {% for c in d.charts %}
+          <figure class="cac40-chart">
+            <figcaption>{{ c.tf }}</figcaption>
+            <a href="{{ c.url }}" target="_blank" rel="noopener">
+              <img src="{{ c.url }}" alt="Chart {{ c.tf }} at {{ d.ts }}" loading="lazy">
+            </a>
+          </figure>
+          {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-muted">No chart images for this decision.</p>
+        {% endif %}
+
+        {% set an = (d.decision.analysis if d.decision else {}) or {} %}
+        <div class="cac40-decision__notes">
+          {% if an.rsi_note %}<p><strong>RSI:</strong> {{ an.rsi_note }}</p>{% endif %}
+          {% if an.pivot_note %}<p><strong>Pivot:</strong> {{ an.pivot_note }}</p>{% endif %}
+        </div>
+
+        {% if d.actions %}
+        <h3 class="form-section-title">Proposed actions</h3>
+        <table class="data-table">
+          <thead>
+            <tr><th>Op</th><th>Side</th><th>Level</th><th>Size</th><th>Purpose</th><th>Reason</th></tr>
+          </thead>
+          <tbody>
+            {% for a in d.actions %}
+            <tr>
+              <td><code>{{ a.op }}</code></td>
+              <td>{{ a.side or '—' }}</td>
+              <td>{{ a.level if a.level is not none else '—' }}</td>
+              <td>{{ a.size if a.size is not none else '—' }}</td>
+              <td>{{ a.purpose or '—' }}</td>
+              <td>{{ a.reason or '—' }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+        {% endif %}
+
+        {% if d.executed or d.rejected or d.llm_error or d.llm_mode == 'charts_only' %}
+        <div class="cac40-gate-result">
+          {% if d.llm_mode == 'charts_only' %}
+          <p class="text-muted"><strong>Charts only</strong> — Gemini was not called.</p>
+          {% endif %}
+          {% if d.executed %}
+          <p><strong>Accepted:</strong> <code>{{ d.executed|join(', ') }}</code></p>
+          {% endif %}
+          {% if d.rejected %}
+          <p><strong>Rejected:</strong> <code>{{ d.rejected|join(', ') }}</code></p>
+          {% endif %}
+          {% if d.llm_error %}
+          <p><strong>LLM error:</strong> <code>{{ d.llm_error }}</code></p>
+          {% endif %}
+        </div>
+        {% endif %}
+
+        <details class="cac40-decision__raw">
+          <summary>Raw decision JSON</summary>
+          <pre>{{ d.decision | dumps_json if d.decision else 'null' }}</pre>
+        </details>
+      </div>
+    </details>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="empty-state">No decisions yet (run may still be starting, or llm_mode=replay with empty cache).</p>
+  {% endif %}
+
+  {% if run.state.status == 'running' %}
+  <p class="text-muted">Auto-refresh in 10s…</p>
+  <meta http-equiv="refresh" content="10">
+  {% endif %}
+</section>
+{% endblock %}
