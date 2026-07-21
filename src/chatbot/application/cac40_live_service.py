@@ -446,12 +446,50 @@ def _config_hash(
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
+def _normalize_decision_pnl(pnl: Any) -> dict[str, Any]:
+    """Align live pnl_payload (realized_session) with backtest (realized) for run.html."""
+    if not isinstance(pnl, dict):
+        return {}
+    out = dict(pnl)
+    if "realized" not in out or out.get("realized") is None:
+        if out.get("realized_session") is not None:
+            out["realized"] = out["realized_session"]
+    return out
+
+
+def _book_from_snapshot(snapshot: Any) -> dict[str, Any]:
+    """Compact book counts for the decision summary line."""
+    if not isinstance(snapshot, dict):
+        return {"positions": 0, "working_orders": 0}
+    positions = snapshot.get("positions")
+    working = snapshot.get("working_orders")
+    if isinstance(positions, list):
+        pos_n = len(positions)
+    elif isinstance(positions, dict):
+        pos_n = len(positions)
+    else:
+        pos_n = int(snapshot.get("legs_count") or 0)
+    if isinstance(working, list):
+        wo_n = len(working)
+    elif isinstance(working, dict):
+        wo_n = len(working)
+    else:
+        wo_n = int(snapshot.get("working_orders_count") or 0)
+    return {
+        "positions": pos_n,
+        "working_orders": wo_n,
+        "phase": snapshot.get("phase") or snapshot.get("book_phase"),
+        "last_price": snapshot.get("last_price") or snapshot.get("mid"),
+    }
+
+
 def _append_decision(settings: Settings, slug: str, payload: dict[str, Any]) -> None:
     path = live_decisions_path(settings, slug)
     entries = _read_json(path, default=[]) or []
     if not isinstance(entries, list):
         entries = []
     if payload.get("decision") or payload.get("charts_rel"):
+        snap = payload.get("snapshot") or {}
         entries.append(
             {
                 "ts": payload.get("ts"),
@@ -460,10 +498,12 @@ def _append_decision(settings: Settings, slug: str, payload: dict[str, Any]) -> 
                 "rejected": payload.get("rejected") or [],
                 "charts_rel": payload.get("charts_rel") or "",
                 "chart_files": payload.get("chart_files") or [],
-                "pnl": payload.get("pnl"),
+                "pnl": _normalize_decision_pnl(payload.get("pnl")),
                 "skipped": payload.get("skipped"),
                 "llm_trigger": payload.get("llm_trigger") or [],
                 "mirror": payload.get("mirror") or [],
+                "cycle_dir": payload.get("cycle_dir") or "",
+                "book": _book_from_snapshot(snap),
             }
         )
         _write_json(path, entries[-500:])
@@ -510,58 +550,189 @@ def clear_live_history(settings: Settings, slug: str, *, mode: str | None = None
             pass
 
 
+def _live_chart_urls(
+    slug: str, cycle: str, chart_files: list[str]
+) -> list[dict[str, str]]:
+    charts: list[dict[str, str]] = []
+    for name in chart_files:
+        tf = name.removeprefix("chart_").removesuffix(".png")
+        charts.append(
+            {
+                "tf": tf,
+                "file": name,
+                "url": f"/dashboard/bots/{slug}/cac40/live/charts/{cycle}/{name}",
+            }
+        )
+    return charts
+
+
+def _decision_row_from_entry(
+    entry: dict[str, Any], *, slug: str, journal_root: Path
+) -> dict[str, Any]:
+    """Map a cycle.json / decisions_log entry into run.html decision shape."""
+    charts_rel = str(entry.get("charts_rel") or "").strip().replace("\\", "/")
+    chart_files = list(entry.get("chart_files") or [])
+    cycle = str(entry.get("cycle_dir") or "").strip()
+    if not cycle and charts_rel.startswith("journal/"):
+        parts = charts_rel.split("/")
+        if len(parts) >= 2:
+            cycle = parts[1]
+    if cycle and not chart_files:
+        chart_dir = journal_root / cycle / "charts"
+        if chart_dir.is_dir():
+            chart_files = sorted(p.name for p in chart_dir.glob("chart_*.png"))
+    charts = _live_chart_urls(slug, cycle, chart_files) if cycle and chart_files else []
+    dec = entry.get("decision") or {}
+    if not isinstance(dec, dict):
+        dec = {}
+    analysis = dec.get("analysis") or {}
+    book = entry.get("book")
+    if not isinstance(book, dict) or (
+        "positions" in book and not isinstance(book.get("positions"), int)
+    ):
+        book = _book_from_snapshot(entry.get("snapshot") or {})
+        # If book still has list-shaped leftovers from a bad merge, coerce counts.
+        if isinstance(book.get("positions"), list):
+            book["positions"] = len(book["positions"])
+        if isinstance(book.get("working_orders"), list):
+            book["working_orders"] = len(book["working_orders"])
+    return {
+        **entry,
+        "cycle_dir": cycle,
+        "chart_files": chart_files,
+        "charts": charts,
+        "bias": analysis.get("bias"),
+        "support": analysis.get("support"),
+        "resistance": analysis.get("resistance"),
+        "actions": dec.get("actions") or [],
+        "pnl": _normalize_decision_pnl(entry.get("pnl")),
+        "book": {
+            "positions": int(book.get("positions") or 0),
+            "working_orders": int(book.get("working_orders") or 0),
+            "phase": book.get("phase"),
+            "last_price": book.get("last_price"),
+        },
+    }
+
+
+def _cycle_worth_showing(raw: dict[str, Any]) -> bool:
+    """True for cycles that belong in the live results browser / index list."""
+    if raw.get("decision") or raw.get("charts_rel") or raw.get("chart_files"):
+        return True
+    if raw.get("rejected") or raw.get("executed"):
+        return True
+    return False
+
+
+def _cycle_id_from_entry(entry: dict[str, Any]) -> str:
+    cycle = str(entry.get("cycle_dir") or "").strip()
+    if cycle:
+        return cycle
+    charts_rel = str(entry.get("charts_rel") or "").strip().replace("\\", "/")
+    if charts_rel.startswith("journal/"):
+        parts = charts_rel.split("/")
+        if len(parts) >= 2:
+            return parts[1]
+    return ""
+
+
+def list_live_cycles(
+    settings: Settings, slug: str, *, limit: int = 50
+) -> list[dict[str, Any]]:
+    """Recent live/paper cycles with LLM/charts (newest first). Matches report rows."""
+    journal = live_journal_dir(settings, slug)
+    rows: list[dict[str, Any]] = []
+    for cycle_json in journal.glob("*/cycle.json"):
+        cycle_id = cycle_json.parent.name
+        if cycle_id.startswith("."):
+            continue
+        raw = _read_json(cycle_json, default=None)
+        if not isinstance(raw, dict) or not _cycle_worth_showing(raw):
+            continue
+        dec = raw.get("decision") or {}
+        analysis = (dec.get("analysis") or {}) if isinstance(dec, dict) else {}
+        chart_files = list(raw.get("chart_files") or [])
+        if not chart_files:
+            chart_dir = cycle_json.parent / "charts"
+            if chart_dir.is_dir():
+                chart_files = sorted(p.name for p in chart_dir.glob("chart_*.png"))
+        rows.append(
+            {
+                "cycle_id": cycle_id,
+                "ts": raw.get("ts"),
+                "skipped": bool(raw.get("skipped")),
+                "has_charts": bool(chart_files),
+                "bias": analysis.get("bias"),
+                "executed_count": len(raw.get("executed") or []),
+                "rejected_count": len(raw.get("rejected") or []),
+                "dry_run": bool(raw.get("dry_run")),
+            }
+        )
+    rows.sort(key=lambda r: str(r.get("ts") or r.get("cycle_id") or ""), reverse=True)
+    return rows[: max(1, limit)]
+
+
+def _load_live_decision_entries(settings: Settings, slug: str) -> list[dict[str, Any]]:
+    """Load from journal cycle.json; merge any older decisions_log rows not already covered."""
+    journal = live_journal_dir(settings, slug)
+    entries: list[dict[str, Any]] = []
+    seen_cycles: set[str] = set()
+    for cycle_json in sorted(journal.glob("*/cycle.json")):
+        raw = _read_json(cycle_json, default=None)
+        if not isinstance(raw, dict) or not _cycle_worth_showing(raw):
+            continue
+        if not raw.get("cycle_dir"):
+            raw = {**raw, "cycle_dir": cycle_json.parent.name}
+        cid = _cycle_id_from_entry(raw) or cycle_json.parent.name
+        seen_cycles.add(cid)
+        entries.append(raw)
+
+    log_raw = _read_json(live_decisions_path(settings, slug), default=[]) or []
+    if isinstance(log_raw, list):
+        for entry in log_raw:
+            if not isinstance(entry, dict) or not _cycle_worth_showing(entry):
+                continue
+            cid = _cycle_id_from_entry(entry)
+            if cid and cid in seen_cycles:
+                continue
+            if cid:
+                seen_cycles.add(cid)
+            entries.append(entry)
+
+    entries.sort(key=lambda e: str(e.get("ts") or _cycle_id_from_entry(e) or ""))
+    out = [
+        _decision_row_from_entry(e, slug=slug, journal_root=journal) for e in entries
+    ]
+    out.reverse()
+    return out
+
+
 def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
     """Build a run-like report payload for the live results page."""
     live_cfg = load_live_config(settings, slug)
     status = read_live_status(settings, slug)
     state_raw = _read_json(live_state_path(settings, slug), default={}) or {}
     root = live_dir(settings, slug)
-    decisions_raw = _read_json(live_decisions_path(settings, slug), default=[]) or []
-    if not isinstance(decisions_raw, list):
-        decisions_raw = []
-
-    decisions: list[dict[str, Any]] = []
-    for entry in decisions_raw:
-        charts_rel = str(entry.get("charts_rel") or "").strip().replace("\\", "/")
-        chart_files = list(entry.get("chart_files") or [])
-        charts = []
-        if charts_rel.startswith("journal/") and chart_files:
-            parts = charts_rel.split("/")
-            if len(parts) >= 3:
-                cycle = parts[1]
-                for name in chart_files:
-                    tf = name.removeprefix("chart_").removesuffix(".png")
-                    charts.append(
-                        {
-                            "tf": tf,
-                            "file": name,
-                            "url": (
-                                f"/dashboard/bots/{slug}/cac40/live/charts/"
-                                f"{cycle}/{name}"
-                            ),
-                        }
-                    )
-        dec = entry.get("decision") or {}
-        analysis = dec.get("analysis") or {}
-        decisions.append(
-            {
-                **entry,
-                "chart_files": chart_files,
-                "charts": charts,
-                "bias": analysis.get("bias"),
-                "support": analysis.get("support"),
-                "resistance": analysis.get("resistance"),
-                "actions": dec.get("actions") or [],
-            }
-        )
-    decisions.reverse()
+    decisions = _load_live_decision_entries(settings, slug)
 
     positions = state_raw.get("positions") or []
     working = state_raw.get("working_orders") or []
     closed = state_raw.get("closed_trades") or []
+    if not isinstance(positions, list):
+        positions = list(positions.values()) if isinstance(positions, dict) else []
+    if not isinstance(working, list):
+        working = list(working.values()) if isinstance(working, dict) else []
+    if not isinstance(closed, list):
+        closed = []
     net_upl = sum(float(p.get("upl") or 0) for p in positions if isinstance(p, dict))
     realized = float(state_raw.get("realized_session") or 0)
     mode = live_cfg["mode"]
+    llm_calls = sum(
+        1
+        for d in decisions
+        if not d.get("skipped")
+        and (d.get("decision") or d.get("charts") or d.get("chart_files"))
+    )
     return {
         "run_id": "live",
         "live": True,
@@ -584,7 +755,8 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
             "max_drawdown": None,
             "trades": len(closed),
             "winrate": None,
-            "decisions_count": len(decisions_raw),
+            "decisions_count": len(decisions),
+            "llm_calls_total": llm_calls,
             "closed_trades": [
                 {
                     "id": t.get("id"),
@@ -599,7 +771,7 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
                 if isinstance(t, dict)
             ],
             "summary": {
-                "cycles": status.get("cycles") or len(decisions_raw),
+                "cycles": status.get("cycles") or len(decisions),
                 "open_legs": len(positions),
                 "realized": realized,
                 "net_upl": net_upl,
@@ -617,6 +789,7 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
         "pnl": {
             "net_upl": net_upl,
             "realized_session": realized,
+            "realized": realized,
             "legs_count": len(positions),
             "working_orders_count": len(working),
         },

@@ -217,6 +217,39 @@
     {% endif %}
   </div>
 
+  {% if live_cycles %}
+  <h3 class="card-title" style="font-size:1rem;margin-top:1rem;">Live cycles</h3>
+  <p class="field-hint">Recent paper/live cycles with charts &amp; LLM answers (same viewer as backtest).</p>
+  <ul class="cac40-runs__list" style="margin-bottom:1rem;">
+    {% for c in live_cycles %}
+    <li class="cac40-run">
+      <div class="cac40-run__main">
+        <a class="cac40-run__id" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report#cycle-{{ c.cycle_id }}" title="{{ c.cycle_id }}">{{ c.cycle_id }}</a>
+        {% if c.skipped %}<span class="badge off">skipped</span>
+        {% elif c.bias %}<span class="badge">{{ c.bias }}</span>
+        {% else %}<span class="badge">decision</span>{% endif %}
+        {% if c.has_charts %}<span class="badge done">charts</span>{% endif %}
+        {% if c.dry_run %}<span class="badge">dry-run</span>{% endif %}
+        <span class="text-muted">{{ c.ts or '—' }}</span>
+      </div>
+      <div class="cac40-run__metrics">
+        <span class="cac40-run__metric">
+          <b>{{ c.executed_count }}</b>
+          <small>Accepted</small>
+        </span>
+        <span class="cac40-run__metric">
+          <b>{{ c.rejected_count }}</b>
+          <small>Rejected</small>
+        </span>
+      </div>
+      <div class="cac40-run__actions">
+        <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report#cycle-{{ c.cycle_id }}">Open</a>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% endif %}
+
   <form id="cac40-live-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/config" class="stack-form">
     <h3 class="card-title" style="font-size:1rem;">IG accounts</h3>
     <p class="field-hint">First checked account is the primary price feed. Orders are mirrored to every selected account in Live mode.</p>

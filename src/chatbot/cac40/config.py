@@ -69,7 +69,7 @@ class Cac40Config:
     """Shared live / backtest configuration."""
 
     symbol: str = "CAC40"
-    epic: str = "IX.D.CAC.DAILY.IP"
+    epic: str = "IX.D.CAC.BMU.IP"
     max_open_positions: int = 4
     order_size: float = 1.0
     allow_market_orders: bool = False

@@ -24,10 +24,10 @@ On **CAC40 Backtest** → **Live trading**:
 2. Check the accounts to use; **first checked = primary price feed**. Orders in Live mode are mirrored to every selected account.
 3. Save strategy (same knobs as the simulation form, minus period/llm_mode).
 4. **Paper** = Gemini + simulated ledger (no IG order API). **Live** = real working orders (each connector’s DEMO/LIVE env). **Off** = worker skips the bot.
-5. **View results** opens the live report (decisions, charts, open legs, realized/UPL).
+5. **View results** opens the live report (same decision browser as backtest: charts sent to Gemini + LLM answer). Recent cycles also appear under **Live cycles** on the CAC40 page.
 6. Disarming (Off/Paper) stops new cycles but **does not cancel** IG working orders already placed.
 
-Config lives under `data/cac40/{slug}/live/` (`live_config.json`, `status.json`, `state.json`, `decisions_log.json`, `journal/`).
+Config lives under `data/cac40/{slug}/live/` (`live_config.json`, `status.json`, `state.json`, `decisions_log.json`, `journal/{cycle}/cycle.json` + charts).
 
 ```bash
 # Live worker

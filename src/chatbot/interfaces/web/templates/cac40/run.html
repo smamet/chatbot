@@ -94,7 +94,7 @@
         <td>{{ t.role }}</td>
         <td>{{ t.entry }}</td>
         <td>{{ t.exit }}</td>
-        <td>{{ '%.2f'|format(t.pnl) }}</td>
+        <td>{{ '%.2f'|format(t.pnl) if t.pnl is number else '—' }}</td>
         <td>{{ t.bars_held }}</td>
       </tr>
       {% else %}
@@ -111,7 +111,7 @@
   {% if run.decisions %}
   <div class="cac40-decision-list">
     {% for d in run.decisions %}
-    <details class="cac40-decision" {% if loop.first %}open{% endif %}>
+    <details class="cac40-decision" id="cycle-{{ d.cycle_dir or loop.index }}" {% if loop.first %}open{% endif %}>
       <summary>
         <span class="cac40-decision__ts">{{ d.ts }}</span>
         <span class="badge">{{ d.bias or 'no decision' }}</span>
@@ -120,21 +120,25 @@
         {% if d.executed %}<span class="badge done">{{ d.executed|length }} accepted</span>{% endif %}
         {% if d.rejected %}<span class="badge failed">{{ d.rejected|length }} rej</span>{% endif %}
         {% set book = d.book or {} %}
-        <span class="text-muted">{{ book.positions|default(0) }} legs · {{ book.working_orders|default(0) }} orders</span>
+        {% set legs_n = book.positions if book.positions is number else (book.positions|length if book.positions is iterable and book.positions is not string else 0) %}
+        {% set orders_n = book.working_orders if book.working_orders is number else (book.working_orders|length if book.working_orders is iterable and book.working_orders is not string else 0) %}
+        <span class="text-muted">{{ legs_n }} legs · {{ orders_n }} orders</span>
         {% set pnl = d.pnl or {} %}
-        {% if pnl.net_upl is not none or pnl.realized is not none %}
+        {% set realized = pnl.realized if pnl.realized is number else (pnl.realized_session if pnl.realized_session is number else none) %}
+        {% set net_upl = pnl.net_upl if pnl.net_upl is number else none %}
+        {% if net_upl is not none or realized is not none %}
         <span class="cac40-decision__pnl">
-          {% if pnl.net_upl is not none %}
-          <span class="{% if pnl.net_upl > 0 %}cac40-decision__pnl--pos{% elif pnl.net_upl < 0 %}cac40-decision__pnl--neg{% endif %}">
-            UPL {{ '%+.2f'|format(pnl.net_upl) }}
+          {% if net_upl is not none %}
+          <span class="{% if net_upl > 0 %}cac40-decision__pnl--pos{% elif net_upl < 0 %}cac40-decision__pnl--neg{% endif %}">
+            UPL {{ '%+.2f'|format(net_upl) }}
           </span>
           {% else %}
           <span>UPL —</span>
           {% endif %}
           <span class="text-muted">·</span>
-          {% if pnl.realized is not none %}
-          <span class="{% if pnl.realized > 0 %}cac40-decision__pnl--pos{% elif pnl.realized < 0 %}cac40-decision__pnl--neg{% endif %}">
-            PnL {{ '%+.2f'|format(pnl.realized) }}
+          {% if realized is not none %}
+          <span class="{% if realized > 0 %}cac40-decision__pnl--pos{% elif realized < 0 %}cac40-decision__pnl--neg{% endif %}">
+            PnL {{ '%+.2f'|format(realized) }}
           </span>
           {% else %}
           <span>PnL —</span>
@@ -219,9 +223,9 @@
   <p class="empty-state">No decisions yet (run may still be starting, or llm_mode=replay with empty cache).</p>
   {% endif %}
 
-  {% if run.state.status == 'running' %}
-  <p class="text-muted">Auto-refresh in 10s…</p>
-  <meta http-equiv="refresh" content="10">
+  {% if run.state.status == 'running' or (live and run.mode in ('paper', 'live')) %}
+  <p class="text-muted">Auto-refresh in {% if live %}30{% else %}10{% endif %}s…</p>
+  <meta http-equiv="refresh" content="{% if live %}30{% else %}10{% endif %}">
   {% endif %}
 </section>
 
