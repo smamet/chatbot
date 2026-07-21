@@ -26,6 +26,7 @@ from chatbot.application.cac40_live_service import (
     LIVE_CYCLE_SECONDS,
     clear_live_history,
     get_live_report,
+    list_live_cycles,
     load_live_config,
     read_live_status,
     read_live_worker_status,
@@ -107,7 +108,7 @@ def cac40_index(
     integ_cfg = dict(integration.config) if integration else {}
     defaults = Cac40Config().to_dict()
     defaults["symbol"] = str(integ_cfg.get("symbol") or defaults["symbol"] or "CAC40")
-    defaults["epic"] = str(integ_cfg.get("epic") or defaults["epic"] or "IX.D.CAC.DAILY.IP")
+    defaults["epic"] = str(integ_cfg.get("epic") or defaults["epic"] or "IX.D.CAC.BMU.IP")
     if integ_cfg.get("max_open_positions") not in (None, ""):
         try:
             defaults["max_open_positions"] = int(integ_cfg["max_open_positions"])
@@ -191,6 +192,7 @@ def cac40_index(
             "ig_connectors": ig_connectors,
             "cac40_live_poll_seconds": settings.cac40_live_poll_seconds,
             "live_cycle_seconds": LIVE_CYCLE_SECONDS,
+            "live_cycles": list_live_cycles(settings, slug, limit=50),
         },
     )
 
@@ -333,7 +335,7 @@ def cac40_start_run(
     )
     integ_cfg = dict(integration.config) if integration else {}
     symbol = str(integ_cfg.get("symbol") or "CAC40").strip() or "CAC40"
-    epic = str(integ_cfg.get("epic") or "IX.D.CAC.DAILY.IP").strip() or "IX.D.CAC.DAILY.IP"
+    epic = str(integ_cfg.get("epic") or "IX.D.CAC.BMU.IP").strip() or "IX.D.CAC.BMU.IP"
 
     cfg = Cac40Config(
         symbol=symbol,

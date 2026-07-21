@@ -203,3 +203,197 @@ def test_ledger_state_roundtrip() -> None:
     order = next(iter(restored.working_orders.values()))
     assert order.level == 7900.0
     assert order.side == Side.BUY
+
+
+def test_normalize_decision_pnl_adds_realized() -> None:
+    from chatbot.application.cac40_live_service import _normalize_decision_pnl
+
+    out = _normalize_decision_pnl(
+        {"net_upl": 1.5, "realized_session": 12.0, "legs_count": 0}
+    )
+    assert out["realized"] == 12.0
+    assert out["realized_session"] == 12.0
+
+
+def test_get_live_report_from_journal_cycle(settings: Settings, tmp_path: Path) -> None:
+    from chatbot.application.cac40_live_service import (
+        get_live_report,
+        list_live_cycles,
+        live_journal_dir,
+        save_live_config,
+    )
+
+    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [1], "strategy": {}})
+    journal = live_journal_dir(settings, "demo-bot")
+    cycle = journal / "20260721_120015"
+    charts = cycle / "charts"
+    charts.mkdir(parents=True)
+    (charts / "chart_15m.png").write_bytes(b"png")
+    (cycle / "cycle.json").write_text(
+        __import__("json").dumps(
+            {
+                "ts": "2026-07-21T12:00:15+00:00",
+                "cycle_dir": "20260721_120015",
+                "decision": {
+                    "analysis": {"bias": "long", "support": 1, "resistance": 2},
+                    "actions": [{"op": "place"}],
+                },
+                "executed": ["ok"],
+                "rejected": [],
+                "charts_rel": "journal/20260721_120015/charts",
+                "chart_files": [],
+                "pnl": {"net_upl": 0, "realized_session": 3.5},
+                "skipped": False,
+                "snapshot": {
+                    "positions": [],
+                    "working_orders": [{"id": "w1"}],
+                    "phase": "Flat",
+                    "last_price": 8000,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Quiet skipped cycle should not appear in list/report.
+    quiet = journal / "20260721_121515"
+    quiet.mkdir(parents=True)
+    (quiet / "cycle.json").write_text(
+        __import__("json").dumps(
+            {
+                "ts": "2026-07-21T12:15:15+00:00",
+                "cycle_dir": "20260721_121515",
+                "skipped": True,
+                "decision": None,
+                "charts_rel": "",
+                "chart_files": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    cycles = list_live_cycles(settings, "demo-bot")
+    assert len(cycles) == 1
+    assert cycles[0]["cycle_id"] == "20260721_120015"
+    assert cycles[0]["has_charts"] is True
+    assert cycles[0]["bias"] == "long"
+
+    report = get_live_report(settings, "demo-bot")
+    assert len(report["decisions"]) == 1
+    d = report["decisions"][0]
+    assert d["bias"] == "long"
+    assert d["pnl"]["realized"] == 3.5
+    assert d["book"]["working_orders"] == 1
+    assert d["charts"]
+    assert "live/charts/20260721_120015/chart_15m.png" in d["charts"][0]["url"]
+
+
+def test_get_live_report_merges_decisions_log(settings: Settings) -> None:
+    from chatbot.application.cac40_live_service import (
+        _write_json,
+        get_live_report,
+        live_decisions_path,
+        live_journal_dir,
+        save_live_config,
+    )
+
+    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [1], "strategy": {}})
+    journal = live_journal_dir(settings, "demo-bot")
+    cycle = journal / "20260721_130000"
+    cycle.mkdir(parents=True)
+    (cycle / "cycle.json").write_text(
+        __import__("json").dumps(
+            {
+                "ts": "2026-07-21T13:00:00+00:00",
+                "cycle_dir": "20260721_130000",
+                "decision": {"analysis": {"bias": "long"}, "actions": []},
+                "executed": [],
+                "rejected": [],
+                "charts_rel": "journal/20260721_130000/charts",
+                "chart_files": ["chart_15m.png"],
+                "pnl": {"realized_session": 1.0},
+                "skipped": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    _write_json(
+        live_decisions_path(settings, "demo-bot"),
+        [
+            {
+                "ts": "2026-07-21T11:00:00+00:00",
+                "cycle_dir": "legacy_only",
+                "decision": {"analysis": {"bias": "short"}, "actions": []},
+                "executed": [],
+                "rejected": [],
+                "charts_rel": "",
+                "chart_files": [],
+                "pnl": {"realized_session": 0.0},
+                "skipped": False,
+            },
+            {
+                "ts": "2026-07-21T13:00:00+00:00",
+                "cycle_dir": "20260721_130000",
+                "decision": {"analysis": {"bias": "long"}, "actions": []},
+                "executed": [],
+                "rejected": [],
+                "charts_rel": "journal/20260721_130000/charts",
+                "chart_files": ["chart_15m.png"],
+                "pnl": {"realized_session": 1.0},
+                "skipped": False,
+            },
+        ],
+    )
+    report = get_live_report(settings, "demo-bot")
+    biases = [d["bias"] for d in report["decisions"]]
+    assert biases == ["long", "short"]
+    assert report["report"]["llm_calls_total"] == 2
+
+
+def test_live_report_render_with_realized_session_only(settings: Settings) -> None:
+    """Regression: run.html must not 500 when pnl only has realized_session."""
+    from jinja2 import Environment, FileSystemLoader, select_autoescape
+
+    from chatbot.application.cac40_live_service import get_live_report, save_live_config
+    from chatbot.interfaces.web.templates import dumps_json
+
+    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [], "strategy": {}})
+    from chatbot.application.cac40_live_service import live_decisions_path, _write_json
+
+    _write_json(
+        live_decisions_path(settings, "demo-bot"),
+        [
+            {
+                "ts": "2026-07-21T12:00:00Z",
+                "decision": {"analysis": {"bias": "flat"}, "actions": []},
+                "executed": [],
+                "rejected": [],
+                "charts_rel": "",
+                "chart_files": [],
+                "pnl": {"net_upl": 0, "realized_session": 0.0},
+                "skipped": False,
+            }
+        ],
+    )
+    run = get_live_report(settings, "demo-bot")
+    assert run["decisions"][0]["pnl"]["realized"] == 0.0
+
+    env = Environment(
+        loader=FileSystemLoader("src/chatbot/interfaces/web/templates"),
+        autoescape=select_autoescape(["html", "xml"]),
+    )
+    env.filters["dumps_json"] = dumps_json
+
+    class _Req:
+        url = type("U", (), {"path": "/x"})()
+        state = type("S", (), {"cac40_trading": None})()
+
+    html = env.get_template("cac40/run.html").render(
+        request=_Req(),
+        user=type("U", (), {"role": "admin"})(),
+        tenant=type("T", (), {"slug": "demo-bot", "name": "Demo"})(),
+        title="Live",
+        run=run,
+        live=True,
+    )
+    assert "Live results" in html
+    assert "flat" in html or "no decision" in html or "PnL" in html

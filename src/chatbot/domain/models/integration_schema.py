@@ -263,7 +263,7 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
             key="epic",
             label="IG epic",
             help="IG market epic for this bot's symbol (must match the IG connector epic used for sync).",
-            default="IX.D.CAC.DAILY.IP",
+            default="IX.D.CAC.BMU.IP",
             required=True,
         ),
         IntegrationField(

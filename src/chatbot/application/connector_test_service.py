@@ -88,7 +88,7 @@ def _test_ig(config: dict) -> ConnectorTestResult:
     acc_type = str(config.get("acc_type", "DEMO") or "DEMO").strip().upper()
     if acc_type not in ("DEMO", "LIVE"):
         acc_type = "DEMO"
-    epic = str(config.get("epic", "") or "IX.D.CAC.DAILY.IP").strip()
+    epic = str(config.get("epic", "") or "IX.D.CAC.BMU.IP").strip()
     account_id = str(config.get("account_id", "")).strip()
     base_url = _IG_HOSTS.get(acc_type, _IG_HOSTS["DEMO"])
     context = (
@@ -183,7 +183,7 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
             ),
             error="live_blocked",
         )
-    epic = str(config.get("epic", "") or "IX.D.CAC.DAILY.IP").strip()
+    epic = str(config.get("epic", "") or "IX.D.CAC.BMU.IP").strip()
     account_id = str(config.get("account_id", "")).strip()
     size = float(config.get("order_size") or 1.0)
     if size <= 0:
@@ -237,7 +237,7 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
                 lines.append(
                     "Could not auto-find a compatible France 40 epic. "
                     "In IG, open France 40 on this CFD account, then copy its epic "
-                    "(often IX.D.CAC.IFS.IP or similar — not …DAILY.IP)."
+                    "(often IX.D.CAC.BMU.IP / IFS / CFS — not …DAILY.IP)."
                 )
                 if seen:
                     lines.append(f"Search saw: {', '.join(seen[:12])}")
