@@ -175,6 +175,82 @@ def live_worker_status_path(settings: Settings) -> Path:
     return Path(settings.data_root) / "cac40" / "live_worker_status.json"
 
 
+def llm_schedule_path(settings: Settings, slug: str) -> Path:
+    return live_dir(settings, slug) / "llm_schedule.json"
+
+
+def load_llm_schedule(settings: Settings, slug: str) -> dict[str, Any]:
+    """
+    Persisted Fixed-rate gate. Seeds last_llm_at from the newest LLM cycle if missing
+    so a deploy/restart does not immediately re-fire Gemini.
+    """
+    raw = _read_json(llm_schedule_path(settings, slug), default={}) or {}
+    if not isinstance(raw, dict):
+        raw = {}
+    last = str(raw.get("last_llm_at") or "").strip()
+    if not last:
+        for cycle in list_live_cycles(settings, slug, limit=1):
+            ts = str(cycle.get("ts") or "").strip()
+            if ts:
+                last = ts
+                break
+    return {
+        "last_llm_at": last or None,
+        "every_bars": raw.get("every_bars"),
+        "mode": raw.get("mode"),
+    }
+
+
+def save_llm_schedule(
+    settings: Settings,
+    slug: str,
+    *,
+    last_llm_at: datetime | str | None,
+    every_bars: int | None = None,
+    mode: str | None = None,
+) -> None:
+    if isinstance(last_llm_at, datetime):
+        ts = last_llm_at.astimezone(timezone.utc).isoformat()
+    else:
+        ts = str(last_llm_at).strip() if last_llm_at else None
+    payload = {
+        "last_llm_at": ts,
+        "every_bars": every_bars,
+        "mode": mode,
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+    }
+    _write_json(llm_schedule_path(settings, slug), payload)
+
+
+def _apply_llm_schedule(sched: LiveScheduler, settings: Settings, slug: str) -> None:
+    """Configure live interval spacing from disk (wall clock)."""
+    sched.trigger.interval_clock = "wall"
+    sched.trigger.every_bars = int(sched.config.resolve_llm_every_bars())
+    sched.trigger.mode = str(sched.config.llm_trigger_mode or "levels")
+    schedule = load_llm_schedule(settings, slug)
+    raw_ts = schedule.get("last_llm_at")
+    if raw_ts:
+        try:
+            parsed = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            sched.trigger.last_llm_at = parsed.astimezone(timezone.utc)
+        except ValueError:
+            sched.trigger.last_llm_at = None
+
+
+def _persist_llm_schedule(sched: LiveScheduler, settings: Settings, slug: str) -> None:
+    if sched.trigger.last_llm_at is None:
+        return
+    save_llm_schedule(
+        settings,
+        slug,
+        last_llm_at=sched.trigger.last_llm_at,
+        every_bars=int(sched.trigger.every_bars or 0) or None,
+        mode=str(sched.trigger.mode or ""),
+    )
+
+
 def _read_json(path: Path, default: Any = None) -> Any:
     if not path.exists():
         return default
@@ -858,6 +934,7 @@ def _get_or_build_scheduler(
         secondary = IgConnector(secondary_cfg, dry_run=dry_run)
         order_connectors.append((cid, secondary))
     sched.order_connectors = order_connectors
+    _apply_llm_schedule(sched, settings, slug)
 
     with _LOCK:
         _SCHEDULERS[slug] = sched
@@ -961,6 +1038,7 @@ def run_live_cycle_now(
                 session_factory=session_factory,
             )
             payload = sched.run_once()
+            _persist_llm_schedule(sched, settings, slug)
             _write_json(live_state_path(settings, slug), sched.ig.ledger.to_state_dict())
             _append_decision(settings, slug, payload)
             slot = _remember_cycle_slot(slug)
@@ -1130,6 +1208,7 @@ def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
                     session_factory=factory,
                 )
                 payload = sched.run_once()
+                _persist_llm_schedule(sched, settings, slug)
                 _write_json(live_state_path(settings, slug), sched.ig.ledger.to_state_dict())
                 _append_decision(settings, slug, payload)
                 _remember_cycle_slot(slug, slot)

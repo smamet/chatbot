@@ -36,7 +36,7 @@ Config lives under `data/cac40/{slug}/live/` (`live_config.json`, `status.json`,
 ./sail logs worker-cac40-live
 ```
 
-Poll interval: `CAC40_LIVE_POLL_SECONDS` (default 60). Bot cycles align to 15m candle closes in Europe/Paris at `:00:15`, `:15:15`, `:30:15`, `:45:15` (15s after the bar closes so OHLC is available).
+Poll interval: `CAC40_LIVE_POLL_SECONDS` (default 60). Bot cycles align to 15m candle closes in Europe/Paris at `:00:15`, `:15:15`, `:30:15`, `:45:15` (15s after the bar closes so OHLC is available). With **Fixed rate** LLM schedule, Gemini spacing uses a persisted wall-clock gate (`live/llm_schedule.json`, seeded from the last LLM cycle) so restarts / Run cycle now do not reset the 6h (or configured) interval.
 
 ## CLI
 

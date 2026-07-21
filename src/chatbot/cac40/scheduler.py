@@ -177,6 +177,8 @@ class LiveScheduler:
                     last_decision=self._last_decision_summary,
                     allow_market_orders=bool(self.config.allow_market_orders),
                 )
+                # Count the attempt for wall-clock Fixed rate (live), even if fail-closed.
+                self.trigger.mark_llm_called()
                 if decision and bar is not None:
                     gate_result = gate.apply(decision)
                     self._mirror_orders_to_ig(gate_result)

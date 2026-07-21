@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 Zone = Literal["mid_range", "in_band", "beyond"]
@@ -64,11 +65,18 @@ class LlmTrigger:
 
     Zone state advances only after a successful call (on_success).
     Failures keep pending reasons so the next bar retries.
+
+    Interval mode:
+    - ``interval_clock="bars"`` (backtest): call when ``bar_index % every_bars == 0``.
+    - ``interval_clock="wall"`` (live): call when ``every_bars`` × 15m have elapsed
+      since ``last_llm_at`` (persisted across restarts).
     """
 
     band_points: float = 15.0
     mode: str = "levels"  # levels | interval
     every_bars: int = 24
+    interval_clock: str = "bars"  # bars | wall
+    last_llm_at: datetime | None = None
 
     support_zone: Zone = "mid_range"
     resistance_zone: Zone = "mid_range"
@@ -76,6 +84,28 @@ class LlmTrigger:
     book_change_pending: bool = False
     _levels_key: tuple[float | None, float | None] | None = None
     _prev_position_ids: set[str] | None = None
+
+    def mark_llm_called(self, when: datetime | None = None) -> None:
+        """Record an LLM attempt for wall-clock interval spacing."""
+        ts = when or datetime.now(timezone.utc)
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=timezone.utc)
+        self.last_llm_at = ts.astimezone(timezone.utc)
+
+    def interval_due(self, *, bar_index: int = 0, now: datetime | None = None) -> bool:
+        every = max(1, int(self.every_bars or 1))
+        clock = (self.interval_clock or "bars").strip().lower()
+        if clock == "wall" and self.last_llm_at is not None:
+            current = now or datetime.now(timezone.utc)
+            if current.tzinfo is None:
+                current = current.replace(tzinfo=timezone.utc)
+            last = self.last_llm_at
+            if last.tzinfo is None:
+                last = last.replace(tzinfo=timezone.utc)
+            # every_bars is a 15m-bar stride (e.g. 24 → 6 hours).
+            min_seconds = every * 15 * 60
+            return (current - last.astimezone(timezone.utc)).total_seconds() >= min_seconds - 5
+        return bar_index % every == 0
 
     def note_fills(self, events: list[dict[str, Any]] | None) -> None:
         """Mark book_change when ledger reports open/close fills."""
@@ -103,8 +133,7 @@ class LlmTrigger:
     ) -> TriggerDecision:
         mode = (self.mode or "levels").strip().lower()
         if mode == "interval":
-            every = max(1, int(self.every_bars or 1))
-            should = bar_index % every == 0
+            should = self.interval_due(bar_index=bar_index)
             reasons = (TRIGGER_INTERVAL,) if should else ()
             if should:
                 self.pending_reasons = list(reasons)

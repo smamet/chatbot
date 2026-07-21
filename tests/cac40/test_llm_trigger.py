@@ -175,6 +175,31 @@ def test_interval_mode() -> None:
     assert t.evaluate(bar=mid, support=S, resistance=R, bar_index=4).should_call is True
 
 
+def test_interval_wall_clock_respects_last_llm_at() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    mid = _bar(7050, 7060, 7040, 7055)
+    t = LlmTrigger(
+        band_points=BAND,
+        mode="interval",
+        every_bars=4,  # 4 × 15m = 1 hour
+        interval_clock="wall",
+    )
+    now = datetime(2026, 7, 21, 12, 0, tzinfo=timezone.utc)
+    # Never called → first fire allowed (bar path / no last).
+    assert t.interval_due(bar_index=0, now=now) is True
+    t.mark_llm_called(now)
+    # 30 minutes later — too soon.
+    assert t.interval_due(bar_index=99, now=now + timedelta(minutes=30)) is False
+    # 1 hour later — due.
+    assert t.interval_due(bar_index=99, now=now + timedelta(hours=1)) is True
+    d = t.evaluate(bar=mid, support=S, resistance=R, bar_index=99)
+    # evaluate uses "now" internally; with last_llm_at=now and real clock, may vary.
+    # Force via interval_due already covered; ensure evaluate still interval-gated:
+    t.last_llm_at = datetime.now(timezone.utc)
+    assert t.evaluate(bar=mid, support=S, resistance=R, bar_index=0).should_call is False
+
+
 def test_new_levels_recompute_zones_without_spurious_fire() -> None:
     t = LlmTrigger(band_points=BAND, mode="levels")
     mid = _bar(7050, 7060, 7040, 7055)

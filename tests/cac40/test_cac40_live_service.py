@@ -349,6 +349,50 @@ def test_get_live_report_merges_decisions_log(settings: Settings) -> None:
     assert report["report"]["llm_calls_total"] == 2
 
 
+def test_llm_schedule_persists_and_seeds(settings: Settings) -> None:
+    from datetime import datetime, timezone
+
+    from chatbot.application.cac40_live_service import (
+        _write_json,
+        live_journal_dir,
+        load_llm_schedule,
+        save_llm_schedule,
+        save_live_config,
+    )
+
+    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [1], "strategy": {}})
+    journal = live_journal_dir(settings, "demo-bot")
+    cycle = journal / "20260721_120000"
+    cycle.mkdir(parents=True)
+    (cycle / "cycle.json").write_text(
+        __import__("json").dumps(
+            {
+                "ts": "2026-07-21T12:00:00+00:00",
+                "cycle_dir": "20260721_120000",
+                "decision": {"analysis": {"bias": "long"}, "actions": []},
+                "executed": [],
+                "rejected": [],
+                "charts_rel": "journal/20260721_120000/charts",
+                "chart_files": ["chart_15m.png"],
+                "skipped": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    seeded = load_llm_schedule(settings, "demo-bot")
+    assert seeded["last_llm_at"] == "2026-07-21T12:00:00+00:00"
+
+    save_llm_schedule(
+        settings,
+        "demo-bot",
+        last_llm_at=datetime(2026, 7, 21, 18, 0, tzinfo=timezone.utc),
+        every_bars=24,
+        mode="interval",
+    )
+    loaded = load_llm_schedule(settings, "demo-bot")
+    assert loaded["last_llm_at"].startswith("2026-07-21T18:00:00")
+
+
 def test_live_report_render_with_realized_session_only(settings: Settings) -> None:
     """Regression: run.html must not 500 when pnl only has realized_session."""
     from jinja2 import Environment, FileSystemLoader, select_autoescape
