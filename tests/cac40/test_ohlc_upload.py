@@ -1,6 +1,10 @@
 from pathlib import Path
 
-from chatbot.application.cac40_backtest_service import ohlc_info, save_ohlc_upload
+from chatbot.application.cac40_backtest_service import (
+    default_ohlc_path,
+    ohlc_info,
+    save_ohlc_upload,
+)
 import pandas as pd
 
 from chatbot.cac40.ohlc_store import load_ohlc_csv, slice_ohlc_period
@@ -18,8 +22,20 @@ def test_save_ohlc_upload(tmp_path: Path):
     assert info["exists"] is True
     assert info["bars"] == 2
     assert Path(info["path"]).exists()
+    assert Path(info["path"]).name == "ohlc_15m.csv"
     again = ohlc_info(settings, "demo-bot")
     assert again["bars"] == 2
+
+
+def test_default_ohlc_path_prefers_legacy_when_present(tmp_path: Path):
+    settings = Settings(data_root=tmp_path)
+    legacy = default_ohlc_path(settings, "old-bot")
+    # No file yet → preferred name
+    assert legacy.name == "ohlc_15m.csv"
+    legacy_file = settings.data_root / "cac40" / "old-bot" / "ohlc" / "cac40_15m.csv"
+    legacy_file.parent.mkdir(parents=True, exist_ok=True)
+    legacy_file.write_text("Date,Open,High,Low,Close\n2024-01-02,1,1,1,1\n")
+    assert default_ohlc_path(settings, "old-bot").name == "cac40_15m.csv"
 
 
 def test_save_ohlc_upload_backtestmarket(tmp_path: Path):

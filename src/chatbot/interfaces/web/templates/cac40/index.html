@@ -3,8 +3,12 @@
 <section class="page-header">
   <div>
     <p class="eyebrow"><a href="/dashboard/bots/{{ tenant.slug }}">{{ tenant.name }}</a> · Integrations</p>
-    <h1>CAC40 Backtest</h1>
-    <p class="subtitle">Mean-reversion hedge-mode simulation (HedgeLedger). Not wired to IG execution.</p>
+    <h1>{{ bot_symbol or 'CAC40' }} Backtest</h1>
+    <p class="subtitle">
+      Mean-reversion hedge-mode simulation (HedgeLedger). One bot = one symbol
+      (<code>{{ bot_symbol or 'CAC40' }}</code> · epic <code>{{ bot_epic or '—' }}</code>).
+      Change symbol/epic on the Integrations tab; use another bot for a different market.
+    </p>
   </div>
   <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}?tab=integrations">← Back</a>
 </section>
@@ -19,43 +23,89 @@
   <p class="badge done">CSV uploaded — {{ upload_ok }} bars ready.</p>
 </section>
 {% endif %}
-{% if fetch_error %}
+{% if sync_error %}
 <section class="card">
-  <p class="badge failed">Yahoo fetch failed: {{ fetch_error }}</p>
+  <p class="badge failed">IG sync failed: {{ sync_error }}</p>
 </section>
 {% endif %}
-{% if fetch_ok %}
+{% if sync_ok %}
 <section class="card">
-  <p class="badge done">Yahoo Finance (^FCHI) — {{ fetch_ok }} bars of 15m data ready.</p>
+  <p class="badge done">IG sync — {{ sync_ok }} new 15m bar(s) appended. Check the status panel below for last candle date.</p>
 </section>
 {% endif %}
 
 <section class="card">
   <h2>OHLC dataset (15m)</h2>
   <p class="text-muted">
-    Recommended free source: <strong>Yahoo Finance</strong> ticker <code>{{ yahoo_source.ticker }}</code>
-    (CAC 40 cash index), {{ yahoo_source.period }} of {{ yahoo_source.interval }} bars
-    (~last 60 trading days). For multi-year history, buy a futures CSV and upload it below.
-  </p>
-  <p class="field-hint">
-    Long history (from 2000):
-    <a href="https://www.backtestmarket.com/en/cac-40-15m" target="_blank" rel="noopener noreferrer">Buy CAC 40 (MX) 15m CSV on BacktestMarket</a>
-    — pick <strong>BacktestMarket (MX 15m)</strong> as source below; import converts it automatically.
-  </p>
-  <p class="text-muted">Stored at: <code>{{ ohlc.path }}</code>
+    Symbol <code>{{ bot_symbol or 'CAC40' }}</code>
     {% if ohlc.exists %}
-      <span class="badge done">found</span>
-      — {{ ohlc.bars }} bars
-      {% if ohlc.from %} ({{ ohlc.from }} → {{ ohlc.to }}){% endif %}
+      · <span class="badge done">found</span> {{ ohlc.bars }} bars
+      · last candle <code>{{ ohlc.last_candle or ohlc.to or '—' }}</code>
+      {% if ohlc.candle_age_hours is not none %}({{ ohlc.candle_age_hours }}h ago){% endif %}
     {% else %}
-      <span class="badge failed">missing</span>
+      · <span class="badge failed">missing</span> upload a CSV or Sync from IG
+    {% endif %}
+    {% if ohlc_sync_status %}
+      · sync
+      {% if ohlc_sync_status.ok %}<span class="badge done">ok</span>{% else %}<span class="badge failed">error</span>{% endif %}
+      {% if ohlc_sync_status.added is defined %}(+{{ ohlc_sync_status.added }}){% endif %}
+      <code>{{ ohlc_sync_status.trigger or '—' }}</code>
+    {% endif %}
+    {% if ohlc_worker_status and ohlc_worker_status.finished_at %}
+      · worker <code>{{ ohlc_worker_status.finished_at }}</code>
     {% endif %}
   </p>
 
+  <details class="automation-advanced" style="margin:0.75rem 0 1rem;">
+    <summary>OHLC sync details</summary>
+    <p class="field-hint">Candles are Europe/Paris; sync/worker times are UTC. Age can be several hours when the market is closed.</p>
+    <p class="text-muted">File: <code>{{ ohlc.path }}</code></p>
+    <p class="text-muted">Range: <code>{{ ohlc.from or '—' }}</code> → <code>{{ ohlc.to or '—' }}</code></p>
+    {% if ohlc_sync_status %}
+    <p class="text-muted">
+      Last sync attempt: <code>{{ ohlc_sync_status.last_attempt_at or ohlc_sync_status.last_error_at or '—' }}</code>
+      · success <code>{{ ohlc_sync_status.last_ok_at or 'never' }}</code>
+      {% if ohlc_sync_status.fetch_from %}
+        · fetch <code>{{ ohlc_sync_status.fetch_from }}</code> → <code>{{ ohlc_sync_status.fetch_to }}</code>
+      {% endif %}
+    </p>
+    {% if ohlc_sync_status.last_error %}
+    <p class="badge failed" style="white-space:pre-wrap;">{{ ohlc_sync_status.last_error }}</p>
+    {% endif %}
+    {% else %}
+    <p class="field-hint">No sync yet.</p>
+    {% endif %}
+    <p class="text-muted">
+      Worker poll: every <code>{{ cac40_ohlc_poll_seconds }}</code>s
+      {% if ohlc_worker_status %}
+        · last cycle
+        {% if ohlc_worker_status.ok %}<span class="badge done">ok</span>{% else %}<span class="badge failed">had failures</span>{% endif %}
+        (ok {{ ohlc_worker_status.tenants_ok or 0 }} /
+        failed {{ ohlc_worker_status.tenants_failed or 0 }} /
+        skipped {{ ohlc_worker_status.tenants_skipped or 0 }})
+      {% else %}
+        · not run yet
+      {% endif %}
+    </p>
+    <p class="field-hint">
+      Test worker:
+      <code>./sail exec worker-cac40-ohlc python -m chatbot.interfaces.worker_cac40_ohlc --once</code>
+      · logs: <code>./sail logs worker-cac40-ohlc</code>
+    </p>
+    <p class="field-hint">
+      Long history:
+      <a href="https://www.backtestmarket.com/en/cac-40-15m" target="_blank" rel="noopener noreferrer">BacktestMarket CAC MX 15m</a>
+    </p>
+  </details>
+
   <div class="form-grid" style="align-items:end; margin-bottom:1rem;">
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/ohlc/fetch-yahoo" class="stack-form">
-      <button type="submit" class="btn-primary">Fetch from Yahoo Finance (^FCHI)</button>
-      <p class="field-hint">Downloads ~60 days of 15m OHLC automatically. No account needed.</p>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/ohlc/sync-ig" class="stack-form">
+      <button type="submit" class="btn-primary" {% if not ig_connector_ready %}disabled{% endif %}>
+        Sync from IG
+      </button>
+      {% if not ig_connector_ready %}
+      <p class="field-hint">Configure an active IG connector on the Connectors tab first.</p>
+      {% endif %}
     </form>
   </div>
 
@@ -166,19 +216,11 @@
           <option value="M" {% if default_config.chart_pivot_period == 'M' %}selected{% endif %}>Monthly</option>
         </select>
       </label>
-      <label>OHLC CSV override (optional path)
-        <input type="text" name="ohlc_file" placeholder="{{ ohlc_path }}">
-      </label>
     </div>
     <p class="field-hint">
-      Period is relative to the last bar. Charts use full history as-of each decision (not only the trade period),
-      with extra bars so RSI/pivots are valid across the whole window.
-      Pivots are <strong>Traditional</strong> (P, R1–R3, S1–S3) with a configurable session period
-      (Daily / Weekly / Monthly). They are drawn on 15m and 1H only — <strong>not on the Daily chart</strong>.
-      Toggle RSI and pivots above. LLM waits until at least <strong>warm-up</strong> 15m bars exist (default 14).
-      Use <strong>charts only</strong> to generate PNGs without calling Gemini.
-      Defaults: <strong>1 week</strong>, LLM every <strong>6 × 1 hour</strong>, pivots <strong>Daily</strong>.
-      Your last selections are kept in this browser.
+      OHLC file is fixed for this bot: <code>{{ ohlc_path }}</code>.
+      Period is relative to the last bar. Charts use full history as-of each decision
+      with extra bars so RSI/pivots stay valid. Your last form selections are kept in this browser.
     </p>
     <div class="form-actions form-actions--compact cac40-run-actions">
       <button type="submit" class="btn-primary" {% if not ohlc_exists %}disabled{% endif %}>Start backtest</button>

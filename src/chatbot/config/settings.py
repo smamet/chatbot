@@ -34,6 +34,9 @@ class Settings(BaseSettings):
     hook_poll_seconds: int = Field(default=5, validation_alias="HOOK_POLL_SECONDS")
     mail_poll_seconds: int = Field(default=60, validation_alias="MAIL_POLL_SECONDS")
     catalog_poll_seconds: int = Field(default=300, validation_alias="CATALOG_POLL_SECONDS")
+    cac40_ohlc_poll_seconds: int = Field(
+        default=900, validation_alias="CAC40_OHLC_POLL_SECONDS"
+    )
 
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")
     chat_model: str = Field(default="gemini-2.5-flash", validation_alias="CHAT_MODEL")

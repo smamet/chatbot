@@ -392,7 +392,7 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
         ConnectorField(
             key="epic",
             label="Epic",
-            help="Market epic (CAC40 CFD).",
+            help="IG market epic for this bot's symbol (match the CAC40 integration epic).",
             default="IX.D.CAC.DAILY.IP",
             directions=(ConnectorDirection.BOTH.value,),
         ),

@@ -31,7 +31,6 @@ dependencies = [
     "lancedb>=0.14.0",
     "numpy>=1.26.0",
     "matplotlib>=3.9.0",
-    "yfinance>=0.2.40",
     "rapidfuzz>=3.0.0",
     "rich>=13.0.0",
     "markdown>=3.7.0",

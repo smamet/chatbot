@@ -36,7 +36,10 @@ INTEGRATION_META: dict[str, IntegrationMeta] = {
     ),
     IntegrationType.CAC40_BACKTEST.value: IntegrationMeta(
         label="CAC40 Backtest",
-        description="Mean-reversion hedge-mode backtest UI and config (OHLC, LLM, Fund Manager heartbeat).",
+        description=(
+            "Mean-reversion hedge-mode backtest (OHLC, LLM, Fund Manager). "
+            "One bot = one symbol; use a separate bot for another market."
+        ),
     ),
 }
 
@@ -250,6 +253,20 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
     ],
     IntegrationType.CAC40_BACKTEST.value: [
         IntegrationField(
+            key="symbol",
+            label="Symbol",
+            help="One symbol per bot (e.g. CAC40, DAX). OHLC for this bot is stored under its own data folder.",
+            default="CAC40",
+            required=True,
+        ),
+        IntegrationField(
+            key="epic",
+            label="IG epic",
+            help="IG market epic for this bot's symbol (must match the IG connector epic used for sync).",
+            default="IX.D.CAC.DAILY.IP",
+            required=True,
+        ),
+        IntegrationField(
             key="fundmanager_url",
             label="Fund Manager base URL",
             help="e.g. https://fm.example.com — heartbeat posts to /jessebot/notify-up",
@@ -269,12 +286,6 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
             help="Hedge-mode leg cap (not net position).",
             input_type="number",
             default="4",
-        ),
-        IntegrationField(
-            key="epic",
-            label="IG epic",
-            help="IG market epic for CAC40 CFD.",
-            default="IX.D.CAC.DAILY.IP",
         ),
     ],
 }

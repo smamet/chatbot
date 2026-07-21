@@ -6,25 +6,28 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, Uplo
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
+from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
 from chatbot.application.cac40_backtest_service import (
     default_ohlc_path,
     delete_run,
-    fetch_and_store_yahoo_ohlc,
     get_run,
     list_runs,
     ohlc_info,
+    read_ohlc_sync_status,
+    read_ohlc_worker_status,
     resolve_chart_file,
     save_ohlc_upload,
     start_run,
     stop_run,
+    sync_ohlc_from_ig,
 )
+from chatbot.application.connector_service import ConnectorService
 from chatbot.application.integration_service import IntegrationService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.user_service import UserService
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.chart_renderer import normalize_pivot_period
-from chatbot.cac40.yahoo_ohlc import yahoo_source_meta
 from chatbot.config.settings import Settings
 from chatbot.domain.models.integration import IntegrationType
 from chatbot.domain.models.integration_schema import is_integration_allowed
@@ -82,23 +85,43 @@ def cac40_index(
     _require_cac40_active(tenant, session)
     runs = list_runs(settings, slug)
     dataset = ohlc_info(settings, slug)
+    ig_config = ConnectorService(SqlAlchemyConnectorRepository(session)).get_ig_config(
+        tenant.id
+    )
+    integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
+        tenant.id, type=IntegrationType.CAC40_BACKTEST
+    )
+    integ_cfg = dict(integration.config) if integration else {}
+    defaults = Cac40Config().to_dict()
+    defaults["symbol"] = str(integ_cfg.get("symbol") or defaults["symbol"] or "CAC40")
+    defaults["epic"] = str(integ_cfg.get("epic") or defaults["epic"] or "IX.D.CAC.DAILY.IP")
+    if integ_cfg.get("max_open_positions") not in (None, ""):
+        try:
+            defaults["max_open_positions"] = int(integ_cfg["max_open_positions"])
+        except (TypeError, ValueError):
+            pass
     return templates.TemplateResponse(
         request,
         "cac40/index.html",
         {
             "user": user,
             "tenant": tenant,
-            "title": f"CAC40 Backtest — {tenant.name}",
+            "title": f"{defaults['symbol']} Backtest — {tenant.name}",
             "runs": runs,
             "ohlc": dataset,
             "ohlc_path": dataset["path"],
             "ohlc_exists": dataset["exists"],
-            "default_config": Cac40Config().to_dict(),
+            "bot_symbol": defaults["symbol"],
+            "bot_epic": defaults["epic"],
+            "default_config": defaults,
             "upload_error": request.query_params.get("upload_error"),
             "upload_ok": request.query_params.get("upload_ok"),
-            "fetch_error": request.query_params.get("fetch_error"),
-            "fetch_ok": request.query_params.get("fetch_ok"),
-            "yahoo_source": yahoo_source_meta(),
+            "sync_error": request.query_params.get("sync_error"),
+            "sync_ok": request.query_params.get("sync_ok"),
+            "ig_connector_ready": bool(ig_config),
+            "ohlc_sync_status": read_ohlc_sync_status(settings, slug),
+            "ohlc_worker_status": read_ohlc_worker_status(settings),
+            "cac40_ohlc_poll_seconds": settings.cac40_ohlc_poll_seconds,
         },
     )
 
@@ -139,8 +162,8 @@ async def cac40_upload_ohlc(
     )
 
 
-@router.post("/bots/{slug}/cac40/ohlc/fetch-yahoo")
-def cac40_fetch_yahoo(
+@router.post("/bots/{slug}/cac40/ohlc/sync-ig")
+def cac40_sync_ig(
     slug: str,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
@@ -153,15 +176,32 @@ def cac40_fetch_yahoo(
     _require_cac40_active(tenant, session)
     from urllib.parse import quote
 
+    ig_config = ConnectorService(SqlAlchemyConnectorRepository(session)).get_ig_config(
+        tenant.id
+    )
+    if not ig_config:
+        return RedirectResponse(
+            url=(
+                f"/dashboard/bots/{slug}/cac40?"
+                f"sync_error={quote('Configure an active IG connector first')}"
+            ),
+            status_code=303,
+        )
     try:
-        info = fetch_and_store_yahoo_ohlc(settings, slug, period="60d")
+        info = sync_ohlc_from_ig(
+            settings,
+            slug,
+            ig_config=ig_config,
+            allow_bootstrap=True,
+            trigger="manual",
+        )
     except Exception as exc:
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?fetch_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}/cac40?sync_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?fetch_ok={info.get('bars', 0)}",
+        url=f"/dashboard/bots/{slug}/cac40?sync_ok={info.get('added', 0)}",
         status_code=303,
     )
 
@@ -189,12 +229,11 @@ def cac40_start_run(
     chart_show_rsi: str = Form("1"),
     chart_show_pivots: str = Form("1"),
     chart_pivot_period: str = Form("D"),
-    ohlc_file: str = Form(""),
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     _require_cac40_active(tenant, session)
-    ohlc_path = Path(ohlc_file) if ohlc_file.strip() else default_ohlc_path(settings, slug)
+    ohlc_path = default_ohlc_path(settings, slug)
     if not ohlc_path.exists():
         raise HTTPException(status_code=400, detail=f"OHLC file not found: {ohlc_path}")
 
@@ -209,8 +248,16 @@ def cac40_start_run(
     every_n, every_unit, every_bars = Cac40Config.llm_rate_from_form(
         every_n=llm_every_n, unit=llm_every_unit
     )
+    integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
+        tenant.id, type=IntegrationType.CAC40_BACKTEST
+    )
+    integ_cfg = dict(integration.config) if integration else {}
+    symbol = str(integ_cfg.get("symbol") or "CAC40").strip() or "CAC40"
+    epic = str(integ_cfg.get("epic") or "IX.D.CAC.DAILY.IP").strip() or "IX.D.CAC.DAILY.IP"
 
     cfg = Cac40Config(
+        symbol=symbol,
+        epic=epic,
         max_open_positions=max_open_positions,
         order_size=order_size,
         spread_points=spread_points,
@@ -227,6 +274,7 @@ def cac40_start_run(
         chart_show_pivots=str(chart_show_pivots).strip().lower() in ("1", "true", "yes", "on"),
         chart_pivot_period=normalize_pivot_period(chart_pivot_period),
         gemini_model=(tenant.config.chat_model or settings.chat_model or "gemini-2.5-flash"),
+        bot_id=tenant.slug,
     )
     from chatbot.interfaces.api.deps import _gemini_api_key
 

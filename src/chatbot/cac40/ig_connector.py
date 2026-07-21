@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import logging
+import time
+from datetime import datetime
 from typing import Any
 
 import httpx
@@ -16,6 +18,8 @@ from chatbot.cac40.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_EMPTY_OHLC = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
 _IG_HOSTS = {
     "DEMO": "https://demo-api.ig.com/gateway/deal",
@@ -97,6 +101,10 @@ class IgConnector:
     def base_url(self) -> str:
         return _IG_HOSTS.get(self.config.ig_acc_type.upper(), _IG_HOSTS["DEMO"])
 
+    @property
+    def authenticated(self) -> bool:
+        return bool(self._cst)
+
     def close(self) -> None:
         self._client.close()
 
@@ -162,16 +170,9 @@ class IgConnector:
         return h
 
     def get_ohlc(self, timeframe: str, lookback: int) -> pd.DataFrame:
-        resolution = {
-            "15m": "MINUTE_15",
-            "1h": "HOUR",
-            "1H": "HOUR",
-            "1d": "DAY",
-            "1D": "DAY",
-            "D": "DAY",
-        }.get(timeframe, "MINUTE_15")
+        resolution = _resolution_for_timeframe(timeframe)
         if not self._cst:
-            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+            return _EMPTY_OHLC.copy()
         # IG API v3: GET /prices/{epic}?resolution=&max=&pageSize=
         # (path /prices/{epic}/{resolution}/{n} is v2 only — v3 returns HTML 404)
         n = max(1, int(lookback))
@@ -183,30 +184,107 @@ class IgConnector:
         )
         if resp.is_error:
             raise IgApiError(format_ig_http_error(resp, action="prices", url=str(resp.request.url)))
-        prices = resp.json().get("prices", [])
-        rows = []
-        for p in prices:
-            snap = p.get("snapshotTimeUTC") or p.get("snapshotTime")
-            mid_o = _mid(p.get("openPrice"))
-            mid_h = _mid(p.get("highPrice"))
-            mid_l = _mid(p.get("lowPrice"))
-            mid_c = _mid(p.get("closePrice"))
-            if None in (mid_o, mid_h, mid_l, mid_c):
-                continue
-            rows.append(
-                {
-                    "ts": pd.Timestamp(snap),
-                    "open": mid_o,
-                    "high": mid_h,
-                    "low": mid_l,
-                    "close": mid_c,
-                    "volume": p.get("lastTradedVolume") or 0,
-                }
+        return _prices_payload_to_df(resp.json().get("prices") or [])
+
+    def fetch_ohlc_range(
+        self,
+        *,
+        timeframe: str = "15m",
+        start: datetime | pd.Timestamp,
+        end: datetime | pd.Timestamp,
+        page_size: int = 500,
+        page_wait_seconds: float = 0.25,
+        timezone: str = "Europe/Paris",
+    ) -> pd.DataFrame:
+        """
+        Fetch historical OHLC between start/end via IG API v3 (paged).
+
+        Dates are sent as UTC ``YYYY-MM-DDTHH:MM:SS``. Large windows are split
+        into ~7-day chunks to stay within IG allowance limits.
+        """
+        resolution = _resolution_for_timeframe(timeframe)
+        if not self._cst:
+            return _EMPTY_OHLC.copy()
+
+        start_ts = pd.Timestamp(start)
+        end_ts = pd.Timestamp(end)
+        if start_ts.tzinfo is None:
+            start_ts = start_ts.tz_localize("UTC")
+        else:
+            start_ts = start_ts.tz_convert("UTC")
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.tz_localize("UTC")
+        else:
+            end_ts = end_ts.tz_convert("UTC")
+        if end_ts <= start_ts:
+            return _EMPTY_OHLC.copy()
+
+        frames: list[pd.DataFrame] = []
+        chunk_start = start_ts
+        chunk_delta = pd.Timedelta(days=7)
+        while chunk_start < end_ts:
+            chunk_end = min(chunk_start + chunk_delta, end_ts)
+            frames.append(
+                self._fetch_ohlc_window(
+                    resolution=resolution,
+                    start=chunk_start,
+                    end=chunk_end,
+                    page_size=page_size,
+                    page_wait_seconds=page_wait_seconds,
+                )
             )
-        if not rows:
-            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
-        df = pd.DataFrame(rows).set_index("ts").sort_index()
+            chunk_start = chunk_end
+
+        if not frames:
+            return _EMPTY_OHLC.copy()
+        df = pd.concat(frames).sort_index()
+        df = df[~df.index.duplicated(keep="last")]
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        df.index = df.index.tz_convert(timezone)
         return df
+
+    def _fetch_ohlc_window(
+        self,
+        *,
+        resolution: str,
+        start: pd.Timestamp,
+        end: pd.Timestamp,
+        page_size: int,
+        page_wait_seconds: float,
+    ) -> pd.DataFrame:
+        url = f"{self.base_url}/prices/{self.config.epic}"
+        page_number = 1
+        all_prices: list[dict[str, Any]] = []
+        while True:
+            params = {
+                "resolution": resolution,
+                "from": _ig_api_ts(start),
+                "to": _ig_api_ts(end),
+                "pageSize": max(1, int(page_size)),
+                "pageNumber": page_number,
+            }
+            resp = self._client.get(
+                url,
+                headers=self._headers(version="3"),
+                params=params,
+            )
+            if resp.is_error:
+                raise IgApiError(
+                    format_ig_http_error(resp, action="prices", url=str(resp.request.url))
+                )
+            payload = resp.json() or {}
+            prices = payload.get("prices") or []
+            all_prices.extend(prices)
+            page_data = (payload.get("metadata") or {}).get("pageData") or {}
+            total_pages = int(page_data.get("totalPages") or 1)
+            current = int(page_data.get("pageNumber") or page_number)
+            if current >= total_pages or not prices:
+                break
+            page_number = current + 1
+            if page_wait_seconds > 0:
+                time.sleep(page_wait_seconds)
+        return _prices_payload_to_df(all_prices)
 
     def sync_price(self) -> float:
         df = self.get_ohlc("15m", 2)
@@ -299,6 +377,47 @@ class IgConnector:
             "guaranteedStop": False,
             "forceOpen": True,
         }
+
+
+def _resolution_for_timeframe(timeframe: str) -> str:
+    return {
+        "15m": "MINUTE_15",
+        "1h": "HOUR",
+        "1H": "HOUR",
+        "1d": "DAY",
+        "1D": "DAY",
+        "D": "DAY",
+    }.get(timeframe, "MINUTE_15")
+
+
+def _ig_api_ts(ts: pd.Timestamp) -> str:
+    utc = ts.tz_convert("UTC") if ts.tzinfo is not None else ts.tz_localize("UTC")
+    return utc.strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def _prices_payload_to_df(prices: list[dict[str, Any]]) -> pd.DataFrame:
+    rows = []
+    for p in prices:
+        snap = p.get("snapshotTimeUTC") or p.get("snapshotTime")
+        mid_o = _mid(p.get("openPrice"))
+        mid_h = _mid(p.get("highPrice"))
+        mid_l = _mid(p.get("lowPrice"))
+        mid_c = _mid(p.get("closePrice"))
+        if None in (mid_o, mid_h, mid_l, mid_c):
+            continue
+        rows.append(
+            {
+                "ts": pd.Timestamp(snap),
+                "open": mid_o,
+                "high": mid_h,
+                "low": mid_l,
+                "close": mid_c,
+                "volume": p.get("lastTradedVolume") or 0,
+            }
+        )
+    if not rows:
+        return _EMPTY_OHLC.copy()
+    return pd.DataFrame(rows).set_index("ts").sort_index()
 
 
 def _mid(price_obj: dict | None) -> float | None:

@@ -1,18 +1,26 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import threading
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from sqlalchemy.orm import Session
 
 from chatbot.cac40.backtest_engine import BacktestEngine, new_run_dir
 from chatbot.cac40.config import Cac40Config, public_config_snapshot
 from chatbot.config.settings import Settings
+
+logger = logging.getLogger(__name__)
+
+MAX_OHLC_GAP_DAYS = 60
+BOOTSTRAP_LOOKBACK_DAYS = 60
 
 SessionFactory = Callable[[], Session]
 
@@ -312,7 +320,19 @@ def stop_run(run_id: str) -> bool:
 
 
 def default_ohlc_path(settings: Settings, tenant_slug: str) -> Path:
-    return cac40_root(settings, tenant_slug) / "ohlc" / "cac40_15m.csv"
+    """
+    Per-bot OHLC file (1 bot → 1 symbol → 1 CSV).
+
+    Prefers ``ohlc_15m.csv``; falls back to legacy ``cac40_15m.csv`` when present.
+    """
+    ohlc_dir = cac40_root(settings, tenant_slug) / "ohlc"
+    preferred = ohlc_dir / "ohlc_15m.csv"
+    legacy = ohlc_dir / "cac40_15m.csv"
+    if preferred.exists():
+        return preferred
+    if legacy.exists():
+        return legacy
+    return preferred
 
 
 def ohlc_info(settings: Settings, tenant_slug: str) -> dict[str, Any]:
@@ -323,6 +343,8 @@ def ohlc_info(settings: Settings, tenant_slug: str) -> dict[str, Any]:
         "bars": 0,
         "from": None,
         "to": None,
+        "last_candle": None,
+        "candle_age_hours": None,
         "size_bytes": 0,
     }
     if not path.exists():
@@ -336,6 +358,8 @@ def ohlc_info(settings: Settings, tenant_slug: str) -> dict[str, Any]:
         if not df.empty:
             info["from"] = str(df.index[0])
             info["to"] = str(df.index[-1])
+            info["last_candle"] = info["to"]
+            info["candle_age_hours"] = _candle_age_hours(df.index[-1], datetime.now(UTC))
     except Exception as exc:  # pragma: no cover
         info["error"] = str(exc)
     return info
@@ -383,22 +407,247 @@ def save_ohlc_upload(
     return info
 
 
-def fetch_and_store_yahoo_ohlc(
+def ohlc_sync_status_path(settings: Settings, tenant_slug: str) -> Path:
+    return default_ohlc_path(settings, tenant_slug).parent / "sync_status.json"
+
+
+def ohlc_worker_status_path(settings: Settings) -> Path:
+    return settings.data_root / "cac40" / "worker_status.json"
+
+
+def read_ohlc_sync_status(settings: Settings, tenant_slug: str) -> dict[str, Any]:
+    path = ohlc_sync_status_path(settings, tenant_slug)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_ohlc_sync_status(
+    settings: Settings,
+    tenant_slug: str,
+    payload: dict[str, Any],
+) -> None:
+    path = ohlc_sync_status_path(settings, tenant_slug)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+
+
+def read_ohlc_worker_status(settings: Settings) -> dict[str, Any]:
+    path = ohlc_worker_status_path(settings)
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def write_ohlc_worker_status(settings: Settings, payload: dict[str, Any]) -> None:
+    path = ohlc_worker_status_path(settings)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(payload, indent=2, default=str) + "\n", encoding="utf-8")
+
+
+def _candle_age_hours(last_ts: Any, now: datetime) -> float | None:
+    if last_ts is None:
+        return None
+    ts = pd.Timestamp(last_ts)
+    if ts.tzinfo is None:
+        ts = ts.tz_localize("UTC")
+    clock = pd.Timestamp(now)
+    if clock.tzinfo is None:
+        clock = clock.tz_localize("UTC")
+    return round(float((clock - ts.tz_convert("UTC")).total_seconds() / 3600.0), 2)
+
+
+def sync_ohlc_from_ig(
     settings: Settings,
     tenant_slug: str,
     *,
-    period: str = "60d",
+    ig_config: dict[str, Any],
+    max_gap_days: int = MAX_OHLC_GAP_DAYS,
+    allow_bootstrap: bool = True,
+    trigger: str = "manual",
+    now: datetime | None = None,
 ) -> dict[str, Any]:
-    """Download ^FCHI 15m from Yahoo and store as tenant default CSV."""
-    from chatbot.cac40.yahoo_ohlc import fetch_yahoo_ohlc, yahoo_source_meta
+    """
+    Append IG 15m bars since the last CSV timestamp.
+
+    Raises ValueError for gap > max_gap_days or missing bootstrap when not allowed.
+    """
+    from chatbot.cac40.ig_ohlc import fetch_ig_ohlc_range
+    from chatbot.cac40.ohlc_store import append_bars, load_ohlc_csv
 
     dest = default_ohlc_path(settings, tenant_slug)
     dest.parent.mkdir(parents=True, exist_ok=True)
-    df = fetch_yahoo_ohlc(period=period)
-    _write_ohlc_df(dest, df)
-    info = ohlc_info(settings, tenant_slug)
-    info["source"] = yahoo_source_meta()
-    return info
+    clock = now or datetime.now(UTC)
+    if clock.tzinfo is None:
+        clock = clock.replace(tzinfo=UTC)
+    trigger_label = (trigger or "manual").strip().lower() or "manual"
+
+    def _fail(message: str, *, last_candle: str | None = None) -> None:
+        prev = read_ohlc_sync_status(settings, tenant_slug)
+        write_ohlc_sync_status(
+            settings,
+            tenant_slug,
+            {
+                "ok": False,
+                "source": "ig",
+                "trigger": trigger_label,
+                "added": 0,
+                "last_ok_at": prev.get("last_ok_at"),
+                "last_candle": last_candle or prev.get("last_candle"),
+                "last_error": message,
+                "last_error_at": clock.isoformat(),
+                "last_attempt_at": clock.isoformat(),
+            },
+        )
+
+    try:
+        existing: pd.DataFrame | None = None
+        last_ts: pd.Timestamp | None = None
+        if dest.exists() and dest.stat().st_size > 0:
+            existing = load_ohlc_csv(dest)
+            if existing is not None and not existing.empty:
+                last_ts = pd.Timestamp(existing.index[-1])
+
+        last_candle_before = str(last_ts) if last_ts is not None else None
+        if last_ts is None:
+            if not allow_bootstrap:
+                raise ValueError(
+                    "OHLC CSV missing — upload history or run manual Sync from IG once"
+                )
+            start = pd.Timestamp(clock) - pd.Timedelta(days=BOOTSTRAP_LOOKBACK_DAYS)
+        else:
+            if last_ts.tzinfo is None:
+                last_ts = last_ts.tz_localize("UTC")
+            age = pd.Timestamp(clock) - last_ts.tz_convert("UTC")
+            if age > pd.Timedelta(days=max_gap_days):
+                raise ValueError(
+                    f"OHLC gap is {age.days} days (max {max_gap_days}). "
+                    "Re-upload a BacktestMarket CSV, then sync again."
+                )
+            start = last_ts + pd.Timedelta(minutes=15)
+
+        end = pd.Timestamp(clock)
+        bars_before = int(len(existing)) if existing is not None else 0
+        added = 0
+        if start < end:
+            fresh = fetch_ig_ohlc_range(ig_config, start=start, end=end)
+            if last_ts is not None and not fresh.empty:
+                fresh = fresh.loc[fresh.index > last_ts.tz_convert(fresh.index.tz)]
+            if not fresh.empty:
+                append_bars(dest, fresh)
+                added = int(len(fresh))
+        info = ohlc_info(settings, tenant_slug)
+        last_candle = info.get("to")
+        status = {
+            "ok": True,
+            "source": "ig",
+            "trigger": trigger_label,
+            "added": added,
+            "bars_before": bars_before,
+            "bars": info.get("bars"),
+            "from_ts": info.get("from"),
+            "to_ts": info.get("to"),
+            "last_candle": last_candle,
+            "last_candle_before": last_candle_before,
+            "candle_age_hours": _candle_age_hours(last_candle, clock),
+            "fetch_from": str(start),
+            "fetch_to": str(end),
+            "last_ok_at": clock.isoformat(),
+            "last_attempt_at": clock.isoformat(),
+            "last_error": None,
+        }
+        write_ohlc_sync_status(settings, tenant_slug, status)
+        info.update(status)
+        return info
+    except Exception as exc:
+        last_candle = None
+        try:
+            info = ohlc_info(settings, tenant_slug)
+            last_candle = info.get("to")
+        except Exception:
+            last_candle = None
+        _fail(str(exc), last_candle=last_candle)
+        raise
+
+
+def run_due_ig_ohlc_syncs(session: Session, settings: Settings) -> list[str]:
+    """
+    Top up OHLC for tenants with active CAC40 + IG connector + existing CSV.
+
+    Never raises out of the loop; returns log lines.
+    """
+    from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from chatbot.application.connector_service import ConnectorService
+    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from chatbot.application.tenant_service import TenantService
+    from chatbot.domain.models.integration import IntegrationType
+
+    started = datetime.now(UTC)
+    repo = SqlAlchemyIntegrationRepository(session)
+    tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
+    connector_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    logs: list[str] = []
+    ok_count = 0
+    fail_count = 0
+    skip_count = 0
+
+    for integration in repo.list_active_by_type(IntegrationType.CAC40_BACKTEST):
+        tenant = tenant_svc.get_by_id(integration.tenant_id)
+        if tenant is None:
+            continue
+        slug = tenant.slug
+        ig_config = connector_svc.get_ig_config(tenant.id)
+        if not ig_config:
+            skip_count += 1
+            logs.append(f"{slug}: skip — no active IG connector")
+            continue
+        dest = default_ohlc_path(settings, slug)
+        if not dest.exists():
+            skip_count += 1
+            logs.append(f"{slug}: skip — OHLC CSV missing (no cron bootstrap)")
+            continue
+        try:
+            info = sync_ohlc_from_ig(
+                settings,
+                slug,
+                ig_config=ig_config,
+                allow_bootstrap=False,
+                trigger="worker",
+            )
+            ok_count += 1
+            logs.append(
+                f"{slug}: ok — added {info.get('added', 0)} bars "
+                f"(total {info.get('bars', 0)}; last candle {info.get('last_candle')})"
+            )
+        except Exception as exc:
+            fail_count += 1
+            logger.warning("IG OHLC sync failed for %s: %s", slug, exc)
+            logs.append(f"{slug}: failed — {exc}")
+
+    finished = datetime.now(UTC)
+    write_ohlc_worker_status(
+        settings,
+        {
+            "ok": fail_count == 0,
+            "started_at": started.isoformat(),
+            "finished_at": finished.isoformat(),
+            "poll_seconds": settings.cac40_ohlc_poll_seconds,
+            "tenants_ok": ok_count,
+            "tenants_failed": fail_count,
+            "tenants_skipped": skip_count,
+            "logs": logs[-50:],
+        },
+    )
+    return logs
 
 
 def _write_ohlc_df(dest: Path, df) -> None:
