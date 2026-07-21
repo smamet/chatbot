@@ -527,7 +527,7 @@
 
   <div class="table-wrap">
     <table class="data-table">
-      <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Provider</th><th>Mode</th><th>Status</th><th>Since</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+      <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Label / Provider</th><th>Mode</th><th>Status</th><th>Since</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
       <tbody>
       {% for c in connectors %}
       {% set cap_key = c.type.value ~ ':' ~ c.direction.value %}
@@ -540,7 +540,11 @@
           {% if denied %}<span class="badge failed">Not allowed</span>{% endif %}
         </td>
         <td>
-          {% if c.type.value == 'email' and c.direction.value == 'out' %}
+          {% if c.type.value == 'ig' %}
+          <code>{{ c.config.get('name') or '—' }}</code>
+          {% if c.config.get('acc_type') %}<span class="badge">{{ c.config.get('acc_type') }}</span>{% endif %}
+          {% if c.config.get('epic') %}<span class="text-muted">{{ c.config.get('epic') }}</span>{% endif %}
+          {% elif c.type.value == 'email' and c.direction.value == 'out' %}
           <code>{{ c.config.get('outbound_provider', 'smtp') }}</code>
           {% else %}—{% endif %}
         </td>
@@ -560,6 +564,7 @@
         <td class="actions">
           {% if not denied %}
           <button type="button" class="btn-secondary btn-sm connector-edit-btn"
+                  data-id="{{ c.id }}"
                   data-type="{{ c.type.value }}"
                   data-direction="{{ c.direction.value }}"
                   data-mode="{{ c.mode.value }}">Edit</button>
@@ -590,8 +595,10 @@
     {% if not connector_schemas %}
     <p class="text-muted">No connector types are allowed for this bot. An admin can update the allowlist under Config.</p>
     {% else %}
-    <p class="text-muted" id="connector-form-hint">Use <strong>Edit</strong> on a row to load that connector below, change settings, then <strong>Save connector</strong>. Secret fields left blank keep their current value.</p>
+    <p class="text-muted" id="connector-form-hint">Use <strong>Edit</strong> on a row to load that connector below, change settings, then <strong>Save connector</strong>. For IG you can add multiple accounts. Secret fields left blank keep their current value.</p>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form" data-bot-slug="{{ tenant.slug }}" data-process-since-default="{{ process_since_default }}">
+      <input type="hidden" name="connector_id" id="connector-id" value="">
+      <input type="hidden" name="ig_create_new" id="ig-create-new" value="">
       <div class="connector-flow" id="connector-flow" aria-hidden="false">
         <div class="connector-flow__node" id="flow-source">
           <span class="connector-flow__label">Source</span>
@@ -662,6 +669,7 @@
         {% if dev_mode and can_edit %}
         <button type="button" class="btn-secondary" id="greenmail-autofill" hidden>Fill GreenMail (dev)</button>
         {% endif %}
+        <button type="button" class="btn-secondary" id="ig-add-account-btn" hidden>Add another IG account</button>
         <button type="submit" class="btn-primary" data-loading="Saving…">Save connector</button>
       </div>
       <div id="connector-oauth-panel" class="connector-oauth-panel" hidden>
@@ -767,10 +775,11 @@
         const greenmailBtn = document.getElementById('greenmail-autofill');
         const formHint = document.getElementById('connector-form-hint');
         const FORM_HINT_DEFAULT =
-          'Use Edit on a row to load that connector below, change settings, then Save connector. Secret fields left blank keep their current value.';
+          'Use Edit on a row to load that connector below, change settings, then Save connector. For IG you can add multiple accounts. Secret fields left blank keep their current value.';
         const FORM_HINT_EMAIL =
           'Use Edit on a row to load that connector below, change settings (including Process emails since for inbound email), then Save connector. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).';
         let selectedAuthType = null;
+        let editingConnectorId = null;
 
         function directionsForType(ctype) {
           const fields = schemas[ctype] || [];
@@ -834,8 +843,13 @@
           renderFields();
         }
 
-        function loadConnector(ctype, direction, mode) {
+        function loadConnector(ctype, direction, mode, connectorId) {
           selectedAuthType = null;
+          editingConnectorId = connectorId ? String(connectorId) : null;
+          const idInput = document.getElementById('connector-id');
+          const createNew = document.getElementById('ig-create-new');
+          if (idInput) idInput.value = editingConnectorId || '';
+          if (createNew) createNew.value = '';
           if (ctype === 'ig' && (direction === 'in' || direction === 'out')) {
             direction = 'both';
           }
@@ -845,6 +859,25 @@
           if (direction === 'out' && mode) {
             modeSel.value = mode;
           }
+          form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function startNewIgConnector() {
+          editingConnectorId = null;
+          const idInput = document.getElementById('connector-id');
+          const createNew = document.getElementById('ig-create-new');
+          if (idInput) idInput.value = '';
+          if (createNew) createNew.value = '1';
+          typeSel.value = 'ig';
+          syncDirectionTabs();
+          setDirection('both');
+          connActive.checked = true;
+          renderFields();
+          // Clear values for a blank new account form
+          container.querySelectorAll('input, select, textarea').forEach((el) => {
+            if (el.type === 'checkbox') el.checked = el.name === 'dry_run';
+            else if (el.name !== 'acc_type') el.value = el.defaultValue || '';
+          });
           form.scrollIntoView({ behavior: 'smooth', block: 'start' });
         }
 
@@ -927,6 +960,9 @@
         }
 
         function connectorIsSaved(ctype, direction) {
+          if (editingConnectorId && Object.prototype.hasOwnProperty.call(saved, 'id:' + editingConnectorId)) {
+            return true;
+          }
           if (Object.prototype.hasOwnProperty.call(saved, recordKey(ctype, direction))) {
             return true;
           }
@@ -939,6 +975,9 @@
         }
 
         function recordFor(ctype, direction) {
+          if (editingConnectorId && saved['id:' + editingConnectorId]) {
+            return saved['id:' + editingConnectorId];
+          }
           let rec = saved[recordKey(ctype, direction)];
           if (!rec && ctype === 'ig' && direction === 'both') {
             rec = saved['ig:out'] || saved['ig:in'];
@@ -1177,18 +1216,37 @@
 
         document.querySelectorAll('.connector-edit-btn').forEach((btn) => {
           btn.addEventListener('click', () => {
-            loadConnector(btn.dataset.type, btn.dataset.direction, btn.dataset.mode);
+            loadConnector(
+              btn.dataset.type,
+              btn.dataset.direction,
+              btn.dataset.mode,
+              btn.dataset.id
+            );
           });
         });
 
-        dirTabs.forEach((tab) => {
-          tab.addEventListener('click', () => setDirection(tab.dataset.direction));
-        });
+        const igAddBtn = document.getElementById('ig-add-account-btn');
+        function syncIgAddBtn() {
+          if (igAddBtn) igAddBtn.hidden = typeSel.value !== 'ig';
+        }
+        if (igAddBtn) {
+          igAddBtn.addEventListener('click', startNewIgConnector);
+        }
         typeSel.addEventListener('change', () => {
           selectedAuthType = null;
+          editingConnectorId = null;
+          const idInput = document.getElementById('connector-id');
+          const createNew = document.getElementById('ig-create-new');
+          if (idInput) idInput.value = '';
+          if (createNew) createNew.value = '';
           syncDirectionTabs();
           updateFlowDiagram(typeSel.value, getDirection());
           renderFields();
+          syncIgAddBtn();
+        });
+        syncIgAddBtn();
+        dirTabs.forEach((tab) => {
+          tab.addEventListener('click', () => setDirection(tab.dataset.direction));
         });
         syncDirectionTabs();
         updateFlowDiagram(typeSel.value, getDirection());

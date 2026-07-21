@@ -10,7 +10,7 @@ from typing import Any
 from chatbot.cac40.chart_renderer import pivot_history_pad, render_multi_timeframe
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.fundmanager_client import FundManagerClient
-from chatbot.cac40.ig_connector import IgConnector
+from chatbot.cac40.ig_connector import IgApiError, IgConnector
 from chatbot.cac40.llm_decision import (
     GeminiDecisionClient,
     SessionFactory,
@@ -18,6 +18,7 @@ from chatbot.cac40.llm_decision import (
     summarize_decision,
 )
 from chatbot.cac40.llm_trigger import LlmTrigger
+from chatbot.cac40.models import OrderPurpose, WorkingOrder
 from chatbot.cac40.risk_gate import RiskGate
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,8 @@ class LiveScheduler:
         sleep_seconds: int = 900,
         tenant_id: int | None = None,
         session_factory: SessionFactory | None = None,
+        order_connectors: list[tuple[int, IgConnector]] | None = None,
+        orders_dir: Path | None = None,
     ) -> None:
         self.config = config
         self.api_key = api_key
@@ -46,6 +49,11 @@ class LiveScheduler:
         self.tenant_id = tenant_id
         self.session_factory = session_factory
         self.ig = IgConnector(config, dry_run=dry_run)
+        self.order_connectors: list[tuple[int, IgConnector]] = order_connectors or [
+            (0, self.ig)
+        ]
+        self.orders_dir = orders_dir or (self.journal_dir / "order_books")
+        self.orders_dir.mkdir(parents=True, exist_ok=True)
         self.fm = FundManagerClient(config)
         self.llm = GeminiDecisionClient(
             api_key=api_key,
@@ -62,12 +70,19 @@ class LiveScheduler:
         self._stop = False
         self._last_decision_summary: dict[str, Any] | None = None
         self._cycle_index = 0
+        self.last_mirror_results: list[dict[str, Any]] = []
 
     def request_stop(self) -> None:
         self._stop = True
 
     def run_forever(self) -> None:
         self.ig.login()
+        for _cid, conn in self.order_connectors:
+            if conn is not self.ig:
+                try:
+                    conn.login()
+                except Exception:
+                    logger.exception("Secondary IG login failed (connector continues)")
         while not self._stop:
             try:
                 self.run_once()
@@ -80,7 +95,18 @@ class LiveScheduler:
                     break
                 time.sleep(1)
 
+    def ensure_logged_in(self) -> None:
+        if not self.ig._cst:
+            self.ig.login()
+        for _cid, conn in self.order_connectors:
+            if conn is not self.ig and not conn._cst:
+                try:
+                    conn.login()
+                except Exception:
+                    logger.exception("Secondary IG login failed")
+
     def run_once(self) -> dict[str, Any]:
+        self.ensure_logged_in()
         gate = RiskGate(self.config, self.ig.ledger)
         self.ig.sync_price()
         self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
@@ -181,6 +207,8 @@ class LiveScheduler:
         if should_call and not decision:
             error = "llm_fail_closed"
         self.fm.notify(self.ig.ledger, error=error)
+        chart_files = sorted(p.name for p in (cycle_dir / "charts").glob("chart_*.png"))
+        charts_rel = f"journal/{cycle_dir.name}/charts" if chart_files else ""
         payload = {
             "ts": datetime.now(timezone.utc).isoformat(),
             "snapshot": self.ig.get_snapshot().to_dict(),
@@ -194,6 +222,11 @@ class LiveScheduler:
             ),
             "dry_run": self.dry_run,
             "skipped": not should_call,
+            "mirror": list(self.last_mirror_results),
+            "charts_rel": charts_rel,
+            "chart_files": chart_files,
+            "cycle_dir": cycle_dir.name,
+            "pnl": self.ig.ledger.pnl_payload(),
         }
         (cycle_dir / "cycle.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
@@ -213,14 +246,123 @@ class LiveScheduler:
             "close": float(row["close"]),
         }
 
+    def _order_book_path(self, connector_id: int) -> Path:
+        return self.orders_dir / f"orders_{connector_id}.json"
+
+    def _load_order_book(self, connector_id: int) -> dict[str, str]:
+        path = self._order_book_path(connector_id)
+        if not path.exists():
+            return {}
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if not isinstance(raw, dict):
+            return {}
+        return {str(k): str(v) for k, v in raw.items() if k and v}
+
+    def _save_order_book(self, connector_id: int, book: dict[str, str]) -> None:
+        path = self._order_book_path(connector_id)
+        path.write_text(json.dumps(book, indent=2), encoding="utf-8")
+
     def _mirror_orders_to_ig(self, gate_result: Any) -> None:
-        """Orders already in ledger via RiskGate; optionally push to IG API."""
+        """Push ledger working orders to each IG account; cancel removed ones."""
+        self.last_mirror_results = []
         if self.dry_run:
+            logger.info(
+                "Dry-run mirror skipped. Executed: %s | Rejected: %s",
+                gate_result.executed,
+                gate_result.rejected,
+            )
             return
-        # V1: ledger is source; IgConnector.place_order used when wiring actions through connector
-        logger.info("Executed: %s | Rejected: %s", gate_result.executed, gate_result.rejected)
+
+        desired = dict(self.ig.ledger.working_orders)
+        for connector_id, conn in self.order_connectors:
+            book = self._load_order_book(connector_id)
+            row: dict[str, Any] = {
+                "connector_id": connector_id,
+                "placed": [],
+                "cancelled": [],
+                "errors": [],
+            }
+            try:
+                if not conn.epic_compatible_with_account():
+                    row["errors"].append("epic_account_mismatch")
+                    self.last_mirror_results.append(row)
+                    continue
+            except Exception as exc:
+                row["errors"].append(f"compat_check:{exc}")
+                self.last_mirror_results.append(row)
+                continue
+
+            # Cancel orders no longer in the primary ledger.
+            for local_id, deal_id in list(book.items()):
+                if local_id in desired:
+                    continue
+                try:
+                    conn.cancel_working_order(deal_id)
+                    book.pop(local_id, None)
+                    row["cancelled"].append({"order_id": local_id, "deal_id": deal_id})
+                except Exception as exc:
+                    row["errors"].append(f"cancel:{local_id}:{exc}")
+                    logger.exception(
+                        "IG cancel failed connector=%s order=%s", connector_id, local_id
+                    )
+
+            # Place new ledger orders missing from this account's book.
+            for local_id, order in desired.items():
+                if local_id in book:
+                    continue
+                try:
+                    if conn is self.ig:
+                        pushed = conn.push_working_order(order)
+                        deal_id = pushed.deal_id
+                    else:
+                        clone = WorkingOrder(
+                            id="",
+                            type=order.type,
+                            side=order.side,
+                            level=order.level,
+                            size=order.size,
+                            purpose=order.purpose or OrderPurpose.ENTRY,
+                            position_id=order.position_id,
+                        )
+                        pushed = conn.place_order(clone)
+                        deal_id = pushed.deal_id
+                    if not deal_id:
+                        raise IgApiError("IG place returned empty dealId")
+                    book[local_id] = deal_id
+                    row["placed"].append({"order_id": local_id, "deal_id": deal_id})
+                except Exception as exc:
+                    row["errors"].append(f"place:{local_id}:{exc}")
+                    logger.exception(
+                        "IG place failed connector=%s order=%s", connector_id, local_id
+                    )
+
+            self._save_order_book(connector_id, book)
+            self.last_mirror_results.append(row)
+
+        logger.info(
+            "Mirror done. Executed: %s | Rejected: %s | Results: %s",
+            gate_result.executed,
+            gate_result.rejected,
+            self.last_mirror_results,
+        )
 
     def _journal(self, payload: dict[str, Any]) -> None:
         path = self.journal_dir / "live.jsonl"
         with path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(payload, default=str) + "\n")
+
+    def close(self) -> None:
+        try:
+            self.ig.close()
+        except Exception:
+            pass
+        for _cid, conn in self.order_connectors:
+            if conn is self.ig:
+                continue
+            try:
+                conn.close()
+            except Exception:
+                pass

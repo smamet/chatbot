@@ -553,7 +553,16 @@ class IgConnector:
         if self.dry_run or not self._cst:
             logger.info("IG dry-run place %s", placed.to_dict())
             return placed
-        body = self._ig_working_order_body(placed, currency=currency)
+        return self.push_working_order(placed, currency=currency)
+
+    def push_working_order(
+        self, order: WorkingOrder, *, currency: str | None = None
+    ) -> WorkingOrder:
+        """Submit an already-ledgered working order to IG (no second ledger place)."""
+        if self.dry_run or not self._cst:
+            logger.info("IG dry-run push %s", order.to_dict())
+            return order
+        body = self._ig_working_order_body(order, currency=currency)
         resp = self._client.post(
             f"{self.base_url}/workingorders/otc",
             headers=self._headers(version="2"),
@@ -564,26 +573,26 @@ class IgConnector:
                 format_ig_http_error(resp, action="place_working_order", url=str(resp.request.url))
             )
         deal = resp.json() if resp.content else {}
-        placed.client_ref = str((deal or {}).get("dealReference") or placed.client_ref)
-        if placed.client_ref:
-            confirmed = self.confirm_deal(placed.client_ref)
+        order.client_ref = str((deal or {}).get("dealReference") or order.client_ref)
+        if order.client_ref:
+            confirmed = self.confirm_deal(order.client_ref)
             deal_status = str(confirmed.get("dealStatus") or "").upper()
             reason = str(confirmed.get("reason") or "").strip()
-            placed.deal_id = str(confirmed.get("dealId") or "")
-            if placed.id in self.ledger.working_orders:
-                self.ledger.working_orders[placed.id].client_ref = placed.client_ref
-                self.ledger.working_orders[placed.id].deal_id = placed.deal_id
+            order.deal_id = str(confirmed.get("dealId") or "")
+            if order.id in self.ledger.working_orders:
+                self.ledger.working_orders[order.id].client_ref = order.client_ref
+                self.ledger.working_orders[order.id].deal_id = order.deal_id
             if deal_status and deal_status != "ACCEPTED":
                 raise IgApiError(
                     "IG working order rejected: "
                     f"dealStatus={deal_status or '—'} reason={reason or '—'} "
-                    f"dealId={placed.deal_id or '—'} "
+                    f"dealId={order.deal_id or '—'} "
                     f"currency={body.get('currencyCode')} expiry={body.get('expiry')} "
                     f"forceOpen={body.get('forceOpen')} "
-                    f"({placed.side.value} {placed.type.value} @ {placed.level}) "
+                    f"({order.side.value} {order.type.value} @ {order.level}) "
                     f"confirm={confirmed}"
                 )
-        return placed
+        return order
 
     def confirm_deal(self, deal_reference: str, *, retries: int = 8, pause: float = 0.35) -> dict[str, Any]:
         """Poll GET /confirms/{dealReference} until dealStatus is present."""

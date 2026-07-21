@@ -41,50 +41,69 @@ class ConnectorService:
     def get_email_config(self, tenant_id: int, *, outbound: bool = False) -> dict | None:
         return self._channel_config(tenant_id, type=ConnectorType.EMAIL, outbound=outbound)
 
-    def find_ig(self, tenant_id: int, *, active_only: bool = False) -> Connector | None:
-        """Prefer bidirectional IG; fall back to legacy out then in."""
+    def list_ig(self, tenant_id: int, *, active_only: bool = False) -> list[Connector]:
+        """All IG connectors for a tenant (bidirectional first, then legacy in/out)."""
+        out: list[Connector] = []
+        seen: set[int] = set()
         for direction in (
             ConnectorDirection.BOTH,
             ConnectorDirection.OUT,
             ConnectorDirection.IN,
         ):
-            if active_only:
-                found = self._repo.find_active(
-                    tenant_id, direction=direction, type=ConnectorType.IG
-                )
-            else:
-                found = self._repo.find_by_tenant_direction_type(
-                    tenant_id, direction=direction, type=ConnectorType.IG
-                )
-            if found is not None:
-                return found
-        return None
+            rows = self._repo.list_by_tenant_direction_type(
+                tenant_id, direction=direction, type=ConnectorType.IG
+            )
+            for row in rows:
+                if row.id in seen:
+                    continue
+                if active_only and not row.active:
+                    continue
+                seen.add(row.id)
+                out.append(row)
+        return out
+
+    def find_ig(self, tenant_id: int, *, active_only: bool = False) -> Connector | None:
+        """Prefer first bidirectional IG; fall back to legacy out then in."""
+        rows = self.list_ig(tenant_id, active_only=active_only)
+        return rows[0] if rows else None
 
     def get_ig_config(self, tenant_id: int) -> dict | None:
         connector = self.find_ig(tenant_id, active_only=True)
         return connector.config if connector else None
 
+    def get_ig_by_id(
+        self, tenant_id: int, connector_id: int, *, active_only: bool = False
+    ) -> Connector | None:
+        connector = self._repo.find_by_id(connector_id)
+        if connector is None or connector.tenant_id != tenant_id:
+            return None
+        if connector.type != ConnectorType.IG:
+            return None
+        if active_only and not connector.active:
+            return None
+        return connector
+
     def migrate_ig_to_both(self, tenant_id: int) -> bool:
         """
-        Collapse legacy ig:in / ig:out into a single ig:both row.
-        Returns True when rows were created or deleted.
+        Collapse legacy ig:in / ig:out into a bidirectional row.
+        Never deletes existing ig:both rows (multi-account support).
         """
-        both = self._repo.find_by_tenant_direction_type(
+        both_rows = self._repo.list_by_tenant_direction_type(
             tenant_id, direction=ConnectorDirection.BOTH, type=ConnectorType.IG
         )
         legacy: list[Connector] = []
         for direction in (ConnectorDirection.IN, ConnectorDirection.OUT):
-            found = self._repo.find_by_tenant_direction_type(
-                tenant_id, direction=direction, type=ConnectorType.IG
+            legacy.extend(
+                self._repo.list_by_tenant_direction_type(
+                    tenant_id, direction=direction, type=ConnectorType.IG
+                )
             )
-            if found is not None:
-                legacy.append(found)
         if not legacy:
             return False
 
         source = max(legacy, key=lambda c: c.updated_at)
-        active = both.active if both is not None else any(c.active for c in legacy)
-        if both is None:
+        active = any(c.active for c in both_rows) or any(c.active for c in legacy)
+        if not both_rows:
             self._repo.create(
                 tenant_id=tenant_id,
                 direction=ConnectorDirection.BOTH,
@@ -140,15 +159,16 @@ class ConnectorService:
             active=active,
         )
 
-    def upsert_ig(
+    def create_ig(
         self,
         *,
         tenant_id: int,
         config: dict,
         active: bool = True,
     ) -> Connector:
-        """Save IG as a single bidirectional connector and retire legacy in/out rows."""
-        saved = self.upsert(
+        """Always insert a new bidirectional IG connector (multi-account)."""
+        self.migrate_ig_to_both(tenant_id)
+        return self._repo.create(
             tenant_id=tenant_id,
             direction=ConnectorDirection.BOTH,
             type=ConnectorType.IG,
@@ -156,8 +176,54 @@ class ConnectorService:
             config=config,
             active=active,
         )
-        self.migrate_ig_to_both(tenant_id)
-        return (
-            self.find(tenant_id, direction=ConnectorDirection.BOTH, type=ConnectorType.IG)
-            or saved
+
+    def update_ig(
+        self,
+        connector_id: int,
+        *,
+        tenant_id: int,
+        config: dict,
+        active: bool = True,
+    ) -> Connector | None:
+        existing = self.get_ig_by_id(tenant_id, connector_id)
+        if existing is None:
+            return None
+        return self._repo.update(
+            connector_id,
+            config=config,
+            active=active,
+            mode=ConnectorMode.DIRECT,
         )
+
+    def upsert_ig(
+        self,
+        *,
+        tenant_id: int,
+        config: dict,
+        active: bool = True,
+        connector_id: int | None = None,
+    ) -> Connector:
+        """
+        Update an IG connector by id, or update the first / create one.
+        Never deletes extra ig:both rows.
+        """
+        self.migrate_ig_to_both(tenant_id)
+        if connector_id is not None:
+            updated = self.update_ig(
+                connector_id, tenant_id=tenant_id, config=config, active=active
+            )
+            if updated is not None:
+                return updated
+            return self.create_ig(tenant_id=tenant_id, config=config, active=active)
+        existing = self.find(tenant_id, direction=ConnectorDirection.BOTH, type=ConnectorType.IG)
+        if existing is not None:
+            return (
+                self._repo.update(
+                    existing.id,
+                    config=config,
+                    active=active,
+                    mode=ConnectorMode.DIRECT,
+                )
+                or existing
+            )
+        return self.create_ig(tenant_id=tenant_id, config=config, active=active)

@@ -3,10 +3,21 @@
 <section class="page-header">
   <div>
     <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40">← CAC40 Backtest</a></p>
-    <h1>{{ run.run_id }}</h1>
-    <p class="subtitle">Status: <span class="badge {{ run.state.status }}">{{ run.state.status }}</span>
+    <h1>{% if live %}Live results{% else %}{{ run.run_id }}{% endif %}</h1>
+    <p class="subtitle">
+      {% if live %}
+      Mode: <span class="badge {% if run.mode == 'live' %}failed{% elif run.mode == 'paper' %}done{% else %}off{% endif %}">{{ run.mode or '—' }}</span>
+      · Cycles {{ run.state.current_bar or 0 }}
+      {% if run.pnl %}
+      · Open legs {{ run.pnl.legs_count or 0 }}
+      · Realized {{ '%.2f'|format(run.pnl.realized_session or 0) }}
+      · UPL {{ '%.2f'|format(run.pnl.net_upl or 0) }}
+      {% endif %}
+      {% else %}
+      Status: <span class="badge {{ run.state.status }}">{{ run.state.status }}</span>
       · Progress {{ '%.0f'|format((run.state.progress or 0) * 100) }}%
       ({{ run.state.current_bar }}/{{ run.state.total_bars }})
+      {% endif %}
       {% if run.report and run.report.config %}
       · Period {{ run.report.config.backtest_period or '—' }}
       {% if run.report.config.llm_trigger_mode == 'interval' %}
@@ -21,6 +32,15 @@
     </p>
   </div>
   <div class="header-actions cac40-run-header-actions">
+    {% if live %}
+    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40#cac40-live">Live settings</a>
+    {% if run.mode != 'live' %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/clear"
+          onsubmit="return confirm('Clear paper journal, decisions, and ledger snapshot?');">
+      <button type="submit" class="btn-secondary">Clear paper history</button>
+    </form>
+    {% endif %}
+    {% else %}
     {% if run.state.status in ('running', 'stopping') %}
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/stop">
       <button type="submit" class="btn-secondary"{% if run.state.status == 'stopping' %} disabled{% endif %}>
@@ -35,6 +55,7 @@
       </button>
     </form>
     <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40">All runs</a>
+    {% endif %}
   </div>
 </section>
 

@@ -28,9 +28,20 @@
       <a href="/dashboard/monitoring" {% if request.url.path.startswith('/dashboard/monitoring') %}aria-current="page"{% endif %}>Monitoring</a>
       {% endif %}
     </nav>
-    <form method="post" action="/auth/logout" class="logout-form no-loader">
-      <button type="submit" class="btn-ghost">Logout</button>
-    </form>
+    <div class="topbar-end">
+      {% set cac40_trading = request.state.cac40_trading if request is defined else none %}
+      {% if cac40_trading and cac40_trading.active %}
+      <a href="/dashboard/bots/{{ cac40_trading.slug }}/cac40"
+         class="trading-status trading-status--{{ cac40_trading.mode }}"
+         title="CAC40 trading mode — open Live panel">
+        <span class="trading-status__light" aria-hidden="true"></span>
+        <span class="trading-status__label">{{ cac40_trading.mode }}</span>
+      </a>
+      {% endif %}
+      <form method="post" action="/auth/logout" class="logout-form no-loader">
+        <button type="submit" class="btn-ghost">Logout</button>
+      </form>
+    </div>
   </header>
   <main class="content">
     {% block body %}{% endblock %}
