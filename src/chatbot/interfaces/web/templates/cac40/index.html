@@ -34,6 +34,14 @@
 </section>
 {% endif %}
 
+
+<nav class="tabs" id="cac40-page-tabs" data-slug="{{ tenant.slug }}" aria-label="CAC40 sections">
+  <button type="button" class="tabs__btn" data-tab="data">Data</button>
+  <button type="button" class="tabs__btn" data-tab="live">Live</button>
+  <button type="button" class="tabs__btn" data-tab="backtest">Backtest</button>
+</nav>
+
+<div id="cac40-tab-data" class="tab-panel" data-tab-panel="data" hidden>
 <section class="card">
   <h2>OHLC dataset (15m)</h2>
   <p class="text-muted">
@@ -42,6 +50,14 @@
       · <span class="badge done">found</span> {{ ohlc.bars }} bars
       · last candle <code>{{ ohlc.last_candle or ohlc.to or '—' }}</code>
       {% if ohlc.candle_age_hours is not none %}({{ ohlc.candle_age_hours }}h ago){% endif %}
+      {% if ohlc.has_recent_gaps %}
+        · <span class="badge failed">{{ ohlc.recent_gap_count }} recent gap{{ 's' if ohlc.recent_gap_count != 1 else '' }}</span>
+      {% elif ohlc.historical_gap_count %}
+        · <span class="badge done">live window clean</span>
+        · <span class="badge">{{ ohlc.historical_gap_count }} old history gap{{ 's' if ohlc.historical_gap_count != 1 else '' }}</span>
+      {% else %}
+        · <span class="badge done">no mid-session gaps</span>
+      {% endif %}
     {% else %}
       · <span class="badge failed">missing</span> upload a CSV or Sync from IG
     {% endif %}
@@ -55,10 +71,59 @@
       · worker <code>{{ ohlc_worker_status.finished_at }}</code>
     {% endif %}
   </p>
+  {% if ohlc.exists and ohlc.has_recent_gaps %}
+  <div class="callout callout--danger">
+    <strong>Recent OHLC gaps</strong> — live charts / Gemini skip when the lookback includes a hole.
+    <p style="margin:0.5rem 0 0.25rem;">{{ ohlc.gap_fix_hint }}</p>
+    {% if ohlc.gap_fix_steps %}
+    <ol>
+      {% for step in ohlc.gap_fix_steps %}
+      <li>{{ step }}</li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+    {% if ohlc.gaps %}
+    <p style="margin:0.5rem 0 0.25rem;"><strong>Examples</strong> (overnight/weekend breaks ignored):</p>
+    <ul style="font-family:ui-monospace,monospace; font-size:0.9em;">
+      {% for g in ohlc.gaps %}
+      <li>{{ g.from }} → {{ g.to }}
+        {% if g.missing_bars_approx %}(~{{ g.missing_bars_approx }} missing 15m bar{{ 's' if g.missing_bars_approx != 1 else '' }}){% endif %}
+      </li>
+      {% endfor %}
+      {% if ohlc.gaps_truncated %}
+      <li>…and {{ ohlc.recent_gap_count - (ohlc.gaps|length) }} more</li>
+      {% endif %}
+    </ul>
+    {% endif %}
+  </div>
+  {% elif ohlc.exists and ohlc.historical_gap_count %}
+  <div class="callout callout--muted">
+    <strong>Old history holes only</strong> — {{ ohlc.historical_gap_count }} mid-session gap{{ 's' if ohlc.historical_gap_count != 1 else '' }}
+    before the last {{ ohlc.gap_recent_days or 90 }} days (typical in long BacktestMarket files).
+    Your live lookback is clean; Paper/Live do not need a re-upload for this.
+    {% if ohlc.gap_fix_hint %}<p style="margin:0.5rem 0 0;">{{ ohlc.gap_fix_hint }}</p>{% endif %}
+  </div>
+  {% endif %}
+  {% if ig_price_allowance %}
+  <p class="text-muted" style="margin-top:0.35rem;">
+    IG historical allowance
+    {% if ig_price_allowance.exhausted %}<span class="badge failed">exhausted</span>
+    {% elif ig_price_allowance.remaining is not none and ig_price_allowance.remaining < 500 %}<span class="badge failed">low</span>
+    {% else %}<span class="badge done">ok</span>{% endif %}
+    <code>{{ ig_price_allowance.label }}</code>
+    {% if ig_price_allowance.resets_at %}
+      · ~<code>{{ ig_price_allowance.resets_at }}</code>
+    {% endif %}
+  </p>
+  {% else %}
+  <p class="field-hint" style="margin-top:0.35rem;">
+    IG historical allowance appears here after the next successful Sync or live OHLC top-up.
+  </p>
+  {% endif %}
 
   <details class="automation-advanced" style="margin:0.75rem 0 1rem;">
     <summary>OHLC sync details</summary>
-    <p class="field-hint">Candles are Europe/Paris; sync/worker times are UTC. Age can be several hours when the market is closed.</p>
+    <p class="field-hint">Candles are Europe/Paris; sync/worker times are UTC. Age can be several hours when the market is closed. Allowance is a weekly price-point budget on the IG account (not per API key).</p>
     <p class="text-muted">File: <code>{{ ohlc.path }}</code></p>
     <p class="text-muted">Range: <code>{{ ohlc.from or '—' }}</code> → <code>{{ ohlc.to or '—' }}</code></p>
     {% if ohlc_sync_status %}
@@ -143,7 +208,9 @@
     })();
   </script>
 </section>
+</div>
 
+<div id="cac40-tab-live" class="tab-panel" data-tab-panel="live" hidden>
 {% if live_ok %}
 <section class="card">
   <p class="badge done">{{ live_ok }}</p>
@@ -190,6 +257,20 @@
   {% endif %}
   {% if live_status.error %}
   <pre class="field-hint" style="white-space:pre-wrap;">{{ live_status.error }}</pre>
+  {% endif %}
+  {% if ig_price_allowance %}
+  <p class="text-muted" style="margin-top:0.35rem;">
+    IG history feed:
+    {% if ig_price_allowance.exhausted %}<span class="badge failed">0 pts</span>{% endif %}
+    <code>{{ ig_price_allowance.label }}</code>
+    · live cycles top up missing 15m bars then resample 1H/1D locally for Gemini.
+  </p>
+  {% endif %}
+  {% if live_status.ohlc_stale %}
+  <p class="badge failed">OHLC cache was stale on the last cycle — LLM may have been skipped until IG allowance recovers.</p>
+  {% endif %}
+  {% if ohlc.exists and ohlc.has_recent_gaps and live_mode != 'off' %}
+  <p class="badge failed">Armed while recent OHLC gaps exist — Sync / re-upload before relying on Gemini decisions.</p>
   {% endif %}
 
   <div class="form-actions form-actions--compact" style="margin:0.75rem 0;">
@@ -272,7 +353,14 @@
     <p class="field-hint">No IG connectors yet — add one on the Connectors tab.</p>
     {% endif %}
 
-    <h3 class="card-title" style="font-size:1rem;margin-top:1rem;">Strategy</h3>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;margin-top:1rem;">
+      <h3 class="card-title" style="font-size:1rem;margin:0;">Strategy</h3>
+      <button type="button" class="btn-secondary btn-sm" id="cac40-copy-from-backtest">
+        Copy from backtest
+      </button>
+    </div>
+    <p class="field-hint" id="cac40-copy-from-backtest-note" hidden></p>
+    <p class="field-hint">Copies knobs from the Backtest tab form (not period / LLM mode). Save to persist.</p>
     <div class="form-grid">
       {{ strategy_fields(live_strategy, prefix='live-', include_period=false, include_llm_mode=false) }}
     </div>
@@ -354,7 +442,9 @@
     })();
   </script>
 </section>
+</div>
 
+<div id="cac40-tab-backtest" class="tab-panel" data-tab-panel="backtest" hidden>
 <section class="card">
   <h2>New simulation</h2>
   <form id="cac40-run-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs"
@@ -541,4 +631,87 @@
   <p class="empty-state">No runs yet</p>
   {% endif %}
 </section>
+</div>
+
+<script>
+  (function () {
+    const nav = document.getElementById('cac40-page-tabs');
+    if (!nav) return;
+    const slug = nav.dataset.slug || 'default';
+    const storageKey = 'cac40-page-tab:' + slug;
+    const buttons = [...nav.querySelectorAll('[data-tab]')];
+    const panels = {
+      data: document.getElementById('cac40-tab-data'),
+      live: document.getElementById('cac40-tab-live'),
+      backtest: document.getElementById('cac40-tab-backtest'),
+    };
+    const valid = new Set(Object.keys(panels));
+
+    function showTab(name, { persist } = { persist: true }) {
+      const tab = valid.has(name) ? name : 'backtest';
+      buttons.forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tab));
+      Object.entries(panels).forEach(([key, el]) => {
+        if (!el) return;
+        if (key === tab) el.removeAttribute('hidden');
+        else el.setAttribute('hidden', '');
+      });
+      if (persist) {
+        try { localStorage.setItem(storageKey, tab); } catch (_) {}
+      }
+      try {
+        const url = new URL(window.location.href);
+        if (url.searchParams.get('tab') !== tab) {
+          url.searchParams.set('tab', tab);
+          history.replaceState(null, '', url.pathname + url.search + url.hash);
+        }
+      } catch (_) {}
+    }
+
+    function initialTab() {
+      try {
+        const q = new URLSearchParams(window.location.search).get('tab');
+        if (q && valid.has(q)) return q;
+      } catch (_) {}
+      try {
+        const stored = localStorage.getItem(storageKey);
+        if (stored && valid.has(stored)) return stored;
+      } catch (_) {}
+      return 'backtest';
+    }
+
+    buttons.forEach((btn) => {
+      btn.addEventListener('click', () => showTab(btn.dataset.tab));
+    });
+    showTab(initialTab(), { persist: true });
+
+    // Copy strategy fields from backtest form → live form (shared input names).
+    const copyBtn = document.getElementById('cac40-copy-from-backtest');
+    const runForm = document.getElementById('cac40-run-form');
+    const liveForm = document.getElementById('cac40-live-form');
+    const copyNote = document.getElementById('cac40-copy-from-backtest-note');
+    if (copyBtn && runForm && liveForm) {
+      copyBtn.addEventListener('click', () => {
+        const skip = new Set(['period', 'llm_mode', 'file', 'source']);
+        let n = 0;
+        liveForm.querySelectorAll('input[name], select[name]').forEach((dest) => {
+          const name = dest.name;
+          if (!name || skip.has(name) || name === 'ig_connector_id') return;
+          const src = runForm.querySelector(`[name="${CSS.escape(name)}"]`);
+          if (!src) return;
+          if (dest.type === 'checkbox' || dest.type === 'radio') return;
+          dest.value = src.value;
+          dest.dispatchEvent(new Event('input', { bubbles: true }));
+          dest.dispatchEvent(new Event('change', { bubbles: true }));
+          n += 1;
+        });
+        const triggerSel = document.getElementById('live-llm-trigger-mode');
+        if (triggerSel) triggerSel.dispatchEvent(new Event('change', { bubbles: true }));
+        if (copyNote) {
+          copyNote.hidden = false;
+          copyNote.textContent = 'Copied ' + n + ' fields from the Backtest form. Review, then Save live config.';
+        }
+      });
+    }
+  })();
+</script>
 {% endblock %}

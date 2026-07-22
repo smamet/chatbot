@@ -306,7 +306,8 @@ body {
   flex-wrap: nowrap;
 }
 
-.tabs a {
+.tabs a,
+.tabs button.tabs__btn {
   padding: var(--space-sm) var(--space-md);
   text-decoration: none;
   color: var(--color-text-muted);
@@ -315,16 +316,27 @@ body {
   border-radius: var(--radius-sm);
   white-space: nowrap;
   transition: color 0.15s, background 0.15s;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-family: inherit;
+  line-height: inherit;
 }
 
-.tabs a:hover {
+.tabs a:hover,
+.tabs button.tabs__btn:hover {
   color: var(--color-text);
   background: var(--color-bg);
 }
 
-.tabs a.active {
+.tabs a.active,
+.tabs button.tabs__btn.active {
   background: var(--color-accent);
   color: #fff;
+}
+
+.tab-panel[hidden] {
+  display: none !important;
 }
 
 /* Buttons — include .btn-* so <a class="btn-secondary"> gets the same chrome as <button> */
@@ -2452,8 +2464,8 @@ td.actions button {
   font-size: 0.75rem;
   font-weight: 600;
   border-radius: var(--radius-full);
-  background: var(--color-success-soft);
-  color: var(--color-success);
+  background: #f1f5f9;
+  color: var(--color-text-muted);
 }
 
 .badge.off {
@@ -2461,9 +2473,57 @@ td.actions button {
   color: var(--color-text-muted);
 }
 
-.badge.on {
+.badge.on,
+.badge.done {
   background: var(--color-success-soft);
   color: var(--color-success);
+}
+
+.badge.failed {
+  background: var(--color-danger-soft);
+  color: var(--color-danger);
+}
+
+.badge.warn {
+  background: var(--color-warning-soft);
+  color: var(--color-warning);
+}
+
+/* Callout panels (not pill badges) */
+.callout {
+  margin-top: 0.75rem;
+  padding: 0.85rem 1rem;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid #e2e8f0;
+  background: #f8fafc;
+  color: var(--color-text);
+  text-align: left;
+  white-space: normal;
+}
+
+.callout--danger {
+  border-color: #fecaca;
+  background: var(--color-danger-soft);
+}
+
+.callout--warn {
+  border-color: #fde68a;
+  background: var(--color-warning-soft);
+}
+
+.callout--muted {
+  border-color: #e2e8f0;
+  background: #f8fafc;
+  color: var(--color-text-muted);
+}
+
+.callout strong {
+  color: var(--color-text);
+}
+
+.callout ol,
+.callout ul {
+  margin: 0.35rem 0 0.25rem 1.25rem;
 }
 
 /* Links */

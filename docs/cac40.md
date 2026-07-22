@@ -38,6 +38,8 @@ Config lives under `data/cac40/{slug}/live/` (`live_config.json`, `status.json`,
 
 Poll interval: `CAC40_LIVE_POLL_SECONDS` (default 60). Bot cycles align to 15m candle closes in Europe/Paris at `:00:15`, `:15:15`, `:30:15`, `:45:15` (15s after the bar closes so OHLC is available). With **Fixed rate** LLM schedule, Gemini spacing uses a persisted wall-clock gate (`live/llm_schedule.json`, seeded from the last LLM cycle) so restarts / Run cycle now do not reset the 6h (or configured) interval.
 
+**Live OHLC & IG historical allowance:** dashboard Paper/Live cycles use the local per-bot CSV (`data/cac40/{slug}/ohlc/…`), top up missing 15m bars from IG, then resample 1H/1D locally for triggers/charts/LLM. Small lags use a cheap `max≈8` fetch **only if those bars connect** to the last CSV candle; otherwise (or after a multi-day outage) the cycle **range-fills from last candle → now** so mid-session holes are never spliced into the CSV (overnight/weekend breaks are allowed). If the chart lookback still has a mid-session gap, the LLM is **skipped**. A one-time **Upload** or **Sync from IG** is required before arming. Fixed-rate LLM spacing alone does **not** reduce `/prices` spend — this local cache does. While a bot is armed (`paper`/`live`), `worker-cac40-ohlc` skips that slug. If top-up hits a 403 but the CSV is still recent (≤2×15m), the cycle continues with a `stale_data` warning; older cache **skips the LLM**. The OHLC / Live panels show last-known `remaining / total` points and reset countdown from IG `metadata.allowance` (updated only on successful `/prices` responses).
+
 ## CLI
 
 ```bash
@@ -64,9 +66,9 @@ On **CAC40 Backtest** click **Sync from IG** (requires an active IG connector):
 - Appends 15m mid-price bars since the last stored timestamp
 - Gap &gt; 60 days is rejected — re-upload a futures CSV first
 - Empty dataset: manual sync bootstraps ~60 days from IG
-- Background worker (`worker-cac40-ohlc`, poll `CAC40_OHLC_POLL_SECONDS` default 900) tops up tenants with active CAC40 + IG + existing CSV (no cron bootstrap of empty files)
+- Background worker (`worker-cac40-ohlc`, poll `CAC40_OHLC_POLL_SECONDS` default 900) tops up tenants with active CAC40 + IG + existing CSV (no cron bootstrap of empty files). Skips bots armed for Paper/Live (their live worker tops up instead).
 
-The OHLC card shows **last candle**, **age in hours**, last sync (manual/worker), fetch window, and worker cycle time.
+The OHLC card shows **last candle**, **age in hours**, **mid-session gap count** (with fix steps: Sync and/or re-upload CSV), last sync (manual/worker), IG historical allowance, fetch window, and worker cycle time. Overnight/weekend breaks are ignored.
 
 ### How to verify it works
 

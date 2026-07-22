@@ -151,10 +151,220 @@ def window_asof(df: pd.DataFrame, ts: pd.Timestamp, lookback: int) -> pd.DataFra
     return sliced.iloc[-lookback:]
 
 
-def append_bars(path: Path, df: pd.DataFrame) -> None:
+# 15m series: contiguous when successive stamps differ by exactly one slot.
+OHLC_15M_DELTA = pd.Timedelta(minutes=15)
+# Approx cash CAC session in Europe/Paris (used to ignore overnight/weekend holes).
+_SESSION_START_HOUR = 8
+_SESSION_END_HOUR = 18
+# Gaps older than this are "history noise" for live (vendor CSV holes).
+RECENT_GAP_DAYS = 90
+
+
+def next_15m_ts(ts: pd.Timestamp) -> pd.Timestamp:
+    return pd.Timestamp(ts) + OHLC_15M_DELTA
+
+
+def connects_15m(prev: pd.Timestamp, nxt: pd.Timestamp) -> bool:
+    """True when ``nxt`` is the immediate next 15m bar after ``prev`` (or equal)."""
+    a = pd.Timestamp(prev)
+    b = pd.Timestamp(nxt)
+    return b <= next_15m_ts(a)
+
+
+def is_natural_session_break(prev: pd.Timestamp, nxt: pd.Timestamp) -> bool:
+    """
+    Overnight / weekend / holiday-style hole (not a mid-session missing candle).
+
+    Same calendar day inside session hours ⇒ not natural.
+    """
+    a = pd.Timestamp(prev)
+    b = pd.Timestamp(nxt)
+    if b <= next_15m_ts(a):
+        return True
+    if a.tzinfo is not None and b.tzinfo is not None and a.tzinfo != b.tzinfo:
+        b = b.tz_convert(a.tzinfo)
+    if a.date() != b.date():
+        return True
+    # Same day: only natural if outside / spanning the cash session edge.
+    if a.hour >= _SESSION_END_HOUR or b.hour < _SESSION_START_HOUR:
+        return True
+    return False
+
+
+def find_intrasession_gaps(
+    df: pd.DataFrame,
+    *,
+    bar_delta: pd.Timedelta = OHLC_15M_DELTA,
+) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timedelta]]:
+    """Return mid-session holes (prev, next, delta) in a 15m OHLC frame."""
+    if df is None or len(df) < 2:
+        return []
+    idx = df.index.sort_values()
+    gaps: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timedelta]] = []
+    for a, b in zip(idx[:-1], idx[1:]):
+        delta = b - a
+        if delta <= bar_delta:
+            continue
+        if is_natural_session_break(a, b):
+            continue
+        gaps.append((pd.Timestamp(a), pd.Timestamp(b), delta))
+    return gaps
+
+
+def _gap_sample(
+    gaps: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timedelta]],
+    *,
+    max_samples: int,
+    bar_delta: pd.Timedelta,
+) -> list[dict]:
+    samples: list[dict] = []
+    for a, b, delta in gaps[: max(0, int(max_samples))]:
+        missing = max(0, int(delta / bar_delta) - 1)
+        samples.append(
+            {
+                "from": str(a),
+                "to": str(b),
+                "delta": str(delta),
+                "missing_bars_approx": missing,
+            }
+        )
+    return samples
+
+
+def summarize_ohlc_gaps(
+    df: pd.DataFrame,
+    *,
+    max_samples: int = 8,
+    bar_delta: pd.Timedelta = OHLC_15M_DELTA,
+    recent_days: int = RECENT_GAP_DAYS,
+) -> dict:
+    """
+    UI-friendly mid-session gap report + how to fix.
+
+    Overnight / weekend holes are ignored. Gaps older than ``recent_days``
+    are reported as historical vendor noise (not a live blocker).
+    """
+    gaps = find_intrasession_gaps(df, bar_delta=bar_delta)
+    empty = {
+        "has_gaps": False,
+        "has_recent_gaps": False,
+        "gap_count": 0,
+        "recent_gap_count": 0,
+        "historical_gap_count": 0,
+        "gaps": [],
+        "fix_hint": None,
+        "fix_steps": [],
+        "severity": "ok",
+    }
+    if not gaps:
+        return empty
+
+    last_bar = pd.Timestamp(df.index.max())
+    tip_horizon = last_bar - pd.Timedelta(days=max(1, int(recent_days)))
+    recent = [g for g in gaps if g[1] >= tip_horizon]
+    historical = [g for g in gaps if g[1] < tip_horizon]
+    recent_count = len(recent)
+    hist_count = len(historical)
+    total = len(gaps)
+
+    if recent_count:
+        samples = _gap_sample(recent, max_samples=max_samples, bar_delta=bar_delta)
+        fix_hint = (
+            f"{recent_count} mid-session hole(s) in the last {recent_days} days "
+            "(affects live charts / Gemini). Fill with Sync from IG, or re-upload "
+            "CSV if Sync cannot cover the hole."
+        )
+        steps = [
+            "Click Sync from IG (needs allowance) to fill from the last contiguous candle.",
+            "Refresh — recent gap count should be 0.",
+            "If Sync fails: Upload a clean BacktestMarket CSV, then Sync again.",
+        ]
+        return {
+            "has_gaps": True,
+            "has_recent_gaps": True,
+            "gap_count": total,
+            "recent_gap_count": recent_count,
+            "historical_gap_count": hist_count,
+            "gaps": samples,
+            "truncated": recent_count > len(samples),
+            "fix_hint": fix_hint,
+            "fix_steps": steps,
+            "last_gap_to": str(recent[-1][1]),
+            "severity": "error",
+            "recent_days": recent_days,
+        }
+
+    # History-only holes (common in long BacktestMarket files) — not a live issue.
+    samples = _gap_sample(historical[-max_samples:], max_samples=max_samples, bar_delta=bar_delta)
+    return {
+        "has_gaps": False,  # not a live blocker
+        "has_recent_gaps": False,
+        "gap_count": total,
+        "recent_gap_count": 0,
+        "historical_gap_count": hist_count,
+        "gaps": samples,
+        "truncated": hist_count > len(samples),
+        "fix_hint": (
+            f"{hist_count} mid-session hole(s) only in older history "
+            f"(before last {recent_days} days). Live lookback is clean — no action needed "
+            "for Paper/Live. Optional: re-upload a cleaner CSV if you backtest across those years."
+        ),
+        "fix_steps": [],
+        "last_gap_to": str(historical[-1][1]) if historical else None,
+        "severity": "info",
+        "recent_days": recent_days,
+    }
+
+
+def assert_append_contiguous(
+    last_ts: pd.Timestamp | None,
+    fresh: pd.DataFrame,
+    *,
+    allow_session_breaks: bool = True,
+) -> pd.DataFrame:
+    """
+    Keep only bars after ``last_ts`` and refuse discontinuous mid-session splices.
+
+    Raises ValueError if appending would create an intrasession hole
+    (e.g. last=10:00 then first new=11:00 on the same day).
+    """
+    if fresh is None or fresh.empty:
+        return fresh
+    out = fresh.sort_index()
+    out = out[~out.index.duplicated(keep="last")]
+    if last_ts is None:
+        return out
+    last = pd.Timestamp(last_ts)
+    if out.index.tz is not None:
+        if last.tzinfo is None:
+            last = last.tz_localize(out.index.tz)
+        else:
+            last = last.tz_convert(out.index.tz)
+    out = out.loc[out.index > last]
+    if out.empty:
+        return out
+    first = pd.Timestamp(out.index[0])
+    if connects_15m(last, first):
+        return out
+    if allow_session_breaks and is_natural_session_break(last, first):
+        return out
+    raise ValueError(
+        f"Refusing discontinuous OHLC append: last={last} → first_new={first} "
+        f"(would leave a mid-session hole). Sync/range-fill the missing bars first."
+    )
+
+
+def append_bars(
+    path: Path,
+    df: pd.DataFrame,
+    *,
+    require_contiguous: bool = False,
+) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         existing = load_ohlc_csv(path, timezone=str(df.index.tz) if df.index.tz else "UTC")
+        if require_contiguous and not existing.empty:
+            df = assert_append_contiguous(pd.Timestamp(existing.index[-1]), df)
         merged = pd.concat([existing, df]).sort_index()
         merged = merged[~merged.index.duplicated(keep="last")]
     else:

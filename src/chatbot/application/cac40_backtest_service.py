@@ -380,6 +380,15 @@ def ohlc_info(settings: Settings, tenant_slug: str) -> dict[str, Any]:
         "last_candle": None,
         "candle_age_hours": None,
         "size_bytes": 0,
+        "has_gaps": False,
+        "has_recent_gaps": False,
+        "gap_count": 0,
+        "recent_gap_count": 0,
+        "historical_gap_count": 0,
+        "gaps": [],
+        "gap_fix_hint": None,
+        "gap_fix_steps": [],
+        "gap_severity": "ok",
     }
     if not path.exists():
         return info
@@ -394,9 +403,55 @@ def ohlc_info(settings: Settings, tenant_slug: str) -> dict[str, Any]:
             info["to"] = str(df.index[-1])
             info["last_candle"] = info["to"]
             info["candle_age_hours"] = _candle_age_hours(df.index[-1], datetime.now(UTC))
+            gap_report = _ohlc_gap_report_cached(path, df)
+            info["has_gaps"] = bool(gap_report.get("has_gaps"))
+            info["has_recent_gaps"] = bool(gap_report.get("has_recent_gaps"))
+            info["gap_count"] = int(gap_report.get("gap_count") or 0)
+            info["recent_gap_count"] = int(gap_report.get("recent_gap_count") or 0)
+            info["historical_gap_count"] = int(
+                gap_report.get("historical_gap_count") or 0
+            )
+            info["gaps"] = list(gap_report.get("gaps") or [])
+            info["gaps_truncated"] = bool(gap_report.get("truncated"))
+            info["gap_fix_hint"] = gap_report.get("fix_hint")
+            info["gap_fix_steps"] = list(gap_report.get("fix_steps") or [])
+            info["gap_severity"] = str(gap_report.get("severity") or "ok")
+            info["gap_recent_days"] = int(gap_report.get("recent_days") or 90)
     except Exception as exc:  # pragma: no cover
         info["error"] = str(exc)
     return info
+
+
+def ohlc_gaps_cache_path(settings: Settings, tenant_slug: str) -> Path:
+    return default_ohlc_path(settings, tenant_slug).parent / "gaps_status.json"
+
+
+_GAPS_CACHE_VERSION = 2
+
+
+def _ohlc_gap_report_cached(path: Path, df) -> dict[str, Any]:
+    """Reuse gap scan while CSV mtime unchanged (large history is expensive)."""
+    from chatbot.cac40.ohlc_store import summarize_ohlc_gaps
+
+    cache = path.parent / "gaps_status.json"
+    try:
+        if cache.exists() and cache.stat().st_mtime_ns >= path.stat().st_mtime_ns:
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            if (
+                isinstance(data, dict)
+                and data.get("_v") == _GAPS_CACHE_VERSION
+                and "gap_count" in data
+            ):
+                return data
+    except (OSError, json.JSONDecodeError, TypeError):
+        pass
+    report = summarize_ohlc_gaps(df)
+    report["_v"] = _GAPS_CACHE_VERSION
+    try:
+        cache.write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
+    except OSError:
+        pass
+    return report
 
 
 def save_ohlc_upload(
@@ -571,12 +626,27 @@ def sync_ohlc_from_ig(
         end = pd.Timestamp(clock)
         bars_before = int(len(existing)) if existing is not None else 0
         added = 0
+        allowance: dict[str, Any] = {}
         if start < end:
-            fresh = fetch_ig_ohlc_range(ig_config, start=start, end=end)
+            fresh = fetch_ig_ohlc_range(
+                ig_config, start=start, end=end, allowance_out=allowance
+            )
             if last_ts is not None and not fresh.empty:
-                fresh = fresh.loc[fresh.index > last_ts.tz_convert(fresh.index.tz)]
+                from chatbot.cac40.ohlc_store import (
+                    assert_append_contiguous,
+                    find_intrasession_gaps,
+                )
+
+                fresh = assert_append_contiguous(last_ts, fresh, allow_session_breaks=True)
+                stretch_gaps = find_intrasession_gaps(fresh)
+                if stretch_gaps:
+                    a, b, delta = stretch_gaps[0]
+                    raise ValueError(
+                        f"IG returned OHLC with mid-session hole {a} → {b} ({delta}); "
+                        "refusing to append. Re-upload a clean CSV, then Sync."
+                    )
             if not fresh.empty:
-                append_bars(dest, fresh)
+                append_bars(dest, fresh, require_contiguous=True)
                 added = int(len(fresh))
         info = ohlc_info(settings, tenant_slug)
         last_candle = info.get("to")
@@ -597,6 +667,7 @@ def sync_ohlc_from_ig(
             "last_ok_at": clock.isoformat(),
             "last_attempt_at": clock.isoformat(),
             "last_error": None,
+            "ig_price_allowance": allowance or None,
         }
         write_ohlc_sync_status(settings, tenant_slug, status)
         info.update(status)
@@ -639,7 +710,17 @@ def run_due_ig_ohlc_syncs(session: Session, settings: Settings) -> list[str]:
         if tenant is None:
             continue
         slug = tenant.slug
-        from chatbot.application.cac40_live_service import resolve_primary_ig_config
+        from chatbot.application.cac40_live_service import (
+            load_live_config,
+            resolve_primary_ig_config,
+        )
+
+        # Armed bots top up OHLC inside the live cycle — avoid double IG /prices spend.
+        live_mode = str(load_live_config(settings, slug).get("mode") or "off").lower()
+        if live_mode in ("paper", "live"):
+            skip_count += 1
+            logs.append(f"{slug}: skip — armed ({live_mode}); live cycle tops up OHLC")
+            continue
 
         ig_config = resolve_primary_ig_config(
             settings, slug, session=session, tenant_id=tenant.id

@@ -5,12 +5,13 @@ import logging
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from chatbot.cac40.chart_renderer import pivot_history_pad, render_multi_timeframe
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.fundmanager_client import FundManagerClient
 from chatbot.cac40.ig_connector import IgApiError, IgConnector
+from chatbot.cac40.live_ohlc_feed import LiveOhlcFeed
 from chatbot.cac40.llm_decision import (
     GeminiDecisionClient,
     SessionFactory,
@@ -22,6 +23,8 @@ from chatbot.cac40.models import OrderPurpose, WorkingOrder
 from chatbot.cac40.risk_gate import RiskGate
 
 logger = logging.getLogger(__name__)
+
+LiveOhlcProvider = Callable[[], LiveOhlcFeed]
 
 
 class LiveScheduler:
@@ -39,6 +42,7 @@ class LiveScheduler:
         session_factory: SessionFactory | None = None,
         order_connectors: list[tuple[int, IgConnector]] | None = None,
         orders_dir: Path | None = None,
+        ohlc_provider: LiveOhlcProvider | None = None,
     ) -> None:
         self.config = config
         self.api_key = api_key
@@ -54,6 +58,7 @@ class LiveScheduler:
         ]
         self.orders_dir = orders_dir or (self.journal_dir / "order_books")
         self.orders_dir.mkdir(parents=True, exist_ok=True)
+        self.ohlc_provider = ohlc_provider
         self.fm = FundManagerClient(config)
         self.llm = GeminiDecisionClient(
             api_key=api_key,
@@ -71,6 +76,7 @@ class LiveScheduler:
         self._last_decision_summary: dict[str, Any] | None = None
         self._cycle_index = 0
         self.last_mirror_results: list[dict[str, Any]] = []
+        self.last_ohlc_feed: LiveOhlcFeed | None = None
 
     def request_stop(self) -> None:
         self._stop = True
@@ -108,17 +114,25 @@ class LiveScheduler:
     def run_once(self) -> dict[str, Any]:
         self.ensure_logged_in()
         gate = RiskGate(self.config, self.ig.ledger)
-        self.ig.sync_price()
         self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
 
         rsi_seed = max(2, int(self.config.warmup_bars or 14))
         pivots_on = bool(self.config.chart_show_pivots)
         pivot_period = self.config.chart_pivot_period or "D"
-        pad_15 = pivot_history_pad(pivot_period, timeframe="15m") if pivots_on else 0
-        pad_1h = pivot_history_pad(pivot_period, timeframe="1h") if pivots_on else 0
-        ohlc_15 = self.ig.get_ohlc("15m", self.config.lookback_15m + rsi_seed + pad_15)
-        ohlc_1h = self.ig.get_ohlc("1h", self.config.lookback_1h + rsi_seed + pad_1h)
-        ohlc_1d = self.ig.get_ohlc("1d", self.config.lookback_1d + rsi_seed)
+        feed_meta: dict[str, Any] = {}
+        feed = self._load_ohlc_frames()
+        self.last_ohlc_feed = feed
+        ohlc_15 = feed["ohlc_15"]
+        ohlc_1h = feed["ohlc_1h"]
+        ohlc_1d = feed["ohlc_1d"]
+        feed_meta = feed.get("meta") or {}
+
+        # Mark price from local/cache close (or tiny IG fetch when no provider).
+        if float(feed.get("last_price") or 0) > 0:
+            self.ig.ledger.last_price = float(feed["last_price"])
+            self.ig.ledger.mark_to_market(float(feed["last_price"]))
+        else:
+            self.ig.sync_price()
 
         snap = self.ig.get_snapshot()
         cycle_dir = self.journal_dir / datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -142,8 +156,16 @@ class LiveScheduler:
         decision = None
         gate_result = None
         llm_trigger_reasons: list[str] = []
+        skip_llm_feed = bool(feed_meta.get("skip_llm"))
 
-        should_call = bool(bar and trig and trig.should_call and not ohlc_15.empty)
+        should_call = bool(
+            bar and trig and trig.should_call and not ohlc_15.empty and not skip_llm_feed
+        )
+        if skip_llm_feed and trig and trig.should_call:
+            logger.warning(
+                "LLM skipped — OHLC feed not fresh enough (%s)",
+                feed_meta.get("error") or feed_meta.get("warnings"),
+            )
         if should_call and trig is not None:
             llm_trigger_reasons = list(trig.reasons)
             frames = {"15m": ohlc_15}
@@ -208,6 +230,8 @@ class LiveScheduler:
         error = None
         if should_call and not decision:
             error = "llm_fail_closed"
+        elif feed_meta.get("error"):
+            error = str(feed_meta["error"])
         self.fm.notify(self.ig.ledger, error=error)
         chart_files = sorted(p.name for p in (cycle_dir / "charts").glob("chart_*.png"))
         charts_rel = f"journal/{cycle_dir.name}/charts" if chart_files else ""
@@ -229,12 +253,110 @@ class LiveScheduler:
             "chart_files": chart_files,
             "cycle_dir": cycle_dir.name,
             "pnl": self.ig.ledger.pnl_payload(),
+            "ohlc_feed": {
+                "last_bar_ts": feed_meta.get("last_bar_ts"),
+                "top_up_added": feed_meta.get("top_up_added"),
+                "top_up_ok": feed_meta.get("top_up_ok"),
+                "stale": feed_meta.get("stale"),
+                "skip_llm": feed_meta.get("skip_llm"),
+                "warnings": feed_meta.get("warnings") or [],
+                "error": feed_meta.get("error"),
+                "allowance": feed_meta.get("allowance"),
+                "source": feed_meta.get("source"),
+            },
         }
         (cycle_dir / "cycle.json").write_text(
             json.dumps(payload, indent=2, default=str), encoding="utf-8"
         )
         self._journal(payload)
         return payload
+
+    def _load_ohlc_frames(self) -> dict[str, Any]:
+        """
+        Prefer local CSV + tiny IG top-up via ``ohlc_provider``.
+
+        Fallback (CLI / no CSV wiring): full IG lookbacks (legacy behaviour).
+        """
+        if self.ohlc_provider is not None:
+            feed = self.ohlc_provider()
+            meta = {
+                "source": "local_csv",
+                "last_bar_ts": feed.last_bar_ts,
+                "top_up_added": feed.top_up_added,
+                "top_up_ok": feed.top_up_ok,
+                "stale": feed.stale,
+                "skip_llm": feed.skip_llm,
+                "warnings": list(feed.warnings),
+                "error": feed.error,
+                "allowance": feed.allowance,
+            }
+            if feed.allowance:
+                remaining = feed.allowance.get("remaining") or feed.allowance.get(
+                    "remainingAllowance"
+                )
+                expiry = feed.allowance.get("expiry") or feed.allowance.get(
+                    "allowanceExpiry"
+                )
+                logger.info(
+                    "IG historical allowance remaining=%s expiry=%s",
+                    remaining,
+                    expiry,
+                )
+            for warn in feed.warnings:
+                logger.warning("OHLC feed: %s", warn)
+            if feed.error and feed.skip_llm:
+                logger.error("OHLC feed: %s", feed.error)
+            return {
+                "ohlc_15": feed.ohlc_15,
+                "ohlc_1h": feed.ohlc_1h,
+                "ohlc_1d": feed.ohlc_1d,
+                "last_price": feed.last_price,
+                "meta": meta,
+            }
+
+        pad_15 = (
+            pivot_history_pad(self.config.chart_pivot_period or "D", timeframe="15m")
+            if self.config.chart_show_pivots
+            else 0
+        )
+        pad_1h = (
+            pivot_history_pad(self.config.chart_pivot_period or "D", timeframe="1h")
+            if self.config.chart_show_pivots
+            else 0
+        )
+        rsi_seed = max(2, int(self.config.warmup_bars or 14))
+        ohlc_15 = self.ig.get_ohlc(
+            "15m", self.config.lookback_15m + rsi_seed + pad_15
+        )
+        ohlc_1h = self.ig.get_ohlc("1h", self.config.lookback_1h + rsi_seed + pad_1h)
+        ohlc_1d = self.ig.get_ohlc("1d", self.config.lookback_1d + rsi_seed)
+        last_price = (
+            float(ohlc_15["close"].iloc[-1]) if not ohlc_15.empty else 0.0
+        )
+        allowance = getattr(self.ig, "last_price_allowance", None)
+        if allowance:
+            logger.info(
+                "IG historical allowance remaining=%s expiry=%s",
+                allowance.get("remaining") or allowance.get("remainingAllowance"),
+                allowance.get("expiry") or allowance.get("allowanceExpiry"),
+            )
+        return {
+            "ohlc_15": ohlc_15,
+            "ohlc_1h": ohlc_1h,
+            "ohlc_1d": ohlc_1d,
+            "last_price": last_price,
+            "meta": {
+                "source": "ig",
+                "last_bar_ts": str(ohlc_15.index[-1]) if not ohlc_15.empty else None,
+                "top_up_added": None,
+                "top_up_ok": True,
+                "stale": False,
+                "skip_llm": False,
+                "warnings": [],
+                "error": None,
+                "allowance": allowance,
+            },
+        }
 
     @staticmethod
     def _last_closed_bar(ohlc_15) -> dict[str, float] | None:

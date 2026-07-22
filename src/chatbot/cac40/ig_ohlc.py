@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime
 from typing import Any
 
@@ -7,6 +8,8 @@ import pandas as pd
 
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.ig_connector import IgConnector
+
+logger = logging.getLogger(__name__)
 
 
 def ig_config_from_connector(config: dict[str, Any] | None) -> Cac40Config:
@@ -29,6 +32,7 @@ def fetch_ig_ohlc_range(
     end: datetime | pd.Timestamp,
     timeframe: str = "15m",
     timezone: str = "Europe/Paris",
+    allowance_out: dict[str, Any] | None = None,
 ) -> pd.DataFrame:
     """Login to IG and fetch mid-price OHLC for [start, end]."""
     config = ig_config_from_connector(ig_config)
@@ -39,11 +43,22 @@ def fetch_ig_ohlc_range(
         connector.login()
         if not connector.authenticated:
             raise ValueError("IG login did not establish a session")
-        return connector.fetch_ohlc_range(
+        df = connector.fetch_ohlc_range(
             timeframe=timeframe,
             start=start,
             end=end,
             timezone=timezone,
         )
+        if allowance_out is not None and connector.last_price_allowance:
+            allowance_out.clear()
+            allowance_out.update(connector.last_price_allowance)
+            remaining = allowance_out.get("remaining") or allowance_out.get(
+                "remainingAllowance"
+            )
+            expiry = allowance_out.get("expiry") or allowance_out.get("allowanceExpiry")
+            logger.info(
+                "IG historical allowance remaining=%s expiry=%s", remaining, expiry
+            )
+        return df
     finally:
         connector.close()

@@ -17,10 +17,12 @@ from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegr
 from chatbot.application.connector_service import ConnectorService
 from chatbot.application.integration_service import IntegrationService
 from chatbot.application.tenant_service import TenantService
+from chatbot.application.cac40_backtest_service import default_ohlc_path
 from chatbot.cac40.config import Cac40Config, public_config_snapshot
 from chatbot.cac40.hedge_ledger import HedgeLedger
 from chatbot.cac40.ig_connector import IgConnector
 from chatbot.cac40.ig_ohlc import ig_config_from_connector
+from chatbot.cac40.live_ohlc_feed import prepare_live_ohlc_feed
 from chatbot.cac40.scheduler import LiveScheduler
 from chatbot.config.settings import Settings
 from chatbot.domain.models.integration import IntegrationType
@@ -885,6 +887,50 @@ def resolve_live_chart_file(
     return path if path.is_file() else None
 
 
+def _attach_local_ohlc_provider(
+    sched: LiveScheduler, *, settings: Settings, slug: str
+) -> None:
+    """Inject CSV top-up + resample feed (dashboard live/paper path)."""
+    path = default_ohlc_path(settings, slug)
+
+    def _provider():
+        return prepare_live_ohlc_feed(
+            path,
+            config=sched.config,
+            connector=sched.ig,
+            top_up=True,
+        )
+
+    sched.ohlc_provider = _provider
+
+
+def _status_from_cycle_payload(
+    payload: dict[str, Any],
+    *,
+    base_warnings: list[str] | None = None,
+) -> dict[str, Any]:
+    """Merge OHLC feed meta into live status fields."""
+    feed = payload.get("ohlc_feed") if isinstance(payload, dict) else None
+    feed = feed if isinstance(feed, dict) else {}
+    warnings = list(base_warnings or [])
+    for w in feed.get("warnings") or []:
+        if w and w not in warnings:
+            warnings.append(str(w))
+    allowance = feed.get("allowance") if isinstance(feed.get("allowance"), dict) else None
+    err = feed.get("error")
+    out: dict[str, Any] = {
+        "warnings": warnings,
+        "ohlc_last_bar": feed.get("last_bar_ts"),
+        "ohlc_top_up_added": feed.get("top_up_added"),
+        "ohlc_stale": bool(feed.get("stale")),
+        "ig_price_allowance": allowance,
+    }
+    if err:
+        out["error"] = str(err)
+        out["last_status"] = "error" if feed.get("skip_llm") else "ok"
+    return out
+
+
 def _get_or_build_scheduler(
     *,
     settings: Settings,
@@ -903,6 +949,7 @@ def _get_or_build_scheduler(
     with _LOCK:
         existing = _SCHEDULERS.get(slug)
         if existing is not None and _SCHEDULER_HASH.get(slug) == digest:
+            _attach_local_ohlc_provider(existing, settings=settings, slug=slug)
             return existing
         if existing is not None:
             try:
@@ -911,7 +958,6 @@ def _get_or_build_scheduler(
                 pass
             _SCHEDULERS.pop(slug, None)
 
-    primary_cfg = connectors[0][1]
     order_connectors: list[tuple[int, IgConnector]] = []
     sched = LiveScheduler(
         cfg,
@@ -934,6 +980,7 @@ def _get_or_build_scheduler(
         secondary = IgConnector(secondary_cfg, dry_run=dry_run)
         order_connectors.append((cid, secondary))
     sched.order_connectors = order_connectors
+    _attach_local_ohlc_provider(sched, settings=settings, slug=slug)
     _apply_llm_schedule(sched, settings, slug)
 
     with _LOCK:
@@ -1043,6 +1090,7 @@ def run_live_cycle_now(
             _append_decision(settings, slug, payload)
             slot = _remember_cycle_slot(slug)
             pnl = sched.ig.ledger.pnl_payload()
+            feed_status = _status_from_cycle_payload(payload, base_warnings=warnings)
             write_live_status(
                 settings,
                 slug,
@@ -1064,6 +1112,7 @@ def run_live_cycle_now(
                     "skipped_llm": bool(payload.get("skipped")),
                     "cycles": prev_cycles + 1,
                     "trigger": "manual",
+                    **feed_status,
                 },
             )
             # Touch global worker status so the UI heartbeat stays green.
@@ -1212,6 +1261,7 @@ def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
                 _write_json(live_state_path(settings, slug), sched.ig.ledger.to_state_dict())
                 _append_decision(settings, slug, payload)
                 _remember_cycle_slot(slug, slot)
+                feed_status = _status_from_cycle_payload(payload, base_warnings=warnings)
                 write_live_status(
                     settings,
                     slug,
@@ -1232,6 +1282,7 @@ def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
                         "last_decision": sched._last_decision_summary,
                         "skipped_llm": bool(payload.get("skipped")),
                         "cycles": prev_cycles + 1,
+                        **feed_status,
                     },
                 )
                 ok += 1

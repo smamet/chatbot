@@ -62,7 +62,13 @@ def format_ig_http_error(resp: httpx.Response, *, action: str, url: str) -> str:
         hints.append("API key must be created for the same environment (Demo vs Live).")
         hints.append("Demo key + Demo env, or Live key + Live env — do not mix.")
     elif status == 403:
-        hints.append("API key may be disabled, or this account cannot use the REST API.")
+        if "historical-data-allowance" in code_l:
+            hints.append(
+                "Weekly IG historical price-point allowance is exhausted for this account "
+                "(DEMO ~10k/week). Wait for reset, or reuse the local OHLC CSV."
+            )
+        else:
+            hints.append("API key may be disabled, or this account cannot use the REST API.")
     elif status == 404:
         hints.append("Confirm epic exists on Demo (search the market in IG) and Environment=Demo.")
         hints.append("Prices use GET /prices/{epic}?resolution=&max= (API v3).")
@@ -96,6 +102,8 @@ class IgConnector:
         self._cst: str | None = None
         self._security: str | None = None
         self._client = httpx.Client(timeout=30.0)
+        # Last /prices metadata.allowance (remainingAllowance, totalAllowance, …).
+        self.last_price_allowance: dict[str, Any] | None = None
 
     @property
     def base_url(self) -> str:
@@ -184,7 +192,9 @@ class IgConnector:
         )
         if resp.is_error:
             raise IgApiError(format_ig_http_error(resp, action="prices", url=str(resp.request.url)))
-        return _prices_payload_to_df(resp.json().get("prices") or [])
+        payload = resp.json() or {}
+        self.last_price_allowance = _extract_price_allowance(payload)
+        return _prices_payload_to_df(payload.get("prices") or [])
 
     def fetch_ohlc_range(
         self,
@@ -274,6 +284,9 @@ class IgConnector:
                     format_ig_http_error(resp, action="prices", url=str(resp.request.url))
                 )
             payload = resp.json() or {}
+            allowance = _extract_price_allowance(payload)
+            if allowance:
+                self.last_price_allowance = allowance
             prices = payload.get("prices") or []
             all_prices.extend(prices)
             page_data = (payload.get("metadata") or {}).get("pageData") or {}
@@ -738,6 +751,40 @@ class IgConnector:
             # IG requires forceOpen=true for LIMIT working orders.
             "forceOpen": True,
         }
+
+
+def _extract_price_allowance(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Pull historical-data allowance fields from an IG /prices JSON body."""
+    from datetime import datetime, timezone
+
+    meta = payload.get("metadata") if isinstance(payload, dict) else None
+    if not isinstance(meta, dict):
+        return None
+    raw = meta.get("allowance")
+    if not isinstance(raw, dict):
+        return None
+    out: dict[str, Any] = {}
+    for key in (
+        "remainingAllowance",
+        "totalAllowance",
+        "allowanceExpiry",
+        "remaining",
+        "total",
+        "expiry",
+    ):
+        if key in raw and raw[key] is not None:
+            out[key] = raw[key]
+    # Normalize common aliases for status UI.
+    if "remaining" not in out and "remainingAllowance" in out:
+        out["remaining"] = out["remainingAllowance"]
+    if "total" not in out and "totalAllowance" in out:
+        out["total"] = out["totalAllowance"]
+    if "expiry" not in out and "allowanceExpiry" in out:
+        out["expiry"] = out["allowanceExpiry"]
+    if out:
+        # allowanceExpiry is seconds-remaining *at response time* — stamp for UI countdown.
+        out["fetched_at"] = datetime.now(timezone.utc).isoformat()
+    return out or None
 
 
 def _resolution_for_timeframe(timeframe: str) -> str:

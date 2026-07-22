@@ -119,6 +119,17 @@ def cac40_index(
     live_strategy = {**defaults, **(live_cfg.get("strategy") or {})}
     live_status = read_live_status(settings, slug)
     live_worker = read_live_worker_status(settings)
+    ohlc_sync = read_ohlc_sync_status(settings, slug)
+    from chatbot.cac40.ig_allowance import pick_ig_price_allowance
+
+    ig_price_allowance = pick_ig_price_allowance(
+        live_status.get("ig_price_allowance")
+        if isinstance(live_status.get("ig_price_allowance"), dict)
+        else None,
+        ohlc_sync.get("ig_price_allowance")
+        if isinstance(ohlc_sync.get("ig_price_allowance"), dict)
+        else None,
+    )
     ig_list = ConnectorService(SqlAlchemyConnectorRepository(session)).list_ig(tenant.id)
     ig_connectors = [
         {
@@ -179,9 +190,10 @@ def cac40_index(
             "live_ok": request.query_params.get("live_ok"),
             "live_error": request.query_params.get("live_error"),
             "ig_connector_ready": bool(ig_config) or any(c["active"] for c in ig_connectors),
-            "ohlc_sync_status": read_ohlc_sync_status(settings, slug),
+            "ohlc_sync_status": ohlc_sync,
             "ohlc_worker_status": read_ohlc_worker_status(settings),
             "cac40_ohlc_poll_seconds": settings.cac40_ohlc_poll_seconds,
+            "ig_price_allowance": ig_price_allowance,
             "live_config": live_cfg,
             "live_strategy": live_strategy,
             "live_mode": live_cfg["mode"],
@@ -224,11 +236,11 @@ async def cac40_upload_ohlc(
         from urllib.parse import quote
 
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?upload_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}/cac40?tab=data&upload_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?upload_ok={info.get('bars', 0)}",
+        url=f"/dashboard/bots/{slug}/cac40?tab=data&upload_ok={info.get('bars', 0)}",
         status_code=303,
     )
 
@@ -255,7 +267,7 @@ def cac40_sync_ig(
     if not ig_config:
         return RedirectResponse(
             url=(
-                f"/dashboard/bots/{slug}/cac40?"
+                f"/dashboard/bots/{slug}/cac40?tab=data&"
                 f"sync_error={quote('Configure an active IG connector first')}"
             ),
             status_code=303,
@@ -270,11 +282,11 @@ def cac40_sync_ig(
         )
     except Exception as exc:
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?sync_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}/cac40?tab=data&sync_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?sync_ok={info.get('added', 0)}",
+        url=f"/dashboard/bots/{slug}/cac40?tab=data&sync_ok={info.get('added', 0)}",
         status_code=303,
     )
 
@@ -464,7 +476,7 @@ def cac40_delete_run(
     _require_cac40_active(tenant, session)
     if not delete_run(settings, slug, run_id):
         raise HTTPException(status_code=404, detail="Run not found")
-    return RedirectResponse(url=f"/dashboard/bots/{slug}/cac40", status_code=303)
+    return RedirectResponse(url=f"/dashboard/bots/{slug}/cac40?tab=backtest", status_code=303)
 
 
 def _strategy_from_form(
@@ -576,7 +588,7 @@ async def cac40_live_save_config(
         {"mode": current["mode"], "ig_connector_ids": ids, "strategy": strategy},
     )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?live_ok={quote('Live config saved')}",
+        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote('Live config saved')}",
         status_code=303,
     )
 
@@ -617,11 +629,11 @@ async def cac40_live_set_mode(
         )
     except ValueError as exc:
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?live_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}/cac40?tab=live&live_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?live_ok={quote('Mode set to ' + mode)}",
+        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote('Mode set to ' + mode)}",
         status_code=303,
     )
 
@@ -699,11 +711,11 @@ def cac40_live_run_once(
     )
     if result.get("ok"):
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?live_ok={quote(str(result['message']))}",
+            url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote(str(result['message']))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?live_error={quote(str(result['message']))}",
+        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_error={quote(str(result['message']))}",
         status_code=303,
     )
 
@@ -726,10 +738,10 @@ def cac40_live_clear(
         clear_live_history(settings, slug)
     except ValueError as exc:
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?live_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}/cac40?tab=live&live_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?live_ok={quote('Paper history cleared')}",
+        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote('Paper history cleared')}",
         status_code=303,
     )
