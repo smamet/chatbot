@@ -621,7 +621,8 @@ def sync_ohlc_from_ig(
                     f"OHLC gap is {age.days} days (max {max_gap_days}). "
                     "Re-upload a BacktestMarket CSV, then sync again."
                 )
-            start = last_ts + pd.Timedelta(minutes=15)
+            # Inclusive of last bar; append keeps only timestamps strictly after last.
+            start = last_ts
 
         end = pd.Timestamp(clock)
         bars_before = int(len(existing)) if existing is not None else 0
@@ -650,8 +651,34 @@ def sync_ohlc_from_ig(
                 added = int(len(fresh))
         info = ohlc_info(settings, tenant_slug)
         last_candle = info.get("to")
+        stale_behind_msg: str | None = None
+        if added == 0 and last_ts is not None:
+            from chatbot.cac40.live_ohlc_feed import expected_last_closed_15m
+            from chatbot.cac40.market_calendar import is_trading_day
+
+            expected = expected_last_closed_15m(now=clock, tz="Europe/Paris")
+            last_local = (
+                last_ts.tz_convert("Europe/Paris")
+                if last_ts.tzinfo
+                else last_ts.tz_localize("UTC").tz_convert("Europe/Paris")
+            )
+            # After cash open on a trading day, 0 new bars while behind is a real failure
+            # (DEMO delay / empty epic / allowance) — do not report as sync ok.
+            cash_open_hour = 8
+            if (
+                last_local < expected
+                and is_trading_day(expected.date())
+                and int(expected.hour) >= cash_open_hour
+            ):
+                stale_behind_msg = (
+                    f"IG returned 0 new 15m bars but CSV is still behind "
+                    f"(last={last_local}, expected closed≈{expected}). "
+                    "Often DEMO historical delay, wrong epic, or weekly historical "
+                    "allowance exhausted on this IG *account* (shared across API keys). "
+                    "Upload a fresher CSV or retry later."
+                )
         status = {
-            "ok": True,
+            "ok": stale_behind_msg is None,
             "source": "ig",
             "trigger": trigger_label,
             "added": added,
@@ -664,13 +691,18 @@ def sync_ohlc_from_ig(
             "candle_age_hours": _candle_age_hours(last_candle, clock),
             "fetch_from": str(start),
             "fetch_to": str(end),
-            "last_ok_at": clock.isoformat(),
+            "last_ok_at": clock.isoformat() if stale_behind_msg is None else (
+                read_ohlc_sync_status(settings, tenant_slug).get("last_ok_at")
+            ),
             "last_attempt_at": clock.isoformat(),
-            "last_error": None,
+            "last_error": stale_behind_msg,
+            "last_error_at": clock.isoformat() if stale_behind_msg else None,
             "ig_price_allowance": allowance or None,
         }
         write_ohlc_sync_status(settings, tenant_slug, status)
         info.update(status)
+        if stale_behind_msg:
+            raise ValueError(stale_behind_msg)
         return info
     except Exception as exc:
         last_candle = None

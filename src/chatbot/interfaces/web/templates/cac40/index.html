@@ -110,10 +110,13 @@
     {% if ig_price_allowance.exhausted %}<span class="badge failed">exhausted</span>
     {% elif ig_price_allowance.remaining is not none and ig_price_allowance.remaining < 500 %}<span class="badge failed">low</span>
     {% else %}<span class="badge done">ok</span>{% endif %}
-    <code>{{ ig_price_allowance.label }}</code>
-    {% if ig_price_allowance.resets_at %}
-      · ~<code>{{ ig_price_allowance.resets_at }}</code>
+    · <code>{% if ig_price_allowance.remaining is not none %}{{ ig_price_allowance.remaining }} left{% endif %}{% if ig_price_allowance.total is not none %} / {{ ig_price_allowance.total }} pts{% endif %}</code>
+    {% if ig_price_allowance.resets_in_human %}
+      · resets in <code>{{ ig_price_allowance.resets_in_human }}</code>
     {% endif %}
+  </p>
+  <p class="field-hint" style="margin-top:0.35rem;">
+    Weekly budget on the IG <strong>account</strong> (DEMO/LIVE), not per API key — a new key on the same account shares the same pool.
   </p>
   {% else %}
   <p class="field-hint" style="margin-top:0.35rem;">

@@ -147,10 +147,11 @@ def test_sync_appends_only_new_bars(mock_fetch, tmp_path: Path) -> None:
 @patch("chatbot.cac40.ig_ohlc.fetch_ig_ohlc_range")
 def test_sync_up_to_date_adds_zero(mock_fetch, tmp_path: Path) -> None:
     settings = Settings(data_root=tmp_path)
-    existing = _sample_bars("2024-06-01 09:00:00", n=2)
+    existing = _sample_bars("2024-06-01 09:00:00", n=2)  # last 09:15 Paris
     _write_csv(settings, "bot", existing)
     mock_fetch.return_value = existing.iloc[0:0].copy()
-    now = datetime(2024, 6, 1, 10, 0, tzinfo=UTC)
+    # 09:20 Paris = 07:20 UTC → expected closed = 09:00; CSV last 09:15 is ahead/equal enough
+    now = datetime(2024, 6, 1, 7, 20, tzinfo=UTC)
     info = sync_ohlc_from_ig(
         settings,
         "bot",
@@ -159,6 +160,7 @@ def test_sync_up_to_date_adds_zero(mock_fetch, tmp_path: Path) -> None:
     )
     assert info["added"] == 0
     assert info["bars"] == 2
+    assert info["ok"] is True
 
 
 @patch("chatbot.application.cac40_backtest_service.sync_ohlc_from_ig")
@@ -278,6 +280,162 @@ def test_fetch_ohlc_range_pages(monkeypatch) -> None:
     )
     assert len(df) == 2
     conn.close()
+
+
+@patch("chatbot.cac40.ig_ohlc.fetch_ig_ohlc_range")
+def test_sync_zero_bars_while_behind_raises(mock_fetch, tmp_path: Path) -> None:
+    """Success-+0 while CSV is mid-session behind is a failure, not 'ok'."""
+    settings = Settings(data_root=tmp_path)
+    # Last bar early morning; "now" is afternoon same day.
+    existing = _sample_bars("2026-07-22 06:00:00", n=2)  # 06:00, 06:15
+    _write_csv(settings, "bot", existing)
+    mock_fetch.return_value = existing.iloc[0:0].copy()
+    now = datetime(2026, 7, 22, 12, 20, tzinfo=UTC)  # 14:20 Paris
+    with pytest.raises(ValueError, match="0 new 15m bars"):
+        sync_ohlc_from_ig(
+            settings,
+            "bot",
+            ig_config={"api_key": "k", "username": "u", "password": "p"},
+            now=now,
+        )
+    status = read_ohlc_sync_status(settings, "bot")
+    assert status.get("ok") is False
+    assert status.get("added") == 0
+
+
+@patch("chatbot.cac40.ig_ohlc.fetch_ig_ohlc_range")
+def test_sync_appends_across_preopen_to_cash_open(mock_fetch, tmp_path: Path) -> None:
+    """Overnight/pre-open last bar → cash-open bars must append (natural break)."""
+    settings = Settings(data_root=tmp_path)
+    existing = _sample_bars("2026-07-22 06:00:00", n=2)  # ends 06:15
+    _write_csv(settings, "bot", existing)
+    fresh = _sample_bars("2026-07-22 09:00:00", n=3)
+    mock_fetch.return_value = fresh
+    now = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+    info = sync_ohlc_from_ig(
+        settings,
+        "bot",
+        ig_config={"api_key": "k", "username": "u", "password": "p"},
+        now=now,
+    )
+    assert info["added"] == 3
+    assert info["ok"] is True
+
+
+def test_sync_via_catchup_max_fallback_after_overlap(tmp_path: Path) -> None:
+    """Stuck pre-open CSV: range only overlaps last bar → max= tip must append."""
+    settings = Settings(data_root=tmp_path)
+    existing = _sample_bars("2026-07-22 06:00:00", n=2)  # ends 06:15
+    _write_csv(settings, "bot", existing)
+    overlap = existing.iloc[[-1]].copy()
+    tip = _sample_bars("2026-07-22 09:00:00", n=4)
+
+    class _FakeConn:
+        last_price_allowance = {"remaining": 9000, "total": 10000}
+        authenticated = True
+
+        def login(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+        def fetch_ohlc_range(self, **kwargs):  # noqa: ANN003
+            return overlap
+
+        def get_ohlc(self, timeframe: str, n: int):
+            return tip
+
+    with (
+        patch("chatbot.cac40.ig_ohlc.IgConnector", return_value=_FakeConn()),
+        patch("chatbot.cac40.ig_ohlc.ig_config_from_connector") as mock_cfg,
+    ):
+        mock_cfg.return_value = MagicMock(
+            ig_api_key="k", ig_username="u", ig_password="p"
+        )
+        now = datetime(2026, 7, 22, 10, 0, tzinfo=UTC)
+        info = sync_ohlc_from_ig(
+            settings,
+            "bot",
+            ig_config={"api_key": "k", "username": "u", "password": "p"},
+            now=now,
+        )
+    assert info["added"] == 4
+    assert info["ok"] is True
+    loaded = load_ohlc_csv(Path(info["path"]))
+    assert str(loaded.index[-1]).startswith("2026-07-22 09:45")
+
+
+def test_natural_break_preopen_to_cash() -> None:
+    from chatbot.cac40.ohlc_store import is_natural_session_break
+
+    a = pd.Timestamp("2026-07-22 06:15:00", tz="Europe/Paris")
+    b = pd.Timestamp("2026-07-22 09:00:00", tz="Europe/Paris")
+    assert is_natural_session_break(a, b) is True
+    # True mid-session hole still flagged.
+    c = pd.Timestamp("2026-07-22 10:00:00", tz="Europe/Paris")
+    d = pd.Timestamp("2026-07-22 11:00:00", tz="Europe/Paris")
+    assert is_natural_session_break(c, d) is False
+
+
+def test_catchup_falls_back_to_max_when_range_empty() -> None:
+    from chatbot.cac40.config import Cac40Config
+    from chatbot.cac40.ig_connector import IgConnector
+    from chatbot.cac40.ig_ohlc import catchup_ohlc_15m
+
+    cfg = Cac40Config()
+    conn = IgConnector(cfg, dry_run=True)
+    conn._cst = "cst"  # noqa: SLF001
+
+    empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
+    empty.index = pd.DatetimeIndex([], tz="Europe/Paris")
+    tip = _sample_bars("2026-07-22 09:00:00", n=4)
+
+    conn.fetch_ohlc_range = lambda **kwargs: empty  # type: ignore[method-assign]
+    conn.get_ohlc = lambda tf, n: tip  # type: ignore[method-assign]
+
+    df, mode = catchup_ohlc_15m(
+        conn,
+        start=pd.Timestamp("2026-07-22 06:15:00", tz="Europe/Paris"),
+        end=pd.Timestamp("2026-07-22 12:00:00", tz="UTC"),
+    )
+    assert mode == "max_fallback"
+    assert len(df) == 4
+    conn.close()
+
+
+def test_catchup_falls_back_when_range_only_has_overlap() -> None:
+    """IG often re-sends the last candle; that must not skip max= fallback."""
+    from chatbot.cac40.config import Cac40Config
+    from chatbot.cac40.ig_connector import IgConnector
+    from chatbot.cac40.ig_ohlc import catchup_ohlc_15m
+
+    cfg = Cac40Config()
+    conn = IgConnector(cfg, dry_run=True)
+    conn._cst = "cst"  # noqa: SLF001
+
+    overlap = _sample_bars("2026-07-22 06:15:00", n=1)
+    tip = _sample_bars("2026-07-22 09:00:00", n=4)
+    conn.fetch_ohlc_range = lambda **kwargs: overlap  # type: ignore[method-assign]
+    conn.get_ohlc = lambda tf, n: tip  # type: ignore[method-assign]
+
+    df, mode = catchup_ohlc_15m(
+        conn,
+        start=pd.Timestamp("2026-07-22 06:15:00", tz="Europe/Paris"),
+        end=pd.Timestamp("2026-07-22 12:00:00", tz="UTC"),
+    )
+    assert mode == "max_fallback"
+    assert len(df) == 4
+    assert df.index[0] > overlap.index[0]
+    conn.close()
+
+
+def test_natural_break_rejects_preopen_to_midday_splice() -> None:
+    from chatbot.cac40.ohlc_store import is_natural_session_break
+
+    a = pd.Timestamp("2026-07-22 06:15:00", tz="Europe/Paris")
+    midday = pd.Timestamp("2026-07-22 12:00:00", tz="Europe/Paris")
+    assert is_natural_session_break(a, midday) is False
 
 
 def test_max_gap_constant() -> None:

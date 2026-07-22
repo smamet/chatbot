@@ -175,7 +175,9 @@ def is_natural_session_break(prev: pd.Timestamp, nxt: pd.Timestamp) -> bool:
     """
     Overnight / weekend / holiday-style hole (not a mid-session missing candle).
 
-    Same calendar day inside session hours ⇒ not natural.
+    Same calendar day inside cash session hours ⇒ not natural.
+    Pre-open extended-hours tails (e.g. last=06:15 → next=08:00/09:00) are natural:
+    IG FR40 often pauses between overnight and the cash open.
     """
     a = pd.Timestamp(prev)
     b = pd.Timestamp(nxt)
@@ -185,8 +187,16 @@ def is_natural_session_break(prev: pd.Timestamp, nxt: pd.Timestamp) -> bool:
         b = b.tz_convert(a.tzinfo)
     if a.date() != b.date():
         return True
-    # Same day: only natural if outside / spanning the cash session edge.
-    if a.hour >= _SESSION_END_HOUR or b.hour < _SESSION_START_HOUR:
+    a_out = a.hour < _SESSION_START_HOUR or a.hour >= _SESSION_END_HOUR
+    b_out = b.hour < _SESSION_START_HOUR or b.hour >= _SESSION_END_HOUR
+    # Both outside cash hours (extended / pre-open tail).
+    if a_out and b_out:
+        return True
+    # Pre-open → cash open only (not pre-open → mid-afternoon splice).
+    if a.hour < _SESSION_START_HOUR and not b_out:
+        return b.hour <= _SESSION_START_HOUR + 1
+    # Post-close edge same calendar day.
+    if a.hour >= _SESSION_END_HOUR or b.hour >= _SESSION_END_HOUR:
         return True
     return False
 

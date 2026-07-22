@@ -951,9 +951,14 @@ def _prices_payload_to_df(prices: list[dict[str, Any]]) -> pd.DataFrame:
         mid_c = _mid(p.get("closePrice"))
         if None in (mid_o, mid_h, mid_l, mid_c):
             continue
+        ts = pd.Timestamp(snap)
+        # snapshotTimeUTC is UTC; naive snapshotTime is often exchange-local — assume UTC
+        # when the UTC field was used, otherwise leave naive for caller to localize.
+        if p.get("snapshotTimeUTC") and ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
         rows.append(
             {
-                "ts": pd.Timestamp(snap),
+                "ts": ts,
                 "open": mid_o,
                 "high": mid_h,
                 "low": mid_l,
@@ -963,7 +968,10 @@ def _prices_payload_to_df(prices: list[dict[str, Any]]) -> pd.DataFrame:
         )
     if not rows:
         return _EMPTY_OHLC.copy()
-    return pd.DataFrame(rows).set_index("ts").sort_index()
+    df = pd.DataFrame(rows).set_index("ts").sort_index()
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    return df
 
 
 def _mid(price_obj: dict | None) -> float | None:

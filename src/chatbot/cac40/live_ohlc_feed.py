@@ -94,12 +94,13 @@ def _fetch_range(
     end: pd.Timestamp,
     timezone_name: str,
 ) -> pd.DataFrame:
-    return connector.fetch_ohlc_range(
-        timeframe="15m",
-        start=start,
-        end=end,
-        timezone=timezone_name,
+    from chatbot.cac40.ig_ohlc import catchup_ohlc_15m
+
+    df, mode = catchup_ohlc_15m(
+        connector, start=start, end=end, timezone=timezone_name
     )
+    logger.info("Live OHLC catch-up mode=%s bars=%s", mode, 0 if df is None else len(df))
+    return df if df is not None else pd.DataFrame()
 
 
 def _prepare_newer_bars(
@@ -162,7 +163,8 @@ def top_up_csv_from_connector(
         )
 
     end = _clock_end(now, timezone_name)
-    start = next_15m_ts(last_local)
+    # Inclusive of last bar — IG from/to is flaky if we start exactly at last+15m.
+    start = last_local
     cheap_window = pd.Timedelta(minutes=15 * max(1, int(max_bars)))
     mode = "cheap"
     fresh: pd.DataFrame | None = None
@@ -373,6 +375,7 @@ def prepare_live_ohlc_feed(
                 f"(last={last_ts}, age≈{age_slots:.1f}×15m). "
                 "Waiting for IG historical allowance or Sync."
             )
+            warnings.append(error)
     elif (
         slots_behind_expected > STALE_OK_SLOTS
         and not is_natural_session_break(last_local, expected)
@@ -380,11 +383,29 @@ def prepare_live_ohlc_feed(
         # Top-up "succeeded" with 0 bars but we're still mid-session behind.
         stale = True
         skip_llm = True
+        rem = None
+        if isinstance(allowance, dict):
+            rem = allowance.get("remaining")
+            if rem is None:
+                rem = allowance.get("remainingAllowance")
+        try:
+            rem_i = int(rem) if rem is not None else None
+        except (TypeError, ValueError):
+            rem_i = None
+        allowance_hint = (
+            "IG historical allowance may be exhausted on this account "
+            "(shared across API keys)."
+            if rem_i is not None and rem_i <= 0
+            else (
+                "IG returned no newer bars (DEMO delay, epic, or empty range) — "
+                "not necessarily allowance; try Sync details / CSV upload."
+            )
+        )
         error = (
             f"OHLC still behind expected closed bar "
             f"(last={last_local}, expected={expected}, "
             f"behind≈{slots_behind_expected:.1f}×15m). "
-            "Sync from IG or wait for allowance — skipping LLM."
+            f"{allowance_hint} Skipping LLM."
         )
         warnings.append(error)
 
