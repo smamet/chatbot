@@ -4,7 +4,10 @@
   <div>
     <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40">← CAC40 Backtest</a></p>
     <h1>{% if live %}Live results{% else %}{{ run.run_id }}{% endif %}</h1>
-    <p class="subtitle">
+    <p class="subtitle" id="cac40-run-subtitle"
+       data-poll-url="{% if not live %}/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/status.json{% endif %}"
+       data-initial-status="{{ run.state.status }}"
+       data-poll="{% if run.state.status in ('running', 'stopping') and not live %}1{% else %}0{% endif %}">
       {% if live %}
       Mode: <span class="badge {% if run.mode == 'live' %}failed{% elif run.mode == 'paper' %}done{% else %}off{% endif %}">{{ run.mode or '—' }}</span>
       · Cycles {{ run.state.current_bar or 0 }}
@@ -14,9 +17,9 @@
       · UPL {{ '%.2f'|format(run.pnl.net_upl or 0) }}
       {% endif %}
       {% else %}
-      Status: <span class="badge {{ run.state.status }}">{{ run.state.status }}</span>
-      · Progress {{ '%.0f'|format((run.state.progress or 0) * 100) }}%
-      ({{ run.state.current_bar }}/{{ run.state.total_bars }})
+      Status: <span class="badge {{ run.state.status }}" data-field="status-badge">{{ run.state.status }}</span>
+      · Progress <span data-field="progress-pct">{{ '%.0f'|format((run.state.progress or 0) * 100) }}</span>%
+      (<span data-field="current-bar">{{ run.state.current_bar }}</span>/<span data-field="total-bars">{{ run.state.total_bars }}</span>)
       {% endif %}
       {% if run.report and run.report.config %}
       · Period {{ run.report.config.backtest_period or '—' }}
@@ -26,7 +29,7 @@
       · Adaptive S/R (band {{ run.report.config.llm_level_band_points or 15 }})
       {% endif %}
       {% if run.report.llm_calls_total is defined %}
-      · {{ run.report.llm_calls_total }} LLM calls
+      · <span data-field="llm-calls">{{ run.report.llm_calls_total }}</span> LLM calls
       {% endif %}
       {% endif %}
     </p>
@@ -223,9 +226,10 @@
   <p class="empty-state">No decisions yet (run may still be starting, or llm_mode=replay with empty cache).</p>
   {% endif %}
 
-  {% if run.state.status == 'running' or (live and run.mode in ('paper', 'live')) %}
-  <p class="text-muted">Auto-refresh in {% if live %}30{% else %}10{% endif %}s…</p>
-  <meta http-equiv="refresh" content="{% if live %}30{% else %}10{% endif %}">
+  {% if run.state.status == 'running' or run.state.status == 'stopping' %}
+  <p class="text-muted" id="cac40-run-poll-hint">Updating progress… (page stays put)</p>
+  {% elif live and run.mode in ('paper', 'live') %}
+  <p class="text-muted">Live report — refresh the page manually when you want the latest cycles.</p>
   {% endif %}
 </section>
 
@@ -310,6 +314,49 @@
     else if (e.key === 'ArrowLeft') show(index - 1);
     else if (e.key === 'ArrowRight') show(index + 1);
   });
+})();
+
+(function () {
+  const sub = document.getElementById('cac40-run-subtitle');
+  if (!sub || sub.dataset.poll !== '1') return;
+  const url = sub.dataset.pollUrl;
+  if (!url) return;
+  const hint = document.getElementById('cac40-run-poll-hint');
+  const active = new Set(['running', 'stopping', 'pending']);
+  let timer = null;
+
+  async function tick() {
+    try {
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      const status = String(data.status || '');
+      const badge = sub.querySelector('[data-field="status-badge"]');
+      if (badge) {
+        badge.textContent = status;
+        badge.className = 'badge ' + status;
+      }
+      const pct = sub.querySelector('[data-field="progress-pct"]');
+      if (pct) pct.textContent = String(Math.round((Number(data.progress) || 0) * 100));
+      const cur = sub.querySelector('[data-field="current-bar"]');
+      if (cur && data.current_bar != null) cur.textContent = String(data.current_bar);
+      const tot = sub.querySelector('[data-field="total-bars"]');
+      if (tot && data.total_bars != null) tot.textContent = String(data.total_bars);
+      const llm = sub.querySelector('[data-field="llm-calls"]');
+      if (llm && data.llm_calls_total != null) llm.textContent = String(data.llm_calls_total);
+
+      if (!active.has(status)) {
+        if (timer) clearInterval(timer);
+        timer = null;
+        if (hint) hint.textContent = 'Run finished — reloading decisions…';
+        // One reload when done so decision charts appear; scroll only then.
+        window.location.reload();
+      }
+    } catch (_) {}
+  }
+
+  timer = setInterval(tick, 5000);
+  tick();
 })();
 </script>
 {% endblock %}

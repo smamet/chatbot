@@ -31,6 +31,9 @@ _CONFIG_DISPLAY_ORDER = (
     "slippage_points",
     "allow_market_orders",
     "prevent_loss_exits",
+    "flatten_before_close",
+    "flatten_lead_minutes",
+    "market_close_paris",
     "lookback_15m",
     "lookback_1h",
     "lookback_1d",
@@ -75,6 +78,10 @@ class Cac40Config:
     allow_market_orders: bool = False
     # When True, RiskGate + fills reject exits that would realize PnL ≤ 0 after spread.
     prevent_loss_exits: bool = False
+    # Directional flatten before weekend / Euronext holiday IG close (hedge, don't scratch).
+    flatten_before_close: bool = True
+    flatten_lead_minutes: int = 30
+    market_close_paris: str = "22:00"
     llm_every_bars: int = 24  # resolved 15m-bar stride (engine); default = 6h
     llm_every_n: int = 6  # UI: call every N units (interval mode only)
     llm_every_unit: str = "1h"  # UI: 15m | 1h

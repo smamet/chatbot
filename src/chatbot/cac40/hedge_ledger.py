@@ -51,6 +51,20 @@ class HedgeLedger:
     def legs_count(self) -> int:
         return len(self.positions)
 
+    def net_size(self) -> float:
+        """Signed exposure: +BUY size, −SELL size (0 = directionally flat)."""
+        net = 0.0
+        for leg in self.positions.values():
+            net += float(leg.size) if leg.side == Side.BUY else -float(leg.size)
+        return net
+
+    def entry_order_ids(self) -> list[str]:
+        return [
+            oid
+            for oid, order in self.working_orders.items()
+            if order.purpose == OrderPurpose.ENTRY
+        ]
+
     def mark_to_market(self, last_price: float) -> float:
         self.last_price = last_price
         net = 0.0

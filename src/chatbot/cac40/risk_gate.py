@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from chatbot.cac40.config import Cac40Config, LastLevels
 from chatbot.cac40.hedge_ledger import HedgeLedger, exit_would_lose
 from chatbot.cac40.models import (
+    LegRole,
     LlmAction,
     LlmDecision,
     OrderPurpose,
@@ -27,9 +28,16 @@ class GateResult:
 class RiskGate:
     """LLM proposes; code authorizes. Prefer continuity over stacking entries."""
 
-    def __init__(self, config: Cac40Config, ledger: HedgeLedger) -> None:
+    def __init__(
+        self,
+        config: Cac40Config,
+        ledger: HedgeLedger,
+        *,
+        flatten_active: bool = False,
+    ) -> None:
         self.config = config
         self.ledger = ledger
+        self.flatten_active = bool(flatten_active)
 
     def apply(self, decision: LlmDecision) -> GateResult:
         result = GateResult()
@@ -52,6 +60,13 @@ class RiskGate:
 
     def _clamp_size(self, action: LlmAction) -> float:
         return float(self.config.order_size)
+
+    def _flatten_hedge_size(self, action: LlmAction) -> float:
+        """Use requested size (or |net|) during weekend flatten — not order_size clamp."""
+        if action.size is not None and float(action.size) > 0:
+            return abs(float(action.size))
+        net = abs(float(self.ledger.net_size()))
+        return net if net > 0 else float(self.config.order_size)
 
     def _has_entry_working(self, side: Side) -> bool:
         for order in self.ledger.working_orders.values():
@@ -84,8 +99,15 @@ class RiskGate:
         purpose = (action.purpose or "").strip().lower()
 
         if op in ("market_open", "market_close") and not self.config.allow_market_orders:
-            result.rejected.append(f"{op}:market_disabled")
-            return
+            # Weekend/holiday flatten may market-hedge even when market orders are off.
+            purpose_l = (action.purpose or "").strip().lower()
+            if not (
+                self.flatten_active
+                and op == "market_open"
+                and purpose_l in ("hedge_cover", "hedge", "")
+            ):
+                result.rejected.append(f"{op}:market_disabled")
+                return
 
         if op == "place_limit":
             if analysis_missing_sr(self.ledger) and purpose in ("entry", "tp"):
@@ -216,13 +238,30 @@ class RiskGate:
             return
 
         if op == "market_open":
-            if self.ledger.legs_count() >= self.config.max_open_positions:
-                result.rejected.append("market_open:max_positions")
-                return
             if not action.side:
                 result.rejected.append("market_open:invalid")
                 return
-            pid = self.ledger.market_open(Side(action.side), self._clamp_size(action))
+            purpose_l = (action.purpose or "").strip().lower()
+            is_flatten_hedge = self.flatten_active and purpose_l in (
+                "hedge_cover",
+                "hedge",
+                "",
+            )
+            if (
+                not is_flatten_hedge
+                and self.ledger.legs_count() >= self.config.max_open_positions
+            ):
+                result.rejected.append("market_open:max_positions")
+                return
+            if is_flatten_hedge:
+                size = self._flatten_hedge_size(action)
+                pid = self.ledger.market_open(
+                    Side(action.side), size, role=LegRole.HEDGE
+                )
+            else:
+                pid = self.ledger.market_open(
+                    Side(action.side), self._clamp_size(action)
+                )
             result.executed.append(f"market_open:{pid}")
             return
 

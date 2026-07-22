@@ -279,6 +279,9 @@ def default_live_config() -> dict[str, Any]:
                 "order_size",
                 "spread_points",
                 "prevent_loss_exits",
+                "flatten_before_close",
+                "flatten_lead_minutes",
+                "market_close_paris",
                 "llm_trigger_mode",
                 "llm_level_band_points",
                 "llm_every_n",
@@ -378,6 +381,9 @@ def save_live_config(settings: Settings, slug: str, payload: dict[str, Any]) -> 
         "order_size": float(cfg.order_size),
         "spread_points": float(cfg.spread_points),
         "prevent_loss_exits": bool(cfg.prevent_loss_exits),
+        "flatten_before_close": bool(cfg.flatten_before_close),
+        "flatten_lead_minutes": max(1, int(cfg.flatten_lead_minutes or 30)),
+        "market_close_paris": str(cfg.market_close_paris or "22:00"),
         "llm_trigger_mode": str(cfg.llm_trigger_mode or "levels"),
         "llm_level_band_points": float(cfg.llm_level_band_points or 15.0),
         "llm_every_n": every_n,
@@ -436,7 +442,14 @@ def set_live_mode(
             if usable != cfg["ig_connector_ids"]:
                 cfg["ig_connector_ids"] = usable
     cfg["mode"] = mode
-    return save_live_config(settings, slug, cfg)
+    saved = save_live_config(settings, slug, cfg)
+    # Force GET /positions on the next cycle after arming paper/live.
+    if mode in ("paper", "live"):
+        with _LOCK:
+            sched = _SCHEDULERS.get(slug)
+            if sched is not None:
+                sched.request_position_reconcile()
+    return saved
 
 
 def read_live_status(settings: Settings, slug: str) -> dict[str, Any]:
@@ -916,6 +929,11 @@ def _status_from_cycle_payload(
     for w in feed.get("warnings") or []:
         if w and w not in warnings:
             warnings.append(str(w))
+    auto = payload.get("auto_flatten") if isinstance(payload.get("auto_flatten"), dict) else {}
+    for err in auto.get("errors") or []:
+        if err and str(err) not in warnings:
+            warnings.append(str(err))
+    clock = payload.get("market_clock") if isinstance(payload.get("market_clock"), dict) else {}
     allowance = feed.get("allowance") if isinstance(feed.get("allowance"), dict) else None
     err = feed.get("error")
     out: dict[str, Any] = {
@@ -924,10 +942,16 @@ def _status_from_cycle_payload(
         "ohlc_top_up_added": feed.get("top_up_added"),
         "ohlc_stale": bool(feed.get("stale")),
         "ig_price_allowance": allowance,
+        "flatten_now": bool(clock.get("flatten_now")),
+        "flatten_reason": clock.get("reason") or "",
+        "auto_flatten": auto or None,
     }
     if err:
         out["error"] = str(err)
         out["last_status"] = "error" if feed.get("skip_llm") else "ok"
+    if auto.get("errors"):
+        out["last_status"] = "error"
+        out["error"] = out.get("error") or "auto_flatten_partial_failure"
     return out
 
 

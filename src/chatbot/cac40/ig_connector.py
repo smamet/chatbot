@@ -11,6 +11,7 @@ import pandas as pd
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.hedge_ledger import HedgeLedger
 from chatbot.cac40.models import (
+    LegRole,
     MarketSnapshot,
     OrderType,
     Side,
@@ -648,6 +649,143 @@ class IgConnector:
                 out.append(data)
         return out
 
+    def list_open_positions(self, *, epic: str | None = None) -> list[dict[str, Any]]:
+        """
+        GET /positions — open deals for the active account.
+
+        Each item: {deal_id, epic, side, size, level, currency, raw}.
+        When ``epic`` is set (default: config.epic), only matching rows are returned.
+        """
+        if not self._cst:
+            return []
+        url = f"{self.base_url}/positions"
+        resp = self._client.get(url, headers=self._headers(version="2"))
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="list_positions", url=url))
+        payload = resp.json() if resp.content else {}
+        rows = (payload or {}).get("positions") or []
+        want = (epic if epic is not None else self.config.epic or "").strip()
+        out: list[dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            market = row.get("market") or {}
+            pos = row.get("position") or {}
+            if not isinstance(market, dict):
+                market = {}
+            if not isinstance(pos, dict):
+                pos = {}
+            row_epic = str(market.get("epic") or pos.get("epic") or "").strip()
+            if want and row_epic and row_epic != want:
+                continue
+            direction = str(pos.get("direction") or "").upper()
+            side = Side.BUY if direction == "BUY" else Side.SELL
+            try:
+                size = float(pos.get("size") or 0)
+            except (TypeError, ValueError):
+                size = 0.0
+            try:
+                level = float(pos.get("level") or pos.get("openLevel") or 0)
+            except (TypeError, ValueError):
+                level = 0.0
+            out.append(
+                {
+                    "deal_id": str(pos.get("dealId") or ""),
+                    "epic": row_epic,
+                    "side": side,
+                    "size": size,
+                    "level": level,
+                    "currency": str(pos.get("currency") or ""),
+                    "raw": row,
+                }
+            )
+        return out
+
+    def ig_net_size(self, *, epic: str | None = None) -> float:
+        """Signed IG exposure for epic: +BUY −SELL."""
+        net = 0.0
+        for row in self.list_open_positions(epic=epic):
+            size = float(row.get("size") or 0)
+            side = row.get("side")
+            if side == Side.BUY:
+                net += size
+            else:
+                net -= size
+        return net
+
+    def open_market_position(
+        self,
+        side: Side,
+        size: float,
+        *,
+        role: LegRole = LegRole.HEDGE,
+        currency: str | None = None,
+    ) -> str:
+        """
+        Open a market position (forceOpen) and mirror into the local ledger.
+
+        Live: POST /positions/otc. Paper/dry_run: ledger only.
+        """
+        qty = abs(float(size))
+        if qty <= 0:
+            raise IgApiError("open_market_position requires size > 0")
+        if self.dry_run or not self._cst:
+            logger.info(
+                "IG dry-run market open %s size=%s role=%s", side.value, qty, role.value
+            )
+            return self.ledger.market_open(side, qty, role=role)
+
+        ccy = (currency or self.resolve_order_currency()).strip().upper()
+        expiry = self.resolve_order_expiry()
+        body = {
+            "epic": self.config.epic,
+            "expiry": expiry,
+            "direction": "BUY" if side == Side.BUY else "SELL",
+            "size": qty,
+            "orderType": "MARKET",
+            "currencyCode": ccy,
+            "forceOpen": True,
+            "guaranteedStop": False,
+        }
+        url = f"{self.base_url}/positions/otc"
+        resp = self._client.post(url, headers=self._headers(version="2"), json=body)
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="open_market_position", url=url))
+        deal = resp.json() if resp.content else {}
+        deal_ref = str((deal or {}).get("dealReference") or "").strip()
+        fill = float(self.ledger.last_price or 0)
+        if deal_ref:
+            confirmed = self.confirm_deal(deal_ref)
+            deal_status = str(confirmed.get("dealStatus") or "").upper()
+            reason = str(confirmed.get("reason") or "").strip()
+            if deal_status and deal_status != "ACCEPTED":
+                raise IgApiError(
+                    "IG market open rejected: "
+                    f"dealStatus={deal_status or '—'} reason={reason or '—'} "
+                    f"confirm={confirmed}"
+                )
+            try:
+                if confirmed.get("level") is not None:
+                    fill = float(confirmed["level"])
+            except (TypeError, ValueError):
+                pass
+        if fill <= 0:
+            half = abs(self.config.spread_points) / 2.0
+            fill = (
+                float(self.ledger.last_price or 0) + half
+                if side == Side.BUY
+                else float(self.ledger.last_price or 0) - half
+            )
+        leg = self.ledger._open_leg(side, qty, fill, role)
+        logger.info(
+            "IG market open accepted %s size=%s dealRef=%s leg=%s",
+            side.value,
+            qty,
+            deal_ref or "—",
+            leg.id,
+        )
+        return leg.id
+
     def cancel_working_order(self, deal_id: str) -> dict[str, Any]:
         """DELETE /workingorders/otc/{dealId}."""
         did = (deal_id or "").strip()
@@ -725,8 +863,8 @@ class IgConnector:
             )
         )
 
-    def market_open(self, side: Side, size: float) -> str:
-        return self.ledger.market_open(side, size)
+    def market_open(self, side: Side, size: float, *, role: LegRole = LegRole.PRIMARY) -> str:
+        return self.open_market_position(side, size, role=role)
 
     def market_close(self, position_id: str) -> None:
         self.ledger.market_close(position_id)

@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
@@ -387,6 +387,70 @@ def cac40_start_run(
         session_factory=request.app.state.session_factory,
     )
     return RedirectResponse(url=f"/dashboard/bots/{slug}/cac40/runs/{run_id}", status_code=303)
+
+
+@router.get("/bots/{slug}/cac40/runs.json")
+def cac40_runs_json(
+    slug: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    """Lightweight run list for in-page polling (no full HTML refresh)."""
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    _require_cac40_active(tenant, session)
+    runs = list_runs(settings, slug)
+    active = {"running", "stopping", "pending"}
+    return JSONResponse(
+        {
+            "runs": runs,
+            "has_active": any(str(r.get("status") or "") in active for r in runs),
+        }
+    )
+
+
+@router.get("/bots/{slug}/cac40/runs/{run_id}/status.json")
+def cac40_run_status_json(
+    slug: str,
+    run_id: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    """Backtest/live run progress for local polling without scroll jump."""
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    _require_cac40_active(tenant, session)
+    try:
+        run = get_run(settings, slug, run_id)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Run not found") from exc
+    state = run.get("state") if isinstance(run.get("state"), dict) else {}
+    report = run.get("report") if isinstance(run.get("report"), dict) else {}
+    decisions = run.get("decisions") if isinstance(run.get("decisions"), list) else []
+    return JSONResponse(
+        {
+            "run_id": run_id,
+            "status": state.get("status"),
+            "progress": state.get("progress"),
+            "current_bar": state.get("current_bar"),
+            "total_bars": state.get("total_bars"),
+            "error": state.get("error"),
+            "final_equity": report.get("final_equity"),
+            "max_drawdown": report.get("max_drawdown"),
+            "trades": report.get("trades"),
+            "winrate": report.get("winrate"),
+            "llm_calls_total": report.get("llm_calls_total"),
+            "decisions_count": report.get("decisions_count")
+            if report.get("decisions_count") is not None
+            else len(decisions),
+        }
+    )
 
 
 @router.get("/bots/{slug}/cac40/runs/{run_id}", response_class=HTMLResponse)

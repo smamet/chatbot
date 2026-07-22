@@ -27,6 +27,15 @@ On **CAC40 Backtest** → **Live trading**:
 5. **View results** opens the live report (same decision browser as backtest: charts sent to Gemini + LLM answer). Recent cycles also appear under **Live cycles** on the CAC40 page.
 6. Disarming (Off/Paper) stops new cycles but **does not cancel** IG working orders already placed.
 
+### Weekend / holiday gap protection
+
+Before an IG FR40 close that precedes a non-trading day (weekend or Euronext full closure), the live cycle **directionally flattens** the book by hedging — it does **not** scratch losing legs.
+
+- **Calendar:** local Euronext list only (1 Jan, Good Friday, Easter Monday, 1 May, 25–26 Dec). Bastille Day (14 Jul) and similar French bank holidays stay **open** on Euronext — no flatten. No holiday API; the LLM is not trusted to know closures.
+- **Window:** default `market_close_paris=22:00`, `flatten_lead_minutes=30` (so 21:30 + 21:45 slots). Config: `flatten_before_close`, `flatten_lead_minutes`, `market_close_paris`.
+- **Sync:** every cycle runs `process_bar` on the new closed 15m candle (paper+live). Live also polls working orders. `GET /positions` only on arm, flatten window, or desync — not every cycle.
+- **Enforcement:** prompt gets `market_clock.flatten_now`; if the LLM fails or skips, code `open_market_position` (real `POST /positions/otc` in Live) with size=`|net|` and cancels resting `entry` orders. Monday leaves a `Covered` book for normal profit-only management.
+
 Config lives under `data/cac40/{slug}/live/` (`live_config.json`, `status.json`, `state.json`, `decisions_log.json`, `journal/{cycle}/cycle.json` + charts).
 
 ```bash

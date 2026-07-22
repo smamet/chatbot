@@ -33,11 +33,17 @@ Book continuity:
 - Do not place hedge_cover/tp before a primary exists; attach position_id after fills.
 - Size must equal order_size. Prefer fewer actions.
 
+Weekend / holiday gap protection (CRITICAL):
+- When market_clock.flatten_now is true, the book MUST be directionally flat (net size 0) before close.
+- market_open the opposite side with size = |market_clock.net_exposure| and purpose hedge_cover (market orders allowed for this only).
+- Cancel every working entry order. Keep TP limits and existing hedge stops.
+- Do NOT close losing legs to get flat — hedge them. Do not open new directional risk.
+
 Rules:
 - Identify support and resistance from the charts (15m execution, 1H and Daily context).
 - Prefer LIMIT entries at support (BUY) / resistance (SELL) and LIMIT take-profits.
 - Place STOP hedge covers only to protect existing legs.
-- Do not use market orders unless explicitly told.
+- Do not use market orders unless explicitly told or flatten_now is true.
 - Close winning legs only; keep protection on losing legs until profitable exit.
 - Output STRICT JSON only, no markdown.
 
@@ -101,6 +107,7 @@ def build_user_payload(
     max_open_positions: int = 4,
     last_decision: dict[str, Any] | None = None,
     allow_market_orders: bool = False,
+    market_clock: dict[str, Any] | None = None,
 ) -> str:
     instructions = [
         "Manage the existing book first. Do not duplicate entries already in working_orders.",
@@ -113,6 +120,18 @@ def build_user_payload(
     else:
         instructions.append("Propose working LIMIT/STOP orders only. Do not use market_* ops.")
 
+    clock = dict(market_clock or {})
+    if clock.get("flatten_now"):
+        net = float(clock.get("net_exposure") or 0)
+        instructions = [
+            "FLATTEN WINDOW ACTIVE: make the book directionally flat NOW before the gap.",
+            f"Net exposure is {net:+.4g}. If non-zero, market_open the opposite side "
+            f"with size={abs(net)} and purpose=hedge_cover.",
+            "Cancel every working entry order. Keep TP limits. Do not close losing legs.",
+            "Do not open new directional entries.",
+            f"Respect max_open_positions={max_open_positions} except for this protective hedge.",
+        ]
+
     payload: dict[str, Any] = {
         "phase": phase,
         "order_size": order_size,
@@ -120,6 +139,8 @@ def build_user_payload(
         "snapshot": snapshot.to_dict(),
         "instructions": " ".join(instructions),
     }
+    if clock:
+        payload["market_clock"] = clock
     if last_decision:
         payload["last_decision"] = last_decision
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -211,6 +232,7 @@ class GeminiDecisionClient:
         max_open_positions: int = 4,
         last_decision: dict[str, Any] | None = None,
         allow_market_orders: bool = False,
+        market_clock: dict[str, Any] | None = None,
     ) -> LlmDecision | None:
         self.last_error = None
         if not self.api_key:
@@ -236,6 +258,7 @@ class GeminiDecisionClient:
                     max_open_positions=max_open_positions,
                     last_decision=last_decision,
                     allow_market_orders=allow_market_orders,
+                    market_clock=market_clock,
                 )
             )
         )
