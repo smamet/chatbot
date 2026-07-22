@@ -15,22 +15,22 @@
 
 {% if upload_error %}
 <section class="card">
-  <p class="badge failed">Upload failed: {{ upload_error }}</p>
+  <div class="callout callout--danger">Upload failed: {{ upload_error }}</div>
 </section>
 {% endif %}
 {% if upload_ok %}
 <section class="card">
-  <p class="badge done">CSV uploaded — {{ upload_ok }} bars ready.</p>
+  <div class="callout">CSV uploaded — {{ upload_ok }} bars ready.</div>
 </section>
 {% endif %}
 {% if sync_error %}
 <section class="card">
-  <p class="badge failed">IG sync failed: {{ sync_error }}</p>
+  <div class="callout callout--danger" style="white-space:pre-wrap;">IG sync failed: {{ sync_error }}</div>
 </section>
 {% endif %}
 {% if sync_ok %}
 <section class="card">
-  <p class="badge done">IG sync — {{ sync_ok }} new 15m bar(s) appended. Check the status panel below for last candle date.</p>
+  <div class="callout">IG sync — {{ sync_ok }} new 15m bar(s) appended. Check the status panel below for last candle date.</div>
 </section>
 {% endif %}
 
@@ -135,7 +135,7 @@
       {% endif %}
     </p>
     {% if ohlc_sync_status.last_error %}
-    <p class="badge failed" style="white-space:pre-wrap;">{{ ohlc_sync_status.last_error }}</p>
+    <div class="callout callout--danger" style="white-space:pre-wrap;">{{ ohlc_sync_status.last_error }}</div>
     {% endif %}
     {% else %}
     <p class="field-hint">No sync yet.</p>
@@ -213,12 +213,12 @@
 <div id="cac40-tab-live" class="tab-panel" data-tab-panel="live" hidden>
 {% if live_ok %}
 <section class="card">
-  <p class="badge done">{{ live_ok }}</p>
+  <div class="callout">{{ live_ok }}</div>
 </section>
 {% endif %}
 {% if live_error %}
 <section class="card">
-  <p class="badge failed">{{ live_error }}</p>
+  <div class="callout callout--danger" style="white-space:pre-wrap;">{{ live_error }}</div>
 </section>
 {% endif %}
 
@@ -251,12 +251,12 @@
     {% endif %}
   </p>
   {% if live_stale and live_mode != 'off' %}
-  <p class="badge failed">Live worker heartbeat is stale — is <code>worker-cac40-live</code> running? Check <code>./sail logs worker-cac40-live</code>.</p>
+  <div class="callout callout--danger">Live worker heartbeat is stale — is <code>worker-cac40-live</code> running? Check <code>./sail logs worker-cac40-live</code>.</div>
   {% elif live_awaiting_first_cycle and live_mode != 'off' %}
-  <p class="badge done">Armed — waiting for the next 15m candle slot (:00/:15/:30/:45 +15s, Paris). Use <strong>Run cycle now</strong> to fire immediately.</p>
+  <div class="callout">Armed — waiting for the next 15m candle slot (:00/:15/:30/:45 +15s, Paris). Use <strong>Run cycle now</strong> to fire immediately.</div>
   {% endif %}
   {% if live_status.error %}
-  <pre class="field-hint" style="white-space:pre-wrap;">{{ live_status.error }}</pre>
+  <div class="callout callout--danger" style="white-space:pre-wrap;">{{ live_status.error }}</div>
   {% endif %}
   {% if ig_price_allowance %}
   <p class="text-muted" style="margin-top:0.35rem;">
@@ -267,10 +267,10 @@
   </p>
   {% endif %}
   {% if live_status.ohlc_stale %}
-  <p class="badge failed">OHLC cache was stale on the last cycle — LLM may have been skipped until IG allowance recovers.</p>
+  <div class="callout callout--danger">OHLC cache was stale on the last cycle — LLM may have been skipped until IG allowance recovers.</div>
   {% endif %}
   {% if ohlc.exists and ohlc.has_recent_gaps and live_mode != 'off' %}
-  <p class="badge failed">Armed while recent OHLC gaps exist — Sync / re-upload before relying on Gemini decisions.</p>
+  <div class="callout callout--danger">Armed while recent OHLC gaps exist — Sync / re-upload before relying on Gemini decisions.</div>
   {% endif %}
 
   <div class="form-actions form-actions--compact" style="margin:0.75rem 0;">

@@ -2457,67 +2457,74 @@ td.actions button {
   margin-right: var(--space-xs);
 }
 
-/* Badges */
+/* Badges — square chips (no pills) */
 .badge {
   display: inline-block;
-  padding: 0.2em 0.55em;
+  padding: 0.15em 0.45em;
   font-size: 0.75rem;
   font-weight: 600;
-  border-radius: var(--radius-full);
-  background: #f1f5f9;
+  border-radius: 0;
+  border: 1px solid #e2e8f0;
+  background: transparent;
   color: var(--color-text-muted);
 }
 
 .badge.off {
-  background: #f1f5f9;
+  border-color: #e2e8f0;
   color: var(--color-text-muted);
 }
 
 .badge.on,
 .badge.done {
-  background: var(--color-success-soft);
+  border-color: var(--color-success);
   color: var(--color-success);
+  background: transparent;
 }
 
 .badge.failed {
-  background: var(--color-danger-soft);
+  border-color: var(--color-danger);
   color: var(--color-danger);
+  background: transparent;
 }
 
 .badge.warn {
-  background: var(--color-warning-soft);
+  border-color: var(--color-warning);
   color: var(--color-warning);
+  background: transparent;
 }
 
-/* Callout panels (not pill badges) */
+/* Callout panels — square, border accent, no soft rounded fill */
 .callout {
   margin-top: 0.75rem;
-  padding: 0.85rem 1rem;
-  border-radius: var(--radius-md, 8px);
-  border: 1px solid #e2e8f0;
-  background: #f8fafc;
+  padding: 0.75rem 0 0.75rem 0.85rem;
+  border-radius: 0;
+  border: none;
+  border-left: 3px solid #cbd5e1;
+  background: transparent;
   color: var(--color-text);
   text-align: left;
   white-space: normal;
 }
 
 .callout--danger {
-  border-color: #fecaca;
-  background: var(--color-danger-soft);
+  border-left-color: var(--color-danger);
+  color: var(--color-danger);
 }
 
 .callout--warn {
-  border-color: #fde68a;
-  background: var(--color-warning-soft);
+  border-left-color: var(--color-warning);
 }
 
 .callout--muted {
-  border-color: #e2e8f0;
-  background: #f8fafc;
+  border-left-color: #94a3b8;
   color: var(--color-text-muted);
 }
 
 .callout strong {
+  color: inherit;
+}
+
+.callout--muted strong {
   color: var(--color-text);
 }
 
