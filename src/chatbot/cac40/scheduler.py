@@ -722,6 +722,16 @@ class LiveScheduler:
             for local_id, deal_id in list(book.items()):
                 if local_id in desired:
                     continue
+                deal_s = str(deal_id or "")
+                if deal_s.startswith("attached:"):
+                    # IG-attached TP sentinel — drop locally; parent cancel removes it on IG.
+                    book.pop(local_id, None)
+                    logger.info(
+                        "Dropped attached TP sentinel order=%s deal=%s",
+                        local_id,
+                        deal_s,
+                    )
+                    continue
                 try:
                     conn.cancel_working_order(deal_id)
                     book.pop(local_id, None)
@@ -736,9 +746,30 @@ class LiveScheduler:
             for local_id, order in desired.items():
                 if local_id in book:
                     continue
+                # TP children of a still-working entry are attached via limitLevel —
+                # never push them as standalone (would open a rogue position).
+                if (
+                    order.purpose == OrderPurpose.TP
+                    and order.parent_order_id
+                    and order.parent_order_id in desired
+                ):
+                    continue
                 try:
+                    limit_level: float | None = None
+                    tp_child_id: str | None = None
+                    if order.purpose == OrderPurpose.ENTRY:
+                        for cid, child in desired.items():
+                            if (
+                                child.parent_order_id == local_id
+                                and child.purpose == OrderPurpose.TP
+                            ):
+                                limit_level = float(child.level)
+                                tp_child_id = cid
+                                break
                     if conn is self.ig:
-                        pushed = conn.push_working_order(order)
+                        pushed = conn.push_working_order(
+                            order, limit_level=limit_level
+                        )
                         deal_id = pushed.deal_id
                     else:
                         clone = WorkingOrder(
@@ -749,13 +780,22 @@ class LiveScheduler:
                             size=order.size,
                             purpose=order.purpose or OrderPurpose.ENTRY,
                             position_id=order.position_id,
+                            parent_order_id=order.parent_order_id,
                         )
-                        pushed = conn.place_order(clone)
+                        pushed = conn.place_order(clone, limit_level=limit_level)
                         deal_id = pushed.deal_id
                     if not deal_id:
                         raise IgApiError("IG place returned empty dealId")
                     book[local_id] = deal_id
                     row["placed"].append({"order_id": local_id, "deal_id": deal_id})
+                    if tp_child_id and tp_child_id not in book:
+                        book[tp_child_id] = f"attached:{deal_id}"
+                        row["placed"].append(
+                            {
+                                "order_id": tp_child_id,
+                                "deal_id": f"attached:{deal_id}",
+                            }
+                        )
                 except Exception as exc:
                     row["errors"].append(f"place:{local_id}:{exc}")
                     logger.exception(

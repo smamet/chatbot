@@ -127,6 +127,24 @@ class HedgeLedger:
 
     def cancel_order(self, order_id: str) -> None:
         self.working_orders.pop(order_id, None)
+        # Cascade-cancel dormant bracket children linked to this entry.
+        for oid, order in list(self.working_orders.items()):
+            if order.parent_order_id == order_id:
+                self.working_orders.pop(oid, None)
+
+    def _is_dormant_child(self, order: WorkingOrder) -> bool:
+        """True while parent entry is still working (not yet filled/cancelled)."""
+        if not order.parent_order_id:
+            return False
+        return order.parent_order_id in self.working_orders
+
+    def _arm_children(self, parent_id: str, leg_id: str) -> list[WorkingOrder]:
+        armed: list[WorkingOrder] = []
+        for order in self.working_orders.values():
+            if order.parent_order_id == parent_id:
+                order.position_id = leg_id
+                armed.append(order)
+        return armed
 
     def _open_leg(
         self,
@@ -223,13 +241,50 @@ class HedgeLedger:
         for order in list(self.working_orders.values()):
             if order.active_from_bar > self.bar_index:
                 continue
+            if self._is_dormant_child(order):
+                continue
             fill = evaluate_order_fill(order, bar, self.config)
             if fill:
                 candidates.append((order, fill))
 
+        events.extend(
+            self._apply_fills(
+                candidates,
+                bar=bar,
+                ts=ts,
+                allow_arm_children=True,
+            )
+        )
+
+        net = self.mark_to_market(self.last_price)
+        self.infer_phase()
+        self.equity_curve.append(
+            {
+                "bar": self.bar_index,
+                "ts": ts,
+                "price": self.last_price,
+                "net_upl": net,
+                "realized": self.realized_session,
+                "equity": self.cash + net,
+                "legs": self.legs_count(),
+            }
+        )
+        return events
+
+    def _apply_fills(
+        self,
+        candidates: list[tuple[WorkingOrder, object]],
+        *,
+        bar: dict,
+        ts: str,
+        allow_arm_children: bool,
+    ) -> list[dict]:
+        events: list[dict] = []
         for order, fill in resolve_intrabar_conflict(
             candidates, pessimistic=self.config.intrabar_pessimistic
         ):
+            if order.id not in self.working_orders:
+                continue
             self.working_orders.pop(order.id, None)
 
             # TP/CLOSE without position_id must never open a new leg.
@@ -250,7 +305,6 @@ class HedgeLedger:
                     and leg is not None
                     and exit_would_lose(leg, fill.fill_price, self.config.point_value)
                 ):
-                    # Order already popped — cancel rather than leave a guaranteed-loss TP.
                     events.append(
                         {
                             "type": "rejected_fill",
@@ -299,28 +353,45 @@ class HedgeLedger:
                 role = LegRole.HEDGE_COVER if self.positions else LegRole.PRIMARY
                 if self.positions:
                     existing = next(iter(self.positions.values()))
-                    role = LegRole.HEDGE if order.side != existing.side else LegRole.HEDGE_COVER
+                    role = (
+                        LegRole.HEDGE
+                        if order.side != existing.side
+                        else LegRole.HEDGE_COVER
+                    )
             elif order.purpose == OrderPurpose.ENTRY:
                 role = LegRole.PRIMARY
 
-            leg = self._open_leg(order.side, order.size, fill.fill_price, role, opened_at=ts)
+            leg = self._open_leg(
+                order.side, order.size, fill.fill_price, role, opened_at=ts
+            )
             events.append(
-                {"type": "open", "order": order.to_dict(), "fill": fill.fill_price, "leg": leg.to_dict()}
+                {
+                    "type": "open",
+                    "order": order.to_dict(),
+                    "fill": fill.fill_price,
+                    "leg": leg.to_dict(),
+                }
             )
 
-        net = self.mark_to_market(self.last_price)
-        self.infer_phase()
-        self.equity_curve.append(
-            {
-                "bar": self.bar_index,
-                "ts": ts,
-                "price": self.last_price,
-                "net_upl": net,
-                "realized": self.realized_session,
-                "equity": self.cash + net,
-                "legs": self.legs_count(),
-            }
-        )
+            if allow_arm_children and order.purpose == OrderPurpose.ENTRY:
+                armed = self._arm_children(order.id, leg.id)
+                if armed:
+                    child_cands: list[tuple[WorkingOrder, object]] = []
+                    for child in armed:
+                        # Eligible on this bar even if active_from_bar was next.
+                        child.active_from_bar = min(child.active_from_bar, self.bar_index)
+                        cfill = evaluate_order_fill(child, bar, self.config)
+                        if cfill:
+                            child_cands.append((child, cfill))
+                    if child_cands:
+                        events.extend(
+                            self._apply_fills(
+                                child_cands,
+                                bar=bar,
+                                ts=ts,
+                                allow_arm_children=False,
+                            )
+                        )
         return events
 
     def pnl_payload(self) -> dict:

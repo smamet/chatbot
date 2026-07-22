@@ -562,21 +562,29 @@ class IgConnector:
         # Keep a sensible number of decimals for JSON (no binary float junk).
         return float(snapped)
 
-    def place_order(self, order: WorkingOrder, *, currency: str | None = None) -> WorkingOrder:
+    def place_order(self, order: WorkingOrder, *, currency: str | None = None, limit_level: float | None = None) -> WorkingOrder:
         placed = self.ledger.place_order(order)
         if self.dry_run or not self._cst:
-            logger.info("IG dry-run place %s", placed.to_dict())
+            logger.info("IG dry-run place %s limit_level=%s", placed.to_dict(), limit_level)
             return placed
-        return self.push_working_order(placed, currency=currency)
+        return self.push_working_order(placed, currency=currency, limit_level=limit_level)
 
     def push_working_order(
-        self, order: WorkingOrder, *, currency: str | None = None
+        self,
+        order: WorkingOrder,
+        *,
+        currency: str | None = None,
+        limit_level: float | None = None,
     ) -> WorkingOrder:
         """Submit an already-ledgered working order to IG (no second ledger place)."""
         if self.dry_run or not self._cst:
-            logger.info("IG dry-run push %s", order.to_dict())
+            logger.info(
+                "IG dry-run push %s limit_level=%s", order.to_dict(), limit_level
+            )
             return order
-        body = self._ig_working_order_body(order, currency=currency)
+        body = self._ig_working_order_body(
+            order, currency=currency, limit_level=limit_level
+        )
         resp = self._client.post(
             f"{self.base_url}/workingorders/otc",
             headers=self._headers(version="2"),
@@ -870,13 +878,17 @@ class IgConnector:
         self.ledger.market_close(position_id)
 
     def _ig_working_order_body(
-        self, order: WorkingOrder, *, currency: str | None = None
+        self,
+        order: WorkingOrder,
+        *,
+        currency: str | None = None,
+        limit_level: float | None = None,
     ) -> dict[str, Any]:
         ccy = (currency or self.resolve_order_currency()).strip().upper()
         expiry = self.resolve_order_expiry()
         level = self.snap_level(float(order.level))
         order.level = level
-        return {
+        body: dict[str, Any] = {
             "epic": self.config.epic,
             "expiry": expiry,
             "direction": "BUY" if order.side == Side.BUY else "SELL",
@@ -889,6 +901,10 @@ class IgConnector:
             # IG requires forceOpen=true for LIMIT working orders.
             "forceOpen": True,
         }
+        if limit_level is not None:
+            # Attached TP: IG creates this limit the moment the entry fills.
+            body["limitLevel"] = self.snap_level(float(limit_level))
+        return body
 
 
 def _extract_price_allowance(payload: dict[str, Any]) -> dict[str, Any] | None:

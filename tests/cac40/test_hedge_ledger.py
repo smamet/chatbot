@@ -114,3 +114,110 @@ def test_fill_refused_at_max_open_positions():
     assert ledger.legs_count() == 1
     assert events[0]["type"] == "rejected_fill"
     assert events[0]["reason"] == "max_positions"
+
+
+def test_dormant_bracket_children_arm_on_entry_fill():
+    cfg = Cac40Config(spread_points=0.0, slippage_points=0.0, max_open_positions=4)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    entry = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.SELL,
+            level=101,
+            size=1,
+            purpose=OrderPurpose.ENTRY,
+        )
+    )
+    tp = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.BUY,
+            level=98,
+            size=1,
+            purpose=OrderPurpose.TP,
+            parent_order_id=entry.id,
+        )
+    )
+    hedge = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=103,
+            size=1,
+            purpose=OrderPurpose.HEDGE_COVER,
+            parent_order_id=entry.id,
+        )
+    )
+    # Bar touches TP but NOT entry — children stay dormant.
+    events = ledger.process_bar({"open": 100, "high": 100.5, "low": 97, "close": 100})
+    assert ledger.legs_count() == 0
+    assert tp.id in ledger.working_orders
+    assert hedge.id in ledger.working_orders
+    assert not events
+
+    # Entry fills; children arm. Same bar also hits hedge (BUY hedge_cover on fall).
+    events = ledger.process_bar({"open": 100.5, "high": 102, "low": 100, "close": 101.5})
+    assert any(e.get("type") == "open" for e in events)
+    # Hedge fills same bar after arming → 2 legs.
+    assert ledger.legs_count() == 2
+    assert tp.id in ledger.working_orders
+    assert ledger.working_orders[tp.id].position_id is not None
+    assert hedge.id not in ledger.working_orders
+
+
+def test_cancel_entry_cascades_bracket_children():
+    cfg = Cac40Config(spread_points=0.0)
+    ledger = HedgeLedger(config=cfg)
+    entry = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.SELL,
+            level=101,
+            size=1,
+            purpose=OrderPurpose.ENTRY,
+        )
+    )
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.BUY,
+            level=98,
+            size=1,
+            purpose=OrderPurpose.TP,
+            parent_order_id=entry.id,
+        )
+    )
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=103,
+            size=1,
+            purpose=OrderPurpose.HEDGE_COVER,
+            parent_order_id=entry.id,
+        )
+    )
+    assert len(ledger.working_orders) == 3
+    ledger.cancel_order(entry.id)
+    assert not ledger.working_orders
+
+
+def test_working_order_parent_roundtrip():
+    order = WorkingOrder(
+        id="o9",
+        type=OrderType.LIMIT,
+        side=Side.BUY,
+        level=100,
+        size=1,
+        purpose=OrderPurpose.TP,
+        parent_order_id="o1",
+    )
+    restored = WorkingOrder.from_dict(order.to_dict())
+    assert restored.parent_order_id == "o1"

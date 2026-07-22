@@ -24,6 +24,7 @@ from chatbot.application.cac40_backtest_service import (
 )
 from chatbot.application.cac40_live_service import (
     LIVE_CYCLE_SECONDS,
+    adopt_ig_book,
     clear_live_history,
     get_live_report,
     list_live_cycles,
@@ -773,6 +774,33 @@ def cac40_live_run_once(
         slug,
         session_factory=getattr(request.app.state, "session_factory", None),
     )
+    if result.get("ok"):
+        return RedirectResponse(
+            url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote(str(result['message']))}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_error={quote(str(result['message']))}",
+        status_code=303,
+    )
+
+
+@router.post("/bots/{slug}/cac40/live/sync-book")
+def cac40_live_sync_book(
+    slug: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    """Import open IG positions/orders into the local ledger (manual resync)."""
+    from urllib.parse import quote
+
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    _require_cac40_active(tenant, session)
+    result = adopt_ig_book(session, settings, slug)
     if result.get("ok"):
         return RedirectResponse(
             url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote(str(result['message']))}",

@@ -38,6 +38,7 @@ class WorkingOrder:
     size: float
     purpose: OrderPurpose
     position_id: str | None = None  # linked leg for TP/close
+    parent_order_id: str | None = None  # dormant until parent entry fills
     client_ref: str = ""
     deal_id: str = ""  # IG dealId after confirm (live)
     active_from_bar: int = 0
@@ -51,6 +52,7 @@ class WorkingOrder:
             "size": self.size,
             "purpose": self.purpose.value,
             "position_id": self.position_id,
+            "parent_order_id": self.parent_order_id,
             "client_ref": self.client_ref,
             "deal_id": self.deal_id,
             "active_from_bar": self.active_from_bar,
@@ -67,6 +69,9 @@ class WorkingOrder:
             size=float(raw.get("size") or 0.0),
             purpose=OrderPurpose(str(raw.get("purpose") or OrderPurpose.ENTRY.value)),
             position_id=(str(raw["position_id"]) if raw.get("position_id") else None),
+            parent_order_id=(
+                str(raw["parent_order_id"]) if raw.get("parent_order_id") else None
+            ),
             client_ref=str(raw.get("client_ref") or ""),
             deal_id=str(raw.get("deal_id") or ""),
             active_from_bar=int(raw.get("active_from_bar") or 0),
@@ -83,6 +88,7 @@ class PositionLeg:
     opened_bar: int = 0
     opened_at: str = ""
     upl: float = 0.0
+    deal_id: str = ""  # IG dealId when imported / mirrored
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +100,7 @@ class PositionLeg:
             "opened_bar": self.opened_bar,
             "opened_at": self.opened_at,
             "upl": self.upl,
+            "deal_id": self.deal_id,
         }
 
     @classmethod
@@ -108,6 +115,7 @@ class PositionLeg:
             opened_bar=int(raw.get("opened_bar") or 0),
             opened_at=str(raw.get("opened_at") or ""),
             upl=float(raw.get("upl") or 0.0),
+            deal_id=str(raw.get("deal_id") or ""),
         )
 
 

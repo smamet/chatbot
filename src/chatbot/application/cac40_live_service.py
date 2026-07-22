@@ -1013,6 +1013,358 @@ def _get_or_build_scheduler(
     return sched
 
 
+def _parse_ig_working_order_row(
+    row: dict[str, Any], *, epic: str
+) -> dict[str, Any] | None:
+    """Normalize an IG working-order payload into side/type/level/size/deal_id."""
+    from chatbot.cac40.models import OrderType, Side
+
+    data = row.get("workingOrderData") if isinstance(row.get("workingOrderData"), dict) else row
+    if not isinstance(data, dict):
+        return None
+    row_epic = str(data.get("epic") or "").strip()
+    if epic and row_epic and row_epic != epic:
+        return None
+    deal_id = str(data.get("dealId") or "").strip()
+    if not deal_id:
+        return None
+    direction = str(data.get("direction") or "").upper()
+    if direction not in ("BUY", "SELL"):
+        return None
+    raw_type = str(data.get("orderType") or data.get("type") or "LIMIT").upper()
+    otype = OrderType.STOP if "STOP" in raw_type else OrderType.LIMIT
+    try:
+        level = float(
+            data.get("orderLevel")
+            if data.get("orderLevel") is not None
+            else data.get("level")
+            or 0
+        )
+    except (TypeError, ValueError):
+        level = 0.0
+    try:
+        size = float(
+            data.get("orderSize")
+            if data.get("orderSize") is not None
+            else data.get("size")
+            or 0
+        )
+    except (TypeError, ValueError):
+        size = 0.0
+    if level <= 0 or size <= 0:
+        return None
+    return {
+        "deal_id": deal_id,
+        "side": Side.BUY if direction == "BUY" else Side.SELL,
+        "type": otype,
+        "level": level,
+        "size": size,
+        "epic": row_epic,
+    }
+
+
+def adopt_ig_snapshot_into_ledger(
+    ledger: HedgeLedger,
+    *,
+    positions: list[dict[str, Any]],
+    working_orders: list[dict[str, Any]],
+    epic: str = "",
+) -> dict[str, Any]:
+    """
+    Additive import of IG positions/orders into a local ledger (idempotent by deal_id).
+
+    Returns ``{imported_positions, imported_orders, skipped, warnings, order_book}``
+    where ``order_book`` maps new local order ids → IG dealId.
+    """
+    from chatbot.cac40.models import (
+        LegRole,
+        OrderPurpose,
+        OrderType,
+        Side,
+        WorkingOrder,
+    )
+
+    want = (epic or "").strip()
+    known_pos = {
+        (p.deal_id or "").strip()
+        for p in ledger.positions.values()
+        if (p.deal_id or "").strip()
+    }
+    known_wo = {
+        (o.deal_id or "").strip()
+        for o in ledger.working_orders.values()
+        if (o.deal_id or "").strip()
+    }
+
+    imported_positions: list[dict[str, Any]] = []
+    imported_orders: list[dict[str, Any]] = []
+    skipped: list[str] = []
+    warnings: list[str] = []
+    order_book: dict[str, str] = {}
+
+    # --- positions ---
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        deal_id = str(row.get("deal_id") or "").strip()
+        if not deal_id:
+            skipped.append("position:missing_deal_id")
+            continue
+        if deal_id in known_pos:
+            skipped.append(f"position:exists:{deal_id}")
+            continue
+        row_epic = str(row.get("epic") or "").strip()
+        if want and row_epic and row_epic != want:
+            skipped.append(f"position:epic_mismatch:{deal_id}")
+            continue
+        side = row.get("side")
+        if not isinstance(side, Side):
+            direction = str(side or "").upper()
+            if direction not in ("BUY", "SELL"):
+                skipped.append(f"position:bad_side:{deal_id}")
+                continue
+            side = Side.BUY if direction == "BUY" else Side.SELL
+        try:
+            size = float(row.get("size") or 0)
+            level = float(row.get("level") or 0)
+        except (TypeError, ValueError):
+            skipped.append(f"position:bad_numbers:{deal_id}")
+            continue
+        if size <= 0:
+            skipped.append(f"position:zero_size:{deal_id}")
+            continue
+
+        if not ledger.positions:
+            role = LegRole.PRIMARY
+        else:
+            first = next(iter(ledger.positions.values()))
+            role = LegRole.PRIMARY if side == first.side else LegRole.HEDGE
+
+        leg = ledger._open_leg(side, size, level, role)  # noqa: SLF001
+        leg.deal_id = deal_id
+        known_pos.add(deal_id)
+        imported_positions.append(
+            {"id": leg.id, "deal_id": deal_id, "side": side.value, "size": size, "level": level}
+        )
+
+    # --- working orders ---
+    for raw in working_orders:
+        parsed = _parse_ig_working_order_row(
+            raw if isinstance(raw, dict) else {}, epic=want
+        )
+        if parsed is None:
+            # Maybe already normalized by list helper
+            if isinstance(raw, dict) and raw.get("deal_id"):
+                parsed = raw
+            else:
+                skipped.append("order:unparseable")
+                continue
+        deal_id = str(parsed.get("deal_id") or "").strip()
+        if not deal_id:
+            skipped.append("order:missing_deal_id")
+            continue
+        if deal_id in known_wo:
+            skipped.append(f"order:exists:{deal_id}")
+            continue
+
+        side = parsed.get("side")
+        if not isinstance(side, Side):
+            skipped.append(f"order:bad_side:{deal_id}")
+            continue
+        otype = parsed.get("type")
+        if not isinstance(otype, OrderType):
+            otype = OrderType.STOP if "STOP" in str(otype).upper() else OrderType.LIMIT
+        level = float(parsed.get("level") or 0)
+        size = float(parsed.get("size") or 0)
+        if level <= 0 or size <= 0:
+            skipped.append(f"order:bad_numbers:{deal_id}")
+            continue
+
+        purpose = OrderPurpose.ENTRY
+        position_id: str | None = None
+        # Heuristic: opposite an open leg → TP (limit) or hedge_cover (stop).
+        for leg in ledger.positions.values():
+            if leg.side != side:
+                if otype == OrderType.LIMIT:
+                    purpose = OrderPurpose.TP
+                    position_id = leg.id
+                else:
+                    purpose = OrderPurpose.HEDGE_COVER
+                    position_id = leg.id
+                break
+
+        order = WorkingOrder(
+            id="",
+            type=otype,
+            side=side,
+            level=level,
+            size=size,
+            purpose=purpose,
+            position_id=position_id,
+            deal_id=deal_id,
+        )
+        placed = ledger.place_order(order)
+        known_wo.add(deal_id)
+        order_book[placed.id] = deal_id
+        imported_orders.append(
+            {
+                "id": placed.id,
+                "deal_id": deal_id,
+                "purpose": purpose.value,
+                "side": side.value,
+                "level": level,
+            }
+        )
+
+    if not imported_positions and not imported_orders and not warnings:
+        warnings.append("nothing_new")
+
+    return {
+        "imported_positions": imported_positions,
+        "imported_orders": imported_orders,
+        "skipped": skipped,
+        "warnings": warnings,
+        "order_book": order_book,
+    }
+
+
+def adopt_ig_book(
+    session: Session,
+    settings: Settings,
+    slug: str,
+) -> dict[str, Any]:
+    """
+    Fetch IG positions + working orders and merge into the local live ledger.
+
+    Additive only (matched by deal_id). Updates the primary connector order book
+    so the mirror neither cancels nor re-pushes imported rows.
+    """
+    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+
+    tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
+    tenant = tenant_svc.get_by_slug(slug)
+    if tenant is None:
+        return {"ok": False, "message": f"Bot {slug!r} not found.", "error": "not_found"}
+
+    integ = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
+        tenant.id, type=IntegrationType.CAC40_BACKTEST
+    )
+    if integ is None:
+        return {
+            "ok": False,
+            "message": "CAC40 integration is not active.",
+            "error": "no_integration",
+        }
+
+    live_cfg = load_live_config(settings, slug)
+    if live_cfg["mode"] == "off":
+        return {
+            "ok": False,
+            "message": "Bot is Off — switch to Paper or Live first.",
+            "error": "mode_off",
+        }
+
+    conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    connectors, _warnings, conn_err = _resolve_selected_ig_connectors(
+        conn_svc, tenant.id, live_cfg
+    )
+    if conn_err or not connectors:
+        return {
+            "ok": False,
+            "message": "No selected active IG connector.",
+            "error": conn_err or "no_connector",
+        }
+
+    primary_id, primary_cfg = connectors[0]
+    integ_cfg = dict(integ.config or {})
+    gemini_model = tenant.config.chat_model or settings.chat_model or "gemini-2.5-flash"
+    cfg = _build_cac40_config(
+        live_cfg=live_cfg,
+        integ_cfg=integ_cfg,
+        primary_ig=primary_cfg,
+        tenant_slug=slug,
+        gemini_model=gemini_model,
+    )
+
+    connector = IgConnector(ig_config_from_connector(primary_cfg), dry_run=True)
+    try:
+        connector.login()
+        if not connector.authenticated:
+            return {
+                "ok": False,
+                "message": "IG login failed — check connector credentials.",
+                "error": "login_failed",
+            }
+        # Force session for GETs even though dry_run (login sets _cst).
+        positions = connector.list_open_positions(epic=cfg.epic)
+        raw_orders = connector.list_working_orders()
+    except Exception as exc:
+        logger.exception("adopt_ig_book fetch failed for %s", slug)
+        return {
+            "ok": False,
+            "message": f"IG fetch failed: {exc}",
+            "error": "fetch_failed",
+        }
+    finally:
+        try:
+            connector.close()
+        except Exception:
+            pass
+
+    with _LOCK:
+        sched = _SCHEDULERS.get(slug)
+        if sched is not None:
+            ledger = sched.ig.ledger
+            persist_via_sched = True
+        else:
+            state = _read_json(live_state_path(settings, slug), default=None)
+            ledger = HedgeLedger.from_state_dict(
+                cfg, state if isinstance(state, dict) else None
+            )
+            persist_via_sched = False
+
+        result = adopt_ig_snapshot_into_ledger(
+            ledger,
+            positions=positions,
+            working_orders=raw_orders,
+            epic=cfg.epic,
+        )
+
+        # Merge deal ids into every selected connector order book so the mirror
+        # neither cancels nor re-pushes adopted rows on secondary accounts.
+        books_dir = live_dir(settings, slug) / "order_books"
+        books_dir.mkdir(parents=True, exist_ok=True)
+        connector_ids = [cid for cid, _ in connectors] or [primary_id]
+        for cid in connector_ids:
+            book_path = books_dir / f"orders_{cid}.json"
+            book: dict[str, str] = {}
+            if book_path.exists():
+                try:
+                    raw_book = json.loads(book_path.read_text(encoding="utf-8"))
+                    if isinstance(raw_book, dict):
+                        book = {str(k): str(v) for k, v in raw_book.items() if k and v}
+                except Exception:
+                    book = {}
+            for oid, deal_id in (result.get("order_book") or {}).items():
+                book[str(oid)] = str(deal_id)
+            book_path.write_text(json.dumps(book, indent=2), encoding="utf-8")
+
+        _write_json(live_state_path(settings, slug), ledger.to_state_dict())
+        if persist_via_sched and sched is not None:
+            sched.request_position_reconcile()
+
+    n_pos = len(result.get("imported_positions") or [])
+    n_ord = len(result.get("imported_orders") or [])
+    msg = f"Synced from IG: +{n_pos} position(s), +{n_ord} order(s)."
+    if n_pos == 0 and n_ord == 0:
+        msg = "Sync from IG: nothing new to import (already in sync or empty)."
+    return {
+        "ok": True,
+        "message": msg,
+        **result,
+    }
+
+
 def run_live_cycle_now(
     session: Session,
     settings: Settings,

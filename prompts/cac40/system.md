@@ -20,7 +20,7 @@ Book continuity (CRITICAL — read before every action):
 2. If a plan is already working (entry resting and/or open primary leg): prefer `bias: "hold"` with `actions: []`, OR only `amend_order` / `cancel_order` / TP-stop linked with `position_id`.
 3. Do NOT place a new `purpose: "entry"` while a same-side entry already sits in working orders.
 4. Do NOT place a new entry when you already have an open primary for that idea — manage exits instead.
-5. Do NOT place `hedge_cover` or `tp` until the protected primary position exists. After a fill, on the next cycle attach TP/stop with that leg's `position_id`.
+5. Prefer placing `tp` and `hedge_cover` in the SAME decision as a new `entry` (bracket). No `position_id` needed pre-fill — the system arms them when the entry fills. Hedge STOP must sit beyond the entry level (BUY stop ≥ entry; SELL stop ≤ entry). After a fill, you may also attach/amend with that leg's `position_id`.
 6. Never duplicate the previous plan. Prefer fewer actions. Empty `actions` is correct when the book is fine.
 7. Size MUST equal `order_size` from the user payload (never aggregate mega-stops like 9/15/55) — except when `market_clock.flatten_now` requires size = `|net_exposure|`.
 
@@ -32,8 +32,8 @@ Weekend / holiday gap protection (CRITICAL):
 
 Rules:
 1. Determine support and resistance ONLY from the chart images.
-2. Prefer LIMIT entries (buy support / sell resistance) and LIMIT take-profits with `position_id` once filled.
-3. Place STOP working orders for hedge cover beyond S/R only to protect an existing open leg (`position_id` required when possible).
+2. Prefer LIMIT entries (buy support / sell resistance) with a LIMIT take-profit in the same decision (bracket). Once filled, amend/manage TP with `position_id`.
+3. Place STOP `hedge_cover` beyond the entry level in the same decision as the entry (or later with `position_id` once the leg exists).
 4. Do NOT use market_open / market_close unless the user prompt explicitly allows market orders, OR `market_clock.flatten_now` is true (hedge flatten only).
 5. Always close winning legs only; keep protection (and further hedges) on losing legs until they can exit in profit.
 6. Output STRICT JSON only — no markdown fences, no prose outside JSON.
@@ -55,7 +55,7 @@ JSON schema:
       "size": number,
       "purpose": "entry|tp|hedge_cover|close",
       "order_id": "optional — required for amend/cancel",
-      "position_id": "required for tp/close; recommended for hedge_cover",
+      "position_id": "for tp/close/hedge on an open leg; omit when bracketing a new entry",
       "reason": "string"
     }
   ]

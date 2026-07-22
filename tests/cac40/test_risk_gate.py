@@ -196,3 +196,118 @@ def test_loss_exit_flag_on_rejects_losing_close_fill():
     assert any(e.get("type") == "rejected_fill" and e.get("reason") == "loss_exit_blocked" for e in events)
     assert pid in ledger.positions
     assert not ledger.working_orders  # cancelled, not left working
+
+
+def test_bracket_entry_tp_hedge_accepted():
+    """Screenshot decision: SELL entry + BUY TP + BUY stop hedge in one batch."""
+    cfg = Cac40Config(order_size=1.0, spread_points=0, prevent_loss_exits=True)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8447.0
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_limit",
+                side="SELL",
+                level=8455.0,
+                size=1.0,
+                purpose="entry",
+            ),
+            LlmAction(
+                op="place_limit",
+                side="BUY",
+                level=8425.0,
+                size=1.0,
+                purpose="tp",
+            ),
+            LlmAction(
+                op="place_stop",
+                side="BUY",
+                level=8465.0,
+                size=1.0,
+                purpose="hedge_cover",
+            ),
+        )
+    )
+    assert len(result.executed) == 3
+    assert not result.rejected
+    by_purpose = {o.purpose.value: o for o in ledger.working_orders.values()}
+    assert "entry" in by_purpose and "tp" in by_purpose and "hedge_cover" in by_purpose
+    entry = by_purpose["entry"]
+    assert by_purpose["tp"].parent_order_id == entry.id
+    assert by_purpose["hedge_cover"].parent_order_id == entry.id
+    assert by_purpose["tp"].position_id is None
+
+
+def test_bracket_hedge_not_beyond_entry_rejected():
+    cfg = Cac40Config(order_size=1.0, spread_points=0)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="SELL", level=101, size=1, purpose="entry"),
+            LlmAction(
+                op="place_stop",
+                side="BUY",
+                level=100,  # below entry — would fire without primary
+                size=1,
+                purpose="hedge_cover",
+            ),
+        )
+    )
+    assert any("hedge_not_beyond_entry" in r for r in result.rejected)
+    assert any(o.purpose.value == "entry" for o in ledger.working_orders.values())
+    assert not any(o.purpose.value == "hedge_cover" for o in ledger.working_orders.values())
+
+
+def test_bracket_prefers_working_entry_over_existing_leg():
+    """With one open leg, a new entry+TP+hedge must bracket the entry, not the old leg."""
+    cfg = Cac40Config(
+        order_size=1.0,
+        spread_points=0,
+        prevent_loss_exits=True,
+        max_open_positions=4,
+        allow_market_orders=True,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    old_pid = ledger.market_open(Side.BUY, 1)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="SELL", level=101, size=1, purpose="entry"),
+            LlmAction(op="place_limit", side="BUY", level=98, size=1, purpose="tp"),
+            LlmAction(
+                op="place_stop", side="BUY", level=103, size=1, purpose="hedge_cover"
+            ),
+        )
+    )
+    assert len(result.executed) == 3
+    assert not result.rejected
+    by_purpose = {o.purpose.value: o for o in ledger.working_orders.values()}
+    entry = by_purpose["entry"]
+    assert by_purpose["tp"].parent_order_id == entry.id
+    assert by_purpose["tp"].position_id is None
+    assert by_purpose["hedge_cover"].parent_order_id == entry.id
+    assert by_purpose["tp"].position_id != old_pid
+
+
+def test_ig_working_order_body_includes_limit_level():
+    from chatbot.cac40.ig_connector import IgConnector
+    from chatbot.cac40.models import OrderPurpose, OrderType, WorkingOrder
+
+    cfg = Cac40Config(epic="IX.D.CAC.IFD.IP")
+    conn = IgConnector(cfg, dry_run=True)
+    order = WorkingOrder(
+        id="o1",
+        type=OrderType.LIMIT,
+        side=Side.SELL,
+        level=8455.0,
+        size=1.0,
+        purpose=OrderPurpose.ENTRY,
+    )
+    body = conn._ig_working_order_body(order, limit_level=8425.0)  # noqa: SLF001
+    assert body["limitLevel"] == 8425.0
+    assert body["level"] == 8455.0
+    conn.close()
