@@ -1480,9 +1480,13 @@ def run_live_cycle_now(
     slug: str,
     *,
     session_factory=None,
+    force_llm: bool = True,
 ) -> dict[str, Any]:
     """
     Force one live/paper cycle for a bot (ignores the candle clock).
+
+    ``force_llm`` (default True): also bypass Adaptive/Fixed LLM schedule so
+    Gemini runs when OHLC is usable. Still skips on stale feed / unresolved desync.
 
     Returns {ok, message, error?, payload?}.
     """
@@ -1569,7 +1573,7 @@ def run_live_cycle_now(
                 tenant_id=tenant.id,
                 session_factory=session_factory,
             )
-            payload = sched.run_once()
+            payload = sched.run_once(force_llm=bool(force_llm))
             _persist_llm_schedule(sched, settings, slug)
             _write_json(live_state_path(settings, slug), sched.ig.ledger.to_state_dict())
             _append_decision(settings, slug, payload)
@@ -1597,6 +1601,7 @@ def run_live_cycle_now(
                     "skipped_llm": bool(payload.get("skipped")),
                     "cycles": prev_cycles + 1,
                     "trigger": "manual",
+                    "force_llm": bool(force_llm),
                     **feed_status,
                 },
             )
@@ -1611,18 +1616,31 @@ def run_live_cycle_now(
                     "tenants_ok": 1,
                     "tenants_failed": 0,
                     "tenants_skipped": 0,
-                    "logs": [f"{slug}: manual cycle ok mode={mode}"],
+                    "logs": [f"{slug}: manual cycle ok mode={mode} force_llm={bool(force_llm)}"],
                     "trigger": "manual",
                 },
             )
-            llm_bit = (
-                "LLM skipped (trigger quiet)"
-                if payload.get("skipped")
-                else (
-                    f"LLM ran · executed={len(payload.get('executed') or [])} "
+            if payload.get("skipped"):
+                reasons = payload.get("llm_trigger") or []
+                ohlc = payload.get("ohlc_feed") or {}
+                if ohlc.get("skip_llm"):
+                    llm_bit = "LLM skipped (stale/gap OHLC)"
+                elif (payload.get("reconcile") or {}).get("desync"):
+                    llm_bit = "LLM skipped (book desync)"
+                else:
+                    llm_bit = (
+                        "LLM skipped (trigger quiet)"
+                        if not force_llm
+                        else "LLM skipped (forced but blocked)"
+                    )
+                if reasons:
+                    llm_bit += f" · {','.join(str(r) for r in reasons)}"
+            else:
+                llm_bit = (
+                    f"LLM ran{' (forced)' if force_llm else ''} · "
+                    f"executed={len(payload.get('executed') or [])} "
                     f"rejected={len(payload.get('rejected') or [])}"
                 )
-            )
             msg = (
                 f"Cycle OK ({mode}) · {llm_bit} · "
                 f"legs={pnl.get('legs_count', 0)} · "

@@ -28,6 +28,7 @@ logger = logging.getLogger(__name__)
 LiveOhlcProvider = Callable[[], LiveOhlcFeed]
 
 TRIGGER_PRE_CLOSE_FLATTEN = "pre_close_flatten"
+TRIGGER_MANUAL_FORCE = "manual_force"
 
 
 class LiveScheduler:
@@ -124,7 +125,13 @@ class LiveScheduler:
                 except Exception:
                     logger.exception("Secondary IG login failed")
 
-    def run_once(self) -> dict[str, Any]:
+    def run_once(self, *, force_llm: bool = False) -> dict[str, Any]:
+        """
+        One live/paper cycle.
+
+        ``force_llm`` (manual Run cycle now): ignore Adaptive/Fixed schedule and
+        call Gemini when OHLC is usable and the book is not in unresolved desync.
+        """
         self.ensure_logged_in()
         self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
         self.last_auto_flatten = None
@@ -236,6 +243,9 @@ class LiveScheduler:
         force_flatten_llm = bool(
             needs_flatten and not skip_llm_feed and not skip_llm_desync
         )
+        force_manual_llm = bool(
+            force_llm and not skip_llm_feed and not skip_llm_desync
+        )
 
         images = {}
         decision = None
@@ -249,6 +259,7 @@ class LiveScheduler:
             and not skip_llm_desync
             and (
                 force_flatten_llm
+                or force_manual_llm
                 or (trig and trig.should_call)
             )
         )
@@ -257,6 +268,12 @@ class LiveScheduler:
             if trig and trig.reasons:
                 llm_trigger_reasons = list(
                     dict.fromkeys([*trig.reasons, TRIGGER_PRE_CLOSE_FLATTEN])
+                )
+        elif force_manual_llm:
+            llm_trigger_reasons = [TRIGGER_MANUAL_FORCE]
+            if trig and trig.reasons:
+                llm_trigger_reasons = list(
+                    dict.fromkeys([*trig.reasons, TRIGGER_MANUAL_FORCE])
                 )
         elif should_call and trig is not None:
             llm_trigger_reasons = list(trig.reasons)

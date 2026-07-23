@@ -256,7 +256,7 @@
   {% if live_stale and live_mode != 'off' %}
   <div class="callout callout--danger">Live worker heartbeat is stale — is <code>worker-cac40-live</code> running? Check <code>./sail logs worker-cac40-live</code>.</div>
   {% elif live_awaiting_first_cycle and live_mode != 'off' %}
-  <div class="callout">Armed — waiting for the next 15m candle slot (:00/:15/:30/:45 +15s, Paris). Use <strong>Run cycle now</strong> to fire immediately.</div>
+  <div class="callout">Armed — waiting for the next 15m candle slot (:00/:15/:30/:45 +15s, Paris). Arming does not call Gemini by itself; the next slot (or <strong>Run cycle now</strong>) does. Adaptive still needs a trigger on auto slots; Run cycle now forces the LLM by default.</div>
   {% endif %}
   {% if live_status.error %}
   <div class="callout callout--danger" style="white-space:pre-wrap;">{{ live_status.error }}</div>
@@ -287,6 +287,10 @@
     </form>
     <button type="button" class="btn-primary btn-sm" id="cac40-live-arm-btn" {% if live_mode == 'live' %}disabled{% endif %}>Arm Live…</button>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/run-once" class="no-loader" style="display:inline;">
+      <label class="checkbox-row" style="display:inline-flex;align-items:center;gap:0.35rem;margin-right:0.35rem;font-size:0.85rem;" title="Bypass Adaptive/Fixed LLM schedule for this cycle">
+        <input type="checkbox" name="force_llm" value="1" checked>
+        Force LLM
+      </label>
       <button type="submit" class="btn-secondary btn-sm" {% if live_mode == 'off' %}disabled{% endif %}
               data-loading="Running cycle…">
         Run cycle now

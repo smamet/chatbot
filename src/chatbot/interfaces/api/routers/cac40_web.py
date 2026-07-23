@@ -754,7 +754,7 @@ def cac40_live_chart(
 
 
 @router.post("/bots/{slug}/cac40/live/run-once")
-def cac40_live_run_once(
+async def cac40_live_run_once(
     request: Request,
     slug: str,
     user: User = Depends(require_user),
@@ -768,11 +768,20 @@ def cac40_live_run_once(
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     _require_cac40_active(tenant, session)
+    form = await request.form()
+    # Checkbox: present "1" when checked (default in UI). Absent when unchecked.
+    force_llm = str(form.get("force_llm") or "").strip().lower() in (
+        "1",
+        "true",
+        "on",
+        "yes",
+    )
     result = run_live_cycle_now(
         session,
         settings,
         slug,
         session_factory=getattr(request.app.state, "session_factory", None),
+        force_llm=force_llm,
     )
     if result.get("ok"):
         return RedirectResponse(

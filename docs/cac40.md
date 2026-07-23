@@ -25,7 +25,8 @@ On **CAC40 Backtest** → **Live trading**:
 3. Save strategy (same knobs as the simulation form, minus period/llm_mode).
 4. **Paper** = Gemini + simulated ledger (no IG order API). **Live** = real working orders (each connector’s DEMO/LIVE env). **Off** = worker skips the bot.
 5. **View results** opens the live report (same decision browser as backtest: charts sent to Gemini + LLM answer). Recent cycles also appear under **Live cycles** on the CAC40 page.
-6. Disarming (Off/Paper) stops new cycles but **does not cancel** IG working orders already placed.
+6. **Arm Live/Paper** does not call Gemini immediately — it waits for the next 15m Paris slot. Auto slots still respect Adaptive/Fixed LLM schedule. **Run cycle now** runs immediately and **Force LLM** (default on) bypasses that schedule (still skips on stale OHLC / unresolved book desync).
+7. Disarming (Off/Paper) stops new cycles but **does not cancel** IG working orders already placed.
 
 ### Weekend / holiday gap protection
 
