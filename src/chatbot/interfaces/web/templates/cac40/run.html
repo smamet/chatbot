@@ -227,7 +227,7 @@
   {% endif %}
 
   {% if run.state.status == 'running' or run.state.status == 'stopping' %}
-  <p class="text-muted" id="cac40-run-poll-hint">Updating progress… (page stays put)</p>
+  <p class="text-muted" id="cac40-run-poll-hint">Updating progress… (reloads quietly when new decisions arrive)</p>
   {% elif live and run.mode in ('paper', 'live') %}
   <p class="text-muted">Live report — refresh the page manually when you want the latest cycles.</p>
   {% endif %}
@@ -317,6 +317,18 @@
 })();
 
 (function () {
+  const SCROLL_KEY = 'cac40-run-scroll:' + location.pathname;
+  try {
+    const saved = sessionStorage.getItem(SCROLL_KEY);
+    if (saved != null) {
+      sessionStorage.removeItem(SCROLL_KEY);
+      const y = Number(saved);
+      if (!Number.isNaN(y)) {
+        requestAnimationFrame(function () { window.scrollTo(0, y); });
+      }
+    }
+  } catch (_) {}
+
   const sub = document.getElementById('cac40-run-subtitle');
   if (!sub || sub.dataset.poll !== '1') return;
   const url = sub.dataset.pollUrl;
@@ -324,8 +336,23 @@
   const hint = document.getElementById('cac40-run-poll-hint');
   const active = new Set(['running', 'stopping', 'pending']);
   let timer = null;
+  let lastDecisionsCount = document.querySelectorAll('.cac40-decision').length;
+  let reloading = false;
+
+  function softReload(message) {
+    if (reloading) return;
+    reloading = true;
+    if (timer) clearInterval(timer);
+    timer = null;
+    if (hint && message) hint.textContent = message;
+    try {
+      sessionStorage.setItem(SCROLL_KEY, String(window.scrollY || 0));
+    } catch (_) {}
+    window.location.reload();
+  }
 
   async function tick() {
+    if (reloading) return;
     try {
       const res = await fetch(url, { headers: { Accept: 'application/json' } });
       if (!res.ok) return;
@@ -345,12 +372,14 @@
       const llm = sub.querySelector('[data-field="llm-calls"]');
       if (llm && data.llm_calls_total != null) llm.textContent = String(data.llm_calls_total);
 
+      const count = Number(data.decisions_count);
+      if (!Number.isNaN(count) && count > lastDecisionsCount) {
+        softReload('New decision — refreshing charts…');
+        return;
+      }
+
       if (!active.has(status)) {
-        if (timer) clearInterval(timer);
-        timer = null;
-        if (hint) hint.textContent = 'Run finished — reloading decisions…';
-        // One reload when done so decision charts appear; scroll only then.
-        window.location.reload();
+        softReload('Run finished — reloading decisions…');
       }
     } catch (_) {}
   }
