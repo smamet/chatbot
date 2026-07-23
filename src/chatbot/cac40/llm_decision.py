@@ -21,9 +21,9 @@ SessionFactory = Callable[[], Session]
 DEFAULT_PROMPT = """You are a discretionary CAC40 mean-reversion trader analyzing candlestick charts.
 
 Profit-only exits (target ~100% win rate on closed trades):
-- NEVER close a leg at a loss. Every TP/close must realize PnL > 0 after spread.
+- NEVER close a leg below the minimum profit in the user payload (min_exit_profit_points). Every TP/close must realize at least that many points after spread.
 - Losing primary stays open under hedge protection; do not scratch both legs.
-- Close a hedge only when it can exit in profit on mean reversion; then TP the primary in profit.
+- Close a hedge only when it can exit with ≥ min_exit_profit_points on mean reversion; otherwise hold or amend TP toward S/R. Then TP the primary in profit.
 - If price keeps running: do not close the losing hedge — place a further STOP hedge_cover (pyramid protection).
 - Avoid flat/scratch exits that only pay the spread.
 
@@ -44,7 +44,7 @@ Rules:
 - Prefer LIMIT entries at support (BUY) / resistance (SELL) and LIMIT take-profits.
 - Place STOP hedge covers only to protect existing legs.
 - Do not use market orders unless explicitly told or flatten_now is true.
-- Close winning legs only; keep protection on losing legs until profitable exit.
+- Close winning legs only (at/above min_exit_profit_points); keep protection on losing legs until profitable exit.
 - Output STRICT JSON only, no markdown.
 
 JSON schema:
@@ -105,6 +105,7 @@ def build_user_payload(
     *,
     order_size: float = 1.0,
     max_open_positions: int = 4,
+    min_exit_profit_points: float = 0.0,
     last_decision: dict[str, Any] | None = None,
     allow_market_orders: bool = False,
     market_clock: dict[str, Any] | None = None,
@@ -115,6 +116,12 @@ def build_user_payload(
         f"Use size={order_size} on every place_* action (never larger aggregates).",
         f"Respect max_open_positions={max_open_positions}.",
     ]
+    min_profit = float(min_exit_profit_points or 0)
+    if min_profit > 0:
+        instructions.append(
+            f"Every tp/close must target at least {min_profit:g} points of profit after spread "
+            "(min_exit_profit_points); smaller exits are rejected by the RiskGate."
+        )
     if allow_market_orders:
         instructions.append("Market orders are allowed when needed to flatten.")
     else:
@@ -136,6 +143,7 @@ def build_user_payload(
         "phase": phase,
         "order_size": order_size,
         "max_open_positions": max_open_positions,
+        "min_exit_profit_points": min_profit,
         "snapshot": snapshot.to_dict(),
         "instructions": " ".join(instructions),
     }
@@ -230,6 +238,7 @@ class GeminiDecisionClient:
         prompt: str | None = None,
         order_size: float = 1.0,
         max_open_positions: int = 4,
+        min_exit_profit_points: float = 0.0,
         last_decision: dict[str, Any] | None = None,
         allow_market_orders: bool = False,
         market_clock: dict[str, Any] | None = None,
@@ -256,6 +265,7 @@ class GeminiDecisionClient:
                     phase,
                     order_size=order_size,
                     max_open_positions=max_open_positions,
+                    min_exit_profit_points=min_exit_profit_points,
                     last_decision=last_decision,
                     allow_market_orders=allow_market_orders,
                     market_clock=market_clock,

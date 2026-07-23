@@ -31,6 +31,7 @@ _CONFIG_DISPLAY_ORDER = (
     "slippage_points",
     "allow_market_orders",
     "prevent_loss_exits",
+    "min_exit_profit_points",
     "flatten_before_close",
     "flatten_lead_minutes",
     "market_close_paris",
@@ -78,6 +79,9 @@ class Cac40Config:
     allow_market_orders: bool = False
     # When True, RiskGate + fills reject exits that would realize PnL ≤ 0 after spread.
     prevent_loss_exits: bool = False
+    # Minimum realized PnL (points × size × point_value) required to place/fill a TP/close.
+    # 0 = off (default). Independent of prevent_loss_exits; typically stricter when set.
+    min_exit_profit_points: float = 0.0
     # Directional flatten before weekend / Euronext holiday IG close (hedge, don't scratch).
     flatten_before_close: bool = True
     flatten_lead_minutes: int = 30

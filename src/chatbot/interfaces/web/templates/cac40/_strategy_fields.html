@@ -29,6 +29,11 @@
   </select>
   <small class="field-hint">Hard gate: reject market closes and TP/close orders that would realize a loss after spread.</small>
 </label>
+<label>Min exit profit (points)
+  <input type="number" step="0.5" min="0" name="min_exit_profit_points"
+         value="{{ cfg.min_exit_profit_points if cfg.min_exit_profit_points is not none else 0 }}">
+  <small class="field-hint">0 = off (default). Exits (TP/close) below this realized PnL in points are rejected by the RiskGate.</small>
+</label>
 <label>LLM schedule
   <select name="llm_trigger_mode" id="{{ prefix }}llm-trigger-mode">
     <option value="levels" {% if cfg.llm_trigger_mode != 'interval' %}selected{% endif %}>

@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass, field
 
 from chatbot.cac40.config import Cac40Config, LastLevels
-from chatbot.cac40.hedge_ledger import HedgeLedger, exit_would_lose
+from chatbot.cac40.hedge_ledger import HedgeLedger, realized_exit_pnl
 from chatbot.cac40.models import (
     LegRole,
     LlmAction,
@@ -116,10 +116,15 @@ class RiskGate:
             return next(iter(self.ledger.positions))
         return None
 
-    def _loss_exit_blocked(self, leg: PositionLeg, exit_price: float) -> bool:
-        if not self.config.prevent_loss_exits:
-            return False
-        return exit_would_lose(leg, exit_price, self.config.point_value)
+    def _exit_blocked_reason(self, leg: PositionLeg, exit_price: float) -> str | None:
+        """Return reject reason for a too-small / losing exit, or None if allowed."""
+        pnl = realized_exit_pnl(leg, exit_price, self.config.point_value)
+        min_profit = float(self.config.min_exit_profit_points or 0)
+        if min_profit > 0 and pnl < min_profit:
+            return "min_profit_blocked"
+        if self.config.prevent_loss_exits and pnl <= 0:
+            return "loss_exit_blocked"
+        return None
 
     @staticmethod
     def _hedge_beyond_entry(hedge_side: Side, hedge_level: float, entry: WorkingOrder) -> bool:
@@ -172,8 +177,9 @@ class RiskGate:
                         exit_px = self.ledger.estimate_exit_fill(
                             side, float(action.level), order_type=OrderType.LIMIT
                         )
-                        if self._loss_exit_blocked(leg, exit_px):
-                            result.rejected.append("place_limit:loss_exit_blocked")
+                        blocked = self._exit_blocked_reason(leg, exit_px)
+                        if blocked:
+                            result.rejected.append(f"place_limit:{blocked}")
                             return
                 else:
                     entry = self._find_working_entry(opposite_of=side)
@@ -188,8 +194,9 @@ class RiskGate:
                         exit_px = self.ledger.estimate_exit_fill(
                             side, float(action.level), order_type=OrderType.LIMIT
                         )
-                        if self._loss_exit_blocked(synth, exit_px):
-                            result.rejected.append("place_limit:loss_exit_blocked")
+                        blocked = self._exit_blocked_reason(synth, exit_px)
+                        if blocked:
+                            result.rejected.append(f"place_limit:{blocked}")
                             return
                         parent_order_id = entry.id
                     else:
@@ -203,8 +210,9 @@ class RiskGate:
                             exit_px = self.ledger.estimate_exit_fill(
                                 side, float(action.level), order_type=OrderType.LIMIT
                             )
-                            if self._loss_exit_blocked(leg, exit_px):
-                                result.rejected.append("place_limit:loss_exit_blocked")
+                            blocked = self._exit_blocked_reason(leg, exit_px)
+                            if blocked:
+                                result.rejected.append(f"place_limit:{blocked}")
                                 return
             if purpose == "hedge_cover":
                 if action.position_id:
@@ -269,8 +277,9 @@ class RiskGate:
                         exit_px = self.ledger.estimate_exit_fill(
                             side, float(action.level), order_type=OrderType.STOP
                         )
-                        if self._loss_exit_blocked(leg, exit_px):
-                            result.rejected.append("place_stop:loss_exit_blocked")
+                        blocked = self._exit_blocked_reason(leg, exit_px)
+                        if blocked:
+                            result.rejected.append(f"place_stop:{blocked}")
                             return
                 else:
                     entry = self._find_working_entry(opposite_of=side)
@@ -285,8 +294,9 @@ class RiskGate:
                         exit_px = self.ledger.estimate_exit_fill(
                             side, float(action.level), order_type=OrderType.STOP
                         )
-                        if self._loss_exit_blocked(synth, exit_px):
-                            result.rejected.append("place_stop:loss_exit_blocked")
+                        blocked = self._exit_blocked_reason(synth, exit_px)
+                        if blocked:
+                            result.rejected.append(f"place_stop:{blocked}")
                             return
                         parent_order_id = entry.id
                     else:
@@ -300,8 +310,9 @@ class RiskGate:
                             exit_px = self.ledger.estimate_exit_fill(
                                 side, float(action.level), order_type=OrderType.STOP
                             )
-                            if self._loss_exit_blocked(leg, exit_px):
-                                result.rejected.append("place_stop:loss_exit_blocked")
+                            blocked = self._exit_blocked_reason(leg, exit_px)
+                            if blocked:
+                                result.rejected.append(f"place_stop:{blocked}")
                                 return
             if purpose == "hedge_cover" or not purpose:
                 purpose = purpose or "hedge_cover"
@@ -359,8 +370,9 @@ class RiskGate:
                     exit_px = self.ledger.estimate_exit_fill(
                         existing.side, float(action.level), order_type=existing.type
                     )
-                    if self._loss_exit_blocked(leg, exit_px):
-                        result.rejected.append("amend_order:loss_exit_blocked")
+                    blocked = self._exit_blocked_reason(leg, exit_px)
+                    if blocked:
+                        result.rejected.append(f"amend_order:{blocked}")
                         return
             self.ledger.amend_order(action.order_id, level=float(action.level))
             result.executed.append(f"amend_order:{action.order_id}->{action.level}")
@@ -409,8 +421,9 @@ class RiskGate:
             leg = self.ledger.positions.get(action.position_id)
             if leg is not None:
                 exit_px = self.ledger.market_close_fill_price(leg)
-                if self._loss_exit_blocked(leg, exit_px):
-                    result.rejected.append("market_close:loss_exit_blocked")
+                blocked = self._exit_blocked_reason(leg, exit_px)
+                if blocked:
+                    result.rejected.append(f"market_close:{blocked}")
                     return
             self.ledger.market_close(action.position_id)
             result.executed.append(f"market_close:{action.position_id}")
