@@ -35,7 +35,7 @@ Book continuity:
 - If a plan is already working, prefer hold with empty actions or amend/cancel only.
 - New entry MUST include tp + reverse-side hedge_cover STOP in the SAME decision. TP attaches on the entry (arms on fill). hedge_cover is NOT a stop-loss — it force-opens an opposing hedge leg and is placed on IG immediately with the entry.
 - After a primary exists with no new S/R entry idea: manage with position_id; pyramid hedge_cover only while breaking.
-- Size must equal order_size. Prefer fewer actions; set the full bracket at once.
+- Entry/TP size must equal order_size. hedge_cover size must cover full unprotected exposure (all same-side open lots + working entries), e.g. 2 longs → SELL hedge size 2. Prefer fewer actions; set the full bracket at once.
 
 Weekend / holiday gap protection (CRITICAL):
 - When market_clock.flatten_now is true, the book MUST be directionally flat (net size 0) before close.
@@ -116,7 +116,9 @@ def build_user_payload(
     instructions = [
         "Manage the existing book first. Do not duplicate entries already in working_orders.",
         "Prefer empty actions or amend/cancel when the prior plan is still valid.",
-        f"Use size={order_size} on every place_* action (never larger aggregates).",
+        f"Use size={order_size} on entry/tp place_* actions (never larger aggregates).",
+        "For hedge_cover, size must cover full unprotected directional exposure "
+        "(sum of same-side open legs + working entries); RiskGate enforces this.",
         f"Respect max_open_positions={max_open_positions}.",
     ]
     if allow_market_orders:

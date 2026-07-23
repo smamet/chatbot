@@ -64,12 +64,42 @@ class RiskGate:
     def _clamp_size(self, action: LlmAction) -> float:
         return float(self.config.order_size)
 
+    def _exposure_with_entries(self) -> float:
+        """Signed exposure including working ENTRY orders (+BUY / −SELL)."""
+        exp = float(self.ledger.net_size())
+        for order in self.ledger.working_orders.values():
+            if order.purpose != OrderPurpose.ENTRY:
+                continue
+            exp += float(order.size) if order.side == Side.BUY else -float(order.size)
+        return exp
+
+    def _hedge_cover_size(self, hedge_side: Side) -> float:
+        """Size hedge to cover full unprotected directional exposure, not just order_size.
+
+        Example: two BUY legs (or one leg + one BUY entry) → SELL hedge_cover size 2.
+        Filled opposing hedge legs already reduce net_size(), so only the residual is covered.
+        """
+        exp = self._exposure_with_entries()
+        need = exp if hedge_side == Side.SELL else -exp
+        if need > 0:
+            return float(need)
+        # Bracket hedge before net flips (entry just placed, flat residual): use entry size.
+        entry = self._find_working_entry(opposite_of=hedge_side)
+        if entry is not None:
+            return float(entry.size)
+        return float(self.config.order_size)
+
     def _flatten_hedge_size(self, action: LlmAction) -> float:
         """Use requested size (or |net|) during weekend flatten — not order_size clamp."""
         if action.size is not None and float(action.size) > 0:
             return abs(float(action.size))
         net = abs(float(self.ledger.net_size()))
         return net if net > 0 else float(self.config.order_size)
+
+    def _size_for_place(self, action: LlmAction, *, side: Side, purpose: str) -> float:
+        if purpose == "hedge_cover":
+            return self._hedge_cover_size(side)
+        return self._clamp_size(action)
 
     def _has_entry_working(self, side: Side) -> bool:
         for order in self.ledger.working_orders.values():
@@ -241,7 +271,7 @@ class RiskGate:
                 type=OrderType.LIMIT,
                 side=side,
                 level=float(action.level),
-                size=self._clamp_size(action),
+                size=self._size_for_place(action, side=side, purpose=purpose or "entry"),
                 purpose=OrderPurpose(purpose or "entry"),
                 position_id=action.position_id,
                 parent_order_id=parent_order_id,
@@ -339,7 +369,9 @@ class RiskGate:
                 type=OrderType.STOP,
                 side=side,
                 level=float(action.level),
-                size=self._clamp_size(action),
+                size=self._size_for_place(
+                    action, side=side, purpose=purpose or "hedge_cover"
+                ),
                 purpose=OrderPurpose(purpose or "hedge_cover"),
                 position_id=action.position_id,
                 parent_order_id=parent_order_id,

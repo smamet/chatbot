@@ -198,6 +198,97 @@ def test_loss_exit_flag_on_rejects_losing_close_fill():
     assert not ledger.working_orders  # cancelled, not left working
 
 
+def test_hedge_cover_sizes_to_full_long_exposure():
+    """Two BUY legs → SELL hedge_cover must be size 2, not order_size."""
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8340
+    ledger.market_open(Side.BUY, 1)
+    ledger.market_open(Side.BUY, 1)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_stop",
+                side="SELL",
+                level=8330.0,
+                size=1.0,
+                purpose="hedge_cover",
+            )
+        )
+    )
+    assert result.executed
+    assert not result.rejected
+    hedge = next(iter(ledger.working_orders.values()))
+    assert hedge.purpose.value == "hedge_cover"
+    assert hedge.size == 2.0
+
+
+def test_hedge_cover_includes_working_entry_with_open_leg():
+    """Open BUY + new BUY entry → SELL hedge covers both (size 2)."""
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+        prevent_loss_exits=True,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8345
+    ledger.market_open(Side.BUY, 1)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=8338, size=1, purpose="entry"),
+            LlmAction(op="place_limit", side="SELL", level=8360, size=1, purpose="tp"),
+            LlmAction(
+                op="place_stop", side="SELL", level=8330, size=1, purpose="hedge_cover"
+            ),
+        )
+    )
+    assert len(result.executed) == 3
+    assert not result.rejected
+    hedge = next(
+        o for o in ledger.working_orders.values() if o.purpose.value == "hedge_cover"
+    )
+    assert hedge.size == 2.0
+
+
+def test_hedge_cover_residual_after_filled_opposing_hedge():
+    """+2 BUY and −1 SELL filled → further SELL hedge covers residual 1 only."""
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8340
+    ledger.market_open(Side.BUY, 1)
+    ledger.market_open(Side.BUY, 1)
+    ledger.market_open(Side.SELL, 1)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_stop",
+                side="SELL",
+                level=8330.0,
+                size=1.0,
+                purpose="hedge_cover",
+            )
+        )
+    )
+    assert result.executed
+    hedge = next(iter(ledger.working_orders.values()))
+    assert hedge.size == 1.0
+
+
 def test_bracket_entry_tp_hedge_accepted():
     """Screenshot decision: SELL entry + BUY TP + BUY stop hedge in one batch."""
     cfg = Cac40Config(order_size=1.0, spread_points=0, prevent_loss_exits=True)

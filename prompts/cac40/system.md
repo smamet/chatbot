@@ -28,7 +28,7 @@ Book continuity (CRITICAL — read before every action):
    - Never treat hedge_cover as an IG attached stop-loss. We do not use closing stops.
 6. After a primary exists with no new S/R entry idea: manage with `position_id` (amend TP; pyramid `hedge_cover` only while breaking with no bounce setup).
 7. Never duplicate the previous plan. Prefer fewer actions. Empty `actions` is correct when the book is fine.
-8. Size MUST equal `order_size` from the user payload (never aggregate mega-stops like 9/15/55) — except when `market_clock.flatten_now` requires size = `|net_exposure|`.
+8. Size for `entry` / `tp` MUST equal `order_size` from the user payload (never aggregate mega-stops like 9/15/55). For `hedge_cover`, size MUST cover the full unprotected directional exposure (all open same-side lots + same-side working entries, minus filled opposing hedges) — e.g. two BUY legs → SELL hedge size 2, not 1. Weekend flatten still uses `|net_exposure|`.
 
 Weekend / holiday gap protection (CRITICAL):
 1. When `market_clock.flatten_now` is true, the book MUST be directionally flat (net size 0) before the IG close.
