@@ -288,23 +288,31 @@ def test_mirror_entry_with_tp_child_sends_limit_level(tmp_path: Path):
     )
 
     def _push(order, *, currency=None, limit_level=None, stop_level=None):
-        order.deal_id = "WO_ENTRY_1"
-        assert order.id == entry.id
-        assert limit_level == 8425.0
         assert stop_level is None  # never IG attached stop-loss
+        if order.id == entry.id:
+            assert limit_level == 8425.0
+            order.deal_id = "WO_ENTRY_1"
+        elif order.id == hedge.id:
+            assert order.purpose == OrderPurpose.HEDGE_COVER
+            assert limit_level is None
+            order.deal_id = "WO_HEDGE_1"
+        else:
+            raise AssertionError(f"unexpected push for {order.id}")
         return order
 
     sched.ig.push_working_order = MagicMock(side_effect=_push)
     from chatbot.cac40.risk_gate import GateResult
 
     sched._mirror_orders_to_ig(GateResult(executed=[f"place_limit:{entry.id}"]))
-    assert sched.ig.push_working_order.called
+    assert sched.ig.push_working_order.call_count == 2
     book = sched._load_order_book(0)
     assert book.get(entry.id) == "WO_ENTRY_1"
     assert book.get(tp.id) == "attached:WO_ENTRY_1"
-    assert hedge.id not in book  # dormant until primary fills
+    assert book.get(hedge.id) == "WO_HEDGE_1"  # same cycle, forceOpen STOP
+    vias = {p["order_id"]: p.get("via") for p in sched.last_mirror_results[0]["placed"]}
+    assert vias.get(hedge.id) == "force_open_hedge"
     errs = sched.last_mirror_results[0].get("errors") or []
-    assert not any("hedge" in e and "failed" in e for e in errs)
+    assert not errs
 
 
 def test_mirror_hedge_force_opens_after_primary(tmp_path: Path):

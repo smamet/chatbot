@@ -32,7 +32,7 @@ Profit-only exits (target ~100% win rate on closed trades):
 Book continuity:
 - Read snapshot.positions and snapshot.working_orders first.
 - If a plan is already working, prefer hold with empty actions or amend/cancel only.
-- New entry MUST include tp + reverse-side hedge_cover STOP in the SAME decision. TP attaches on the entry (arms on fill). hedge_cover is NOT a stop-loss — it force-opens an opposing hedge leg; the system places it on IG only after the entry fills.
+- New entry MUST include tp + reverse-side hedge_cover STOP in the SAME decision. TP attaches on the entry (arms on fill). hedge_cover is NOT a stop-loss — it force-opens an opposing hedge leg and is placed on IG immediately with the entry.
 - After a primary exists: manage with position_id; further hedge_cover STOP = more reverse-side hedge legs, never a closing stop.
 - Size must equal order_size. Prefer fewer actions; set the full bracket at once.
 

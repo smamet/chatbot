@@ -990,14 +990,6 @@ class LiveScheduler:
                     and order.parent_order_id in desired
                 ):
                     continue
-                # Hedge children stay local-only until the entry fills (primary exists).
-                # Then we push a forceOpen STOP on the reverse side — not IG stopLevel.
-                if (
-                    order.purpose == OrderPurpose.HEDGE_COVER
-                    and order.parent_order_id
-                    and order.parent_order_id in desired
-                ):
-                    continue
                 if order.purpose == OrderPurpose.CLOSE and order.parent_order_id:
                     if order.parent_order_id in desired:
                         continue
@@ -1036,21 +1028,8 @@ class LiveScheduler:
                         )
                         continue
 
-                    # Hedge cover: forceOpen reverse STOP/LIMIT — never IG stopLevel.
-                    if order.purpose == OrderPurpose.HEDGE_COVER:
-                        leg = (
-                            self.ig.ledger.positions.get(order.position_id or "")
-                            if order.position_id
-                            else None
-                        )
-                        if leg is None or not (leg.deal_id or "").strip():
-                            # Wait until a primary exists (entry filled).
-                            row["deferred"].append(
-                                f"place:{local_id}:hedge_awaits_primary"
-                            )
-                            continue
-                        # Fall through to normal place (forceOpen working order).
-
+                    # Hedge cover: place immediately as forceOpen reverse STOP/LIMIT
+                    # (same cycle as entry). Never IG stopLevel on the primary.
                     limit_level: float | None = None
                     tp_child_id: str | None = None
                     if order.purpose == OrderPurpose.ENTRY:

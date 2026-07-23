@@ -23,7 +23,7 @@ Book continuity (CRITICAL — read before every action):
 4. Do NOT place a new entry when you already have an open primary for that idea — manage exits instead.
 5. New idea bracket (set most orders at once):
    - Every new `purpose: "entry"` MUST include a `purpose: "tp"` in the **same** decision (LIMIT entry + LIMIT take-profit). Omit `position_id` on both — the system attaches TP on the entry (`limitLevel`) so it arms when the entry fills.
-   - Also include `purpose: "hedge_cover"` as a STOP on the **reverse side** in that same decision (BUY stop ≥ short entry; SELL stop ≤ long entry). This is NOT a stop-loss. It is a force-open STOP MARKET that opens an opposing hedge leg if price breaks — hedge mode, never close the primary at a loss. The system holds that hedge dormant until the entry fills, then places it on IG.
+   - Also include `purpose: "hedge_cover"` as a STOP on the **reverse side** in that same decision (BUY stop ≥ short entry; SELL stop ≤ long entry). This is NOT a stop-loss. It is a force-open STOP MARKET placed on IG immediately with the entry — opens an opposing hedge leg if price breaks; never close the primary at a loss.
    - Never treat hedge_cover as an IG attached stop-loss. We do not use closing stops.
 6. After a primary exists: manage with `position_id` (amend TP; further pyramid `hedge_cover` STOP on the reverse side only to open another hedge leg).
 7. Never duplicate the previous plan. Prefer fewer actions. Empty `actions` is correct when the book is fine.
