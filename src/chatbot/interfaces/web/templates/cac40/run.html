@@ -110,7 +110,7 @@
 
 <section class="card">
   <h2>LLM decisions &amp; charts</h2>
-  <p class="text-muted">Charts below are exactly what was sent to Gemini at each decision point, with the model analysis and RiskGate result. “Accepted” means RiskGate placed/amended/cancelled working orders — not candle fills.</p>
+  <p class="text-muted">Charts below are exactly what was sent to Gemini at each decision point, with the model analysis and RiskGate result. “Accepted” means RiskGate updated the <em>local</em> book — check Mirror below for what was pushed to IG.</p>
   {% if run.decisions %}
   <div class="cac40-decision-list">
     {% for d in run.decisions %}
@@ -197,16 +197,28 @@
         </table>
         {% endif %}
 
-        {% if d.executed or d.rejected or d.llm_error or d.llm_mode == 'charts_only' %}
+        {% if d.executed or d.rejected or d.mirror or d.llm_error or d.llm_mode == 'charts_only' %}
         <div class="cac40-gate-result">
           {% if d.llm_mode == 'charts_only' %}
           <p class="text-muted"><strong>Charts only</strong> — Gemini was not called.</p>
           {% endif %}
           {% if d.executed %}
-          <p><strong>Accepted:</strong> <code>{{ d.executed|join(', ') }}</code></p>
+          <p><strong>Accepted (ledger):</strong> <code>{{ d.executed|join(', ') }}</code></p>
           {% endif %}
           {% if d.rejected %}
           <p><strong>Rejected:</strong> <code>{{ d.rejected|join(', ') }}</code></p>
+          {% endif %}
+          {% if d.mirror %}
+          {% for m in d.mirror %}
+          <p>
+            <strong>Mirror IG #{{ m.connector_id }}:</strong>
+            {% if m.placed %}<code>placed={{ m.placed|map(attribute='order_id')|list|join(', ') }}</code>{% endif %}
+            {% if m.cancelled %}<code>cancelled={{ m.cancelled|map(attribute='order_id')|list|join(', ') }}</code>{% endif %}
+            {% if m.deferred %}<code>deferred={{ m.deferred|join(', ') }}</code>{% endif %}
+            {% if m.errors %}<code class="badge failed">errors={{ m.errors|join(', ') }}</code>{% endif %}
+            {% if not m.placed and not m.cancelled and not m.deferred and not m.errors %}<code>no-op</code>{% endif %}
+          </p>
+          {% endfor %}
           {% endif %}
           {% if d.llm_error %}
           <p><strong>LLM error:</strong> <code>{{ d.llm_error }}</code></p>

@@ -398,19 +398,18 @@ class IgConnector:
         """
         Rough product family for an epic: SPREADBET | CFD | UNKNOWN.
 
-        DAILY.* / GBP-only index epics are typically UK spread bets.
-        CFS / IFS / IDF / CASH tags (and EUR/USD currencies) are typically CFDs.
+        Do NOT treat ``DAILY`` alone as spread-bet — IG's France 40 Cash CFD epic is
+        ``IX.D.CAC.DAILY.IP`` (daily-funded CFD). Prefer explicit instrument tags, then
+        market currencies (GBP-only → spread bet; EUR/USD → CFD).
         """
         ep = (epic or self.config.epic or "").strip().upper()
         parts = ep.split(".")
         tag = parts[3] if len(parts) >= 4 else ""
-        if tag in ("DAILY", "TODAY") or "DAILY" in ep:
-            return "SPREADBET"
         if tag in ("CFS", "IFS", "IDF", "IFA", "CASH", "CFD") or any(
             t in ep for t in (".CFS.", ".IFS.", ".IDF.", ".CASH.", ".CFD.")
         ):
             return "CFD"
-        allowed = self.market_currency_codes(epic=epic) if market is None else []
+        allowed: list[str] = []
         if market is not None:
             instrument = (market.get("instrument") or {}) if isinstance(market, dict) else {}
             for row in instrument.get("currencies") or []:
@@ -418,10 +417,16 @@ class IgConnector:
                     code = str(row["code"]).strip().upper()
                     if code and code not in allowed:
                         allowed.append(code)
+        else:
+            try:
+                allowed = self.market_currency_codes(epic=epic)
+            except Exception:
+                allowed = []
         if allowed == ["GBP"]:
             return "SPREADBET"
         if any(c in allowed for c in ("EUR", "USD")) and "GBP" not in allowed:
             return "CFD"
+        # DAILY/TODAY without currency proof: UNKNOWN (compatible) — not SPREADBET.
         return "UNKNOWN"
 
     def epic_compatible_with_account(
@@ -839,7 +844,12 @@ class IgConnector:
         return leg.id
 
     def cancel_working_order(self, deal_id: str) -> dict[str, Any]:
-        """DELETE /workingorders/otc/{dealId}."""
+        """Cancel OTC working order (IG: POST + ``_method: DELETE``, not bare DELETE).
+
+        A plain HTTP DELETE often returns ``validation.null-not-allowed.request`` on
+        IG's public gateway. The official trading-ig client tunnels deletes as POST
+        with an ``_method: DELETE`` header and an empty JSON body.
+        """
         did = (deal_id or "").strip()
         if not did:
             raise IgApiError("IG cancel requires dealId")
@@ -847,10 +857,11 @@ class IgConnector:
             logger.info("IG dry-run cancel dealId=%s", did)
             return {"dealId": did, "dry_run": True}
         url = f"{self.base_url}/workingorders/otc/{did}"
-        # API v1 and v2 both exist; try v2 then v1.
         last_exc: IgApiError | None = None
         for version in ("2", "1"):
-            resp = self._client.delete(url, headers=self._headers(version=version))
+            headers = dict(self._headers(version=version))
+            headers["_method"] = "DELETE"
+            resp = self._client.post(url, headers=headers, json={})
             if not resp.is_error:
                 payload = resp.json() if resp.content else {}
                 return payload if isinstance(payload, dict) else {"raw": payload}
@@ -862,8 +873,11 @@ class IgConnector:
                 code = str((resp.json() or {}).get("errorCode") or "")
             except Exception:
                 pass
-            if "not.found" not in code.lower():
-                raise last_exc
+            # Already gone — treat as success so the local order book can drop it.
+            if "not.found" in code.lower() or "cannot.be.found" in code.lower():
+                logger.info("IG cancel dealId=%s already gone (%s)", did, code or "not.found")
+                return {"dealId": did, "already_gone": True}
+            # Try the other API version before giving up.
         assert last_exc is not None
         raise last_exc
 

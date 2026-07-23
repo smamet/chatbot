@@ -953,6 +953,38 @@ class LiveScheduler:
                 self.last_mirror_results.append(row)
                 continue
 
+            remote_deal_ids: set[str] = set()
+            try:
+                for raw in conn.list_working_orders() or []:
+                    if not isinstance(raw, dict):
+                        continue
+                    wo = raw.get("workingOrderData") if isinstance(raw.get("workingOrderData"), dict) else raw
+                    did = str(
+                        (wo or {}).get("dealId")
+                        or raw.get("dealId")
+                        or ""
+                    ).strip()
+                    if did:
+                        remote_deal_ids.add(did)
+            except Exception as exc:
+                row["errors"].append(f"list_working_orders:{exc}")
+                logger.exception(
+                    "list_working_orders failed connector=%s", connector_id
+                )
+
+            # Stale book rows (deal gone on IG but still mapped) block re-place — drop them.
+            for local_id, deal_id in list(book.items()):
+                deal_s = str(deal_id or "")
+                if deal_s.startswith("attached:"):
+                    continue
+                if deal_s and remote_deal_ids and deal_s not in remote_deal_ids:
+                    book.pop(local_id, None)
+                    logger.info(
+                        "Dropped stale order-book mapping order=%s deal=%s",
+                        local_id,
+                        deal_s,
+                    )
+
             # Cancel orders no longer in the primary ledger.
             for local_id, deal_id in list(book.items()):
                 if local_id in desired:
@@ -972,6 +1004,17 @@ class LiveScheduler:
                     book.pop(local_id, None)
                     row["cancelled"].append({"order_id": local_id, "deal_id": deal_id})
                 except Exception as exc:
+                    # If IG already has no such deal, drop the mapping and continue.
+                    if deal_s and remote_deal_ids and deal_s not in remote_deal_ids:
+                        book.pop(local_id, None)
+                        row["cancelled"].append(
+                            {
+                                "order_id": local_id,
+                                "deal_id": deal_id,
+                                "via": "already_gone",
+                            }
+                        )
+                        continue
                     row["errors"].append(f"cancel:{local_id}:{exc}")
                     logger.exception(
                         "IG cancel failed connector=%s order=%s", connector_id, local_id
