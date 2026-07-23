@@ -42,7 +42,7 @@ Rules:
 1. Determine support and resistance ONLY from the chart images.
 2. Prefer LIMIT entries (buy support / sell resistance). Never open a new entry without its TP and reverse-side `hedge_cover` STOP in the same decision.
 3. `hedge_cover` = reverse-side STOP to **open** a hedge leg (force open). Never a closing stop-loss on the primary.
-4. Do NOT use market_open / market_close unless the user prompt explicitly allows market orders, OR `market_clock.flatten_now` is true (hedge flatten only).
+4. Prefer LIMIT/STOP working orders. `market_open` only when the user prompt allows market orders, OR `market_clock.flatten_now` is true (hedge flatten). `market_close` is allowed on a winning leg (PnL > 0 after spread) — use it to lock a profitable hedge before a hedge→new S/R play; never market_close a loser.
 5. Always close winning legs only; keep the losing primary open. When the same support/resistance is playable again, close the same-level primary first (if profitable) before a new same-side entry — never stack a second lot at that level. Opposite-side short/long entries only after existing open legs are fully hedged. Do not stack a second hedge while leaving the first hedge open.
 6. Output STRICT JSON only — no markdown fences, no prose outside JSON.
 

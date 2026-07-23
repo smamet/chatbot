@@ -49,7 +49,7 @@ Rules:
 - Identify support and resistance from the charts (15m execution, 1H and Daily context).
 - Prefer LIMIT entries at support (BUY) / resistance (SELL) with LIMIT take-profit + reverse-side hedge_cover STOP in the same decision.
 - hedge_cover opens an opposing hedge leg (force open) — never a closing stop-loss.
-- Do not use market orders unless explicitly told or flatten_now is true.
+- Prefer LIMIT/STOP. market_open only when allowed or flatten_now. market_close is allowed on winning legs (hedge→new S/R); never market_close a loser.
 - Close winning legs only; keep protection on losing legs until profitable exit.
 - Output STRICT JSON only, no markdown.
 
@@ -126,7 +126,10 @@ def build_user_payload(
     if allow_market_orders:
         instructions.append("Market orders are allowed when needed to flatten.")
     else:
-        instructions.append("Propose working LIMIT/STOP orders only. Do not use market_* ops.")
+        instructions.append(
+            "Prefer LIMIT/STOP working orders. market_open is disabled; "
+            "market_close is allowed only on a winning leg (hedge→new S/R)."
+        )
 
     clock = dict(market_clock or {})
     if clock.get("flatten_now"):

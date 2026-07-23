@@ -20,6 +20,28 @@ def test_rejects_market_when_disabled():
     assert any("market_disabled" in r for r in result.rejected)
 
 
+def test_allows_profitable_market_close_when_market_orders_disabled():
+    """Hedge→new S/R: lock a winning hedge even when allow_market_orders is off."""
+    from chatbot.cac40.models import LegRole
+
+    cfg = Cac40Config(allow_market_orders=False, spread_points=0, prevent_loss_exits=True)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    primary = ledger._open_leg(Side.BUY, 1.0, 100.0, LegRole.PRIMARY)
+    hedge = ledger._open_leg(Side.SELL, 1.0, 95.0, LegRole.HEDGE)
+    ledger.last_price = 90  # short hedge profitable
+    gate = RiskGate(cfg, ledger)
+
+    lost = gate.apply(_decision(LlmAction(op="market_close", position_id=primary.id)))
+    assert any("market_disabled" in r for r in lost.rejected)
+    assert primary.id in ledger.positions
+
+    won = gate.apply(_decision(LlmAction(op="market_close", position_id=hedge.id)))
+    assert won.executed
+    assert hedge.id not in ledger.positions
+    assert primary.id in ledger.positions
+
+
 def test_max_open_positions_counts_legs():
     cfg = Cac40Config(max_open_positions=1, allow_market_orders=True, spread_points=0)
     ledger = HedgeLedger(config=cfg)

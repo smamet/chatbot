@@ -206,13 +206,24 @@ class RiskGate:
         purpose = (action.purpose or "").strip().lower()
 
         if op in ("market_open", "market_close") and not self.config.allow_market_orders:
-            # Weekend/holiday flatten may market-hedge even when market orders are off.
+            # Exceptions when market orders are off:
+            # - weekend/holiday flatten may market-hedge
+            # - profitable market_close (hedge→new S/R rotation)
             purpose_l = (action.purpose or "").strip().lower()
-            if not (
+            flatten_ok = (
                 self.flatten_active
                 and op == "market_open"
                 and purpose_l in ("hedge_cover", "hedge", "")
-            ):
+            )
+            profit_close_ok = False
+            if op == "market_close" and action.position_id:
+                leg = self.ledger.positions.get(action.position_id)
+                if leg is not None:
+                    exit_px = self.ledger.market_close_fill_price(leg)
+                    profit_close_ok = not exit_would_lose(
+                        leg, exit_px, self.config.point_value
+                    )
+            if not (flatten_ok or profit_close_ok):
                 result.rejected.append(f"{op}:market_disabled")
                 return
 
