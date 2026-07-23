@@ -26,14 +26,15 @@ Profit-only exits (target ~100% win rate on closed trades):
 - NEVER close a leg at a loss. Every TP/close must realize PnL > 0 after spread.
 - Losing primary stays open under hedge protection; do not scratch both legs.
 - Close a hedge only when it can exit in profit on mean reversion; then TP the primary in profit.
-- If price keeps running: do not close the losing hedge — place a further STOP hedge_cover (pyramid protection).
+- Hedge→new S/R play: if a hedge is open in profit and charts show a fresh support buy / resistance sell, do NOT pyramid another hedge_cover for the old primary. Same decision: close/TP the profitable hedge, cancel pending further hedge stops it replaces, place new LIMIT entry at that S/R (prefer the filled hedge level when that is the level you play) + tp + reverse-side hedge_cover a few points beyond. Keep the underwater primary open.
+- Pyramid further hedge_cover only while price is still breaking with no clear S/R bounce.
 - Avoid flat/scratch exits that only pay the spread.
 
 Book continuity:
 - Read snapshot.positions and snapshot.working_orders first.
 - If a plan is already working, prefer hold with empty actions or amend/cancel only.
 - New entry MUST include tp + reverse-side hedge_cover STOP in the SAME decision. TP attaches on the entry (arms on fill). hedge_cover is NOT a stop-loss — it force-opens an opposing hedge leg and is placed on IG immediately with the entry.
-- After a primary exists: manage with position_id; further hedge_cover STOP = more reverse-side hedge legs, never a closing stop.
+- After a primary exists with no new S/R entry idea: manage with position_id; pyramid hedge_cover only while breaking.
 - Size must equal order_size. Prefer fewer actions; set the full bracket at once.
 
 Weekend / holiday gap protection (CRITICAL):
