@@ -2373,7 +2373,7 @@ async def test_connector_working_orders(
     user_service: UserService = Depends(get_user_service),
     session: Session = Depends(get_session),
 ):
-    """DEMO-only: place far working orders, wait 5s, cancel them."""
+    """DEMO-only: place far working orders (LIMIT+attached TP), wait, cancel them."""
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
     form = await request.form()

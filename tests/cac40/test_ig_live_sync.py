@@ -245,6 +245,53 @@ def test_market_close_live_posts_ig(tmp_path: Path):
     assert leg.id not in conn.ledger.positions
 
 
+def test_mirror_entry_with_tp_child_sends_limit_level(tmp_path: Path):
+    """Same-cycle entry+TP must push IG working order with attached limitLevel."""
+    cfg = _cfg()
+    sched = LiveScheduler(
+        cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
+    )
+    sched.ig._cst = "cst"
+    sched.ig.epic_compatible_with_account = MagicMock(return_value=True)
+    ledger = sched.ig.ledger
+    entry = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.SELL,
+            level=8455.0,
+            size=1.0,
+            purpose=OrderPurpose.ENTRY,
+        )
+    )
+    tp = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.BUY,
+            level=8425.0,
+            size=1.0,
+            purpose=OrderPurpose.TP,
+            parent_order_id=entry.id,
+        )
+    )
+
+    def _push(order, *, currency=None, limit_level=None, stop_level=None):
+        order.deal_id = "WO_ENTRY_1"
+        assert order.id == entry.id
+        assert limit_level == 8425.0
+        return order
+
+    sched.ig.push_working_order = MagicMock(side_effect=_push)
+    from chatbot.cac40.risk_gate import GateResult
+
+    sched._mirror_orders_to_ig(GateResult(executed=[f"place_limit:{entry.id}"]))
+    assert sched.ig.push_working_order.called
+    book = sched._load_order_book(0)
+    assert book.get(entry.id) == "WO_ENTRY_1"
+    assert book.get(tp.id) == "attached:WO_ENTRY_1"
+
+
 def test_mirror_attaches_tp_instead_of_force_open(tmp_path: Path):
     cfg = _cfg()
     sched = LiveScheduler(

@@ -307,7 +307,10 @@ def test_ig_working_order_body_includes_limit_level():
         size=1.0,
         purpose=OrderPurpose.ENTRY,
     )
-    body = conn._ig_working_order_body(order, limit_level=8425.0)  # noqa: SLF001
+    body = conn._ig_working_order_body(
+        order, limit_level=8425.0, stop_level=8465.0
+    )  # noqa: SLF001
     assert body["limitLevel"] == 8425.0
+    assert body["stopLevel"] == 8465.0
     assert body["level"] == 8455.0
     conn.close()

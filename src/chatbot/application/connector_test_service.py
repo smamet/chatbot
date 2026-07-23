@@ -155,7 +155,9 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
     """
     DEMO-only smoke test: place far working orders, wait, cancel them.
 
-    No market open/close — only LIMIT/STOP working orders away from mid.
+    No market open/close. LIMIT entries are submitted with an attached
+    ``limitLevel`` (take-profit) so IG arms TP the moment the entry fills —
+    same path as live bracket mirror.
     """
     import httpx
     import time
@@ -266,11 +268,18 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         market_status = str(snapshot.get("marketStatus") or "—")
         size = max(size, min_size)
         offset = max(80.0, float(ig.snap_level(mid * 0.01)))
-        specs = [
-            (OrderType.LIMIT, Side.BUY, ig.snap_level(mid - offset), "BUY LIMIT below"),
-            (OrderType.LIMIT, Side.SELL, ig.snap_level(mid + offset), "SELL LIMIT above"),
-            (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above"),
-            (OrderType.STOP, Side.SELL, ig.snap_level(mid - offset), "SELL STOP below"),
+        tp_offset = max(40.0, float(ig.snap_level(offset * 0.5)))
+        # LIMIT entries carry attached take-profit (IG limitLevel).
+        # BUY entry below mid → TP above entry; SELL entry above mid → TP below.
+        buy_entry = ig.snap_level(mid - offset)
+        sell_entry = ig.snap_level(mid + offset)
+        buy_tp = ig.snap_level(buy_entry + tp_offset)
+        sell_tp = ig.snap_level(sell_entry - tp_offset)
+        specs: list[tuple[OrderType, Side, float, str, float | None]] = [
+            (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below + TP", buy_tp),
+            (OrderType.LIMIT, Side.SELL, sell_entry, "SELL LIMIT above + TP", sell_tp),
+            (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above", None),
+            (OrderType.STOP, Side.SELL, ig.snap_level(mid - offset), "SELL STOP below", None),
         ]
         # Only probe currencies the market actually lists (plus resolved pick).
         currency_candidates: list[str] = []
@@ -308,7 +317,7 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         lines.append("")
 
         working_currency = currency_candidates[0]
-        probe_type, probe_side, probe_level, probe_label = specs[0]
+        probe_type, probe_side, probe_level, probe_label, probe_tp = specs[0]
         probe_ok = False
         for ccy in currency_candidates:
             try:
@@ -322,12 +331,14 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
                         purpose=OrderPurpose.ENTRY,
                     ),
                     currency=ccy,
+                    limit_level=probe_tp,
                 )
                 placed.append(order)
                 working_currency = ccy
                 probe_ok = True
+                tp_bit = f" · TP@{probe_tp:.2f}" if probe_tp is not None else ""
                 lines.append(
-                    f"ACCEPTED {probe_label} @ {order.level:.2f} · currency={ccy} "
+                    f"ACCEPTED {probe_label} @ {order.level:.2f}{tp_bit} · currency={ccy} "
                     f"· dealId={order.deal_id or '—'} · ref={order.client_ref or '—'}"
                 )
                 break
@@ -345,7 +356,8 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
 
         accepted = 1
         rejected = 0
-        for otype, side, level, label in specs[1:]:
+        attached_tp_expected = 1 if probe_tp is not None else 0
+        for otype, side, level, label, tp_level in specs[1:]:
             try:
                 order = ig.place_order(
                     WorkingOrder(
@@ -357,11 +369,15 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
                         purpose=OrderPurpose.ENTRY,
                     ),
                     currency=working_currency,
+                    limit_level=tp_level,
                 )
                 placed.append(order)
                 accepted += 1
+                if tp_level is not None:
+                    attached_tp_expected += 1
+                tp_bit = f" · TP@{tp_level:.2f}" if tp_level is not None else ""
                 lines.append(
-                    f"ACCEPTED {label} @ {order.level:.2f} · currency={working_currency} "
+                    f"ACCEPTED {label} @ {order.level:.2f}{tp_bit} · currency={working_currency} "
                     f"· dealId={order.deal_id or '—'} · ref={order.client_ref or '—'}"
                 )
             except IgAuthError as exc:
@@ -369,18 +385,32 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
                 lines.append(f"REJECTED {label} @ {level:.2f}: {exc}")
         lines.append("")
         lines.append(f"Using currency={working_currency} for this test.")
+        lines.append(
+            "LIMIT orders use IG attached limitLevel (take-profit arms when the entry fills)."
+        )
         lines.append("")
         open_orders = ig.list_working_orders()
         lines.append(f"Open working orders on account now: {len(open_orders)}")
+        attached_tp_seen = 0
         for row in open_orders:
+            lim = row.get("limitLevel")
+            stp = row.get("stopLevel")
+            if lim is not None and str(lim).strip() not in ("", "None", "0", "0.0"):
+                attached_tp_seen += 1
+            lim_s = f" limitLevel={lim}" if lim is not None else ""
+            stp_s = f" stopLevel={stp}" if stp is not None else ""
             lines.append(
                 f"  · dealId={row.get('dealId') or '—'} "
                 f"{row.get('direction') or ''} {row.get('orderType') or row.get('type') or ''} "
                 f"@ {row.get('orderLevel') or row.get('level') or '—'} "
-                f"epic={row.get('epic') or '—'}"
+                f"epic={row.get('epic') or '—'}{lim_s}{stp_s}"
             )
         if not open_orders:
             lines.append("  (none)")
+        lines.append(
+            f"Attached TP on open WOs: seen={attached_tp_seen} "
+            f"(expected≥{attached_tp_expected} for the LIMIT entries)"
+        )
         lines.append("")
         lines.append(f"Holding {hold_seconds:.0f}s before cancel…")
         time.sleep(max(0.5, float(hold_seconds)))
@@ -410,11 +440,20 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         lines.append(
             f"Done · accepted={accepted} · rejected={rejected} · "
             f"cancelled={cancel_ok} · cancel_failed={cancel_fail} · "
-            f"still_open={len(remaining)}"
+            f"still_open={len(remaining)} · attached_tp_seen={attached_tp_seen}"
         )
         lines.append("")
         lines.append(context)
+        # Soft-fail if IG accepted LIMIT+TP but list omitted limitLevel (some envs
+        # hide it until fill). Hard-fail only when place/cancel themselves fail.
         ok = accepted > 0 and rejected == 0 and cancel_fail == 0 and len(remaining) == 0
+        if ok and attached_tp_expected > 0 and attached_tp_seen < 1:
+            lines.append("")
+            lines.append(
+                "Note: LIMIT+TP places were ACCEPTED but limitLevel was not visible "
+                "on GET /workingorders — check the IG Working Orders ticket for "
+                "attached profit. Not treated as a hard failure."
+            )
         return ConnectorTestResult(ok=ok, message="\n".join(lines), error=None if ok else context)
     except IgAuthError as exc:
         return ConnectorTestResult(ok=False, message=str(exc), error=context)

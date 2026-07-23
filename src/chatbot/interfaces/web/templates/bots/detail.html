@@ -701,7 +701,7 @@
           <ol class="confirm-dialog__steps">
             <li>
               <span class="confirm-dialog__step-num">1</span>
-              <span>Place 4 working orders far from mid (BUY/SELL LIMIT + BUY/SELL STOP)</span>
+              <span>Place BUY/SELL LIMIT far from mid with attached take-profit (IG <code>limitLevel</code> — TP arms when the entry fills), plus BUY/SELL STOP</span>
             </li>
             <li>
               <span class="confirm-dialog__step-num">2</span>
@@ -709,10 +709,10 @@
             </li>
             <li>
               <span class="confirm-dialog__step-num">3</span>
-              <span>Cancel all four orders and report deal IDs here</span>
+              <span>Cancel all orders and report deal IDs + attached TP levels here</span>
             </li>
           </ol>
-          <p class="confirm-dialog__note">LIVE is blocked. Confirm Environment = DEMO and the Demo API key before continuing. Leave the Working Orders tab open on IG while the test runs.</p>
+          <p class="confirm-dialog__note">LIVE is blocked. Confirm Environment = DEMO and the Demo API key before continuing. Leave the Working Orders tab open on IG while the test runs — LIMIT tickets should show an attached profit level.</p>
         </div>
         <div class="confirm-dialog__actions">
           <button type="button" class="btn-secondary" id="ig-order-test-cancel">Cancel</button>
