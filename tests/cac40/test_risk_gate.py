@@ -221,9 +221,9 @@ def test_rejects_same_level_same_side_entry():
     assert not any(o.purpose.value == "entry" for o in ledger.working_orders.values())
 
 
-def test_allows_opposite_side_short_entry_with_open_long():
-    """Open BUY does not block a new SELL entry (short sell, not TP)."""
-    from chatbot.cac40.models import LegRole
+def test_rejects_opposite_side_entry_while_longs_unhedged():
+    """Naked BUY legs must be hedged before a new SELL entry is allowed."""
+    from chatbot.cac40.models import LegRole, OrderPurpose, OrderType, WorkingOrder
 
     cfg = Cac40Config(
         order_size=1.0,
@@ -235,7 +235,65 @@ def test_allows_opposite_side_short_entry_with_open_long():
     )
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 8380
+    ledger._open_leg(Side.BUY, 1.0, 8420.0, LegRole.PRIMARY)
     ledger._open_leg(Side.BUY, 1.0, 8341.0, LegRole.PRIMARY)
+    gate = RiskGate(cfg, ledger)
+    naked = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="SELL", level=8380.0, size=1, purpose="entry"),
+        )
+    )
+    assert any("unhedged_open_book" in r for r in naked.rejected)
+
+    # Hedge longs first in the same decision, then short entry is allowed.
+    ok = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_stop", side="SELL", level=8330.0, size=1, purpose="hedge_cover"
+            ),
+            LlmAction(op="place_limit", side="SELL", level=8380.0, size=1, purpose="entry"),
+            LlmAction(op="place_limit", side="BUY", level=8350.0, size=1, purpose="tp"),
+            LlmAction(
+                op="place_stop", side="BUY", level=8390.0, size=1, purpose="hedge_cover"
+            ),
+        )
+    )
+    assert any(e.startswith("place_limit:") and "@8380" in e for e in ok.executed)
+    assert not any("unhedged_open_book" in r for r in ok.rejected)
+    long_hedge = next(
+        o
+        for o in ledger.working_orders.values()
+        if o.purpose == OrderPurpose.HEDGE_COVER and o.side == Side.SELL
+    )
+    assert long_hedge.size == 2.0
+
+
+def test_allows_opposite_side_short_entry_when_longs_hedged():
+    """Open BUY with working SELL hedge → SELL entry (short) is allowed."""
+    from chatbot.cac40.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+        llm_level_band_points=15.0,
+        prevent_loss_exits=True,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8380
+    p1 = ledger._open_leg(Side.BUY, 1.0, 8341.0, LegRole.PRIMARY)
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.SELL,
+            level=8330.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            position_id=p1.id,
+        )
+    )
     gate = RiskGate(cfg, ledger)
     result = gate.apply(
         _decision(
@@ -326,8 +384,12 @@ def test_hedge_cover_includes_working_entry_with_open_leg():
     # Primary far from new support entry so same_level_primary does not fire.
     ledger._open_leg(Side.BUY, 1.0, 8420.0, LegRole.PRIMARY)
     gate = RiskGate(cfg, ledger)
+    # Hedge existing long first, then new entry (+ hedge sized to cover both).
     result = gate.apply(
         _decision(
+            LlmAction(
+                op="place_stop", side="SELL", level=8400, size=1, purpose="hedge_cover"
+            ),
             LlmAction(op="place_limit", side="BUY", level=8338, size=1, purpose="entry"),
             LlmAction(op="place_limit", side="SELL", level=8360, size=1, purpose="tp"),
             LlmAction(
@@ -335,12 +397,14 @@ def test_hedge_cover_includes_working_entry_with_open_leg():
             ),
         )
     )
-    assert len(result.executed) == 3
-    assert not result.rejected
-    hedge = next(
-        o for o in ledger.working_orders.values() if o.purpose.value == "hedge_cover"
-    )
-    assert hedge.size == 2.0
+    assert not any("unhedged_open_book" in r for r in result.rejected)
+    assert any(o.purpose.value == "entry" for o in ledger.working_orders.values())
+    sell_hedges = [
+        o
+        for o in ledger.working_orders.values()
+        if o.purpose.value == "hedge_cover" and o.side == Side.SELL
+    ]
+    assert sum(o.size for o in sell_hedges) == 2.0
 
 
 def test_hedge_cover_residual_after_filled_opposing_hedge():
@@ -496,6 +560,10 @@ def test_bracket_prefers_working_entry_over_existing_leg():
     gate = RiskGate(cfg, ledger)
     result = gate.apply(
         _decision(
+            # Protect existing long before opposite-side short entry.
+            LlmAction(
+                op="place_stop", side="SELL", level=95, size=1, purpose="hedge_cover"
+            ),
             LlmAction(op="place_limit", side="SELL", level=101, size=1, purpose="entry"),
             LlmAction(op="place_limit", side="BUY", level=98, size=1, purpose="tp"),
             LlmAction(
@@ -503,14 +571,18 @@ def test_bracket_prefers_working_entry_over_existing_leg():
             ),
         )
     )
-    assert len(result.executed) == 3
     assert not result.rejected
-    by_purpose = {o.purpose.value: o for o in ledger.working_orders.values()}
-    entry = by_purpose["entry"]
-    assert by_purpose["tp"].parent_order_id == entry.id
-    assert by_purpose["tp"].position_id is None
-    assert by_purpose["hedge_cover"].parent_order_id == entry.id
-    assert by_purpose["tp"].position_id != old_pid
+    entry = next(o for o in ledger.working_orders.values() if o.purpose.value == "entry")
+    tp = next(o for o in ledger.working_orders.values() if o.purpose.value == "tp")
+    short_hedge = next(
+        o
+        for o in ledger.working_orders.values()
+        if o.purpose.value == "hedge_cover" and o.side == Side.BUY
+    )
+    assert tp.parent_order_id == entry.id
+    assert tp.position_id is None
+    assert short_hedge.parent_order_id == entry.id
+    assert tp.position_id != old_pid
 
 
 def test_ig_working_order_body_includes_limit_level():

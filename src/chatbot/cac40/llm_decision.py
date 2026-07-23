@@ -27,7 +27,8 @@ Profit-only exits (target ~100% win rate on closed trades):
 - Losing primary stays open under hedge protection; do not scratch both legs.
 - Close a hedge only when it can exit in profit on mean reversion; then TP the primary in profit.
 - Hedge→new S/R play: if a hedge is open in profit and charts show a fresh support buy / resistance sell, do NOT pyramid another hedge_cover for the old primary. Same decision: close/TP the profitable hedge, cancel pending further hedge stops it replaces, place new LIMIT entry at that S/R (prefer the filled hedge level when that is the level you play) + tp + reverse-side hedge_cover a few points beyond. Keep other underwater primaries open.
-- Same-level stack forbidden: never same-side entry at/near an open primary fill. Close that primary first if profitable, then re-enter. Opposite-side short/long entry is allowed (e.g. longs open → SELL entry at resistance is a short, not a TP).
+- Same-level stack forbidden: never same-side entry at/near an open primary fill. Close that primary first if profitable, then re-enter.
+- Hedge the open book before new risk: never open a new entry while existing legs are unhedged — place hedge_cover covering full unprotected size first. Opposite-side short/long entry only after the book is protected.
 - Pyramid further hedge_cover only while price is still breaking with no clear S/R bounce.
 - Avoid flat/scratch exits that only pay the spread.
 

@@ -118,6 +118,35 @@ class RiskGate:
                 return True
         return False
 
+    def _unprotected_open_size(self, side: Side) -> float:
+        """Open lots on ``side`` not covered by opposing filled legs or working hedges."""
+        open_sz = sum(
+            float(leg.size)
+            for leg in self.ledger.positions.values()
+            if leg.side == side
+        )
+        if open_sz <= 0:
+            return 0.0
+        hedge_side = Side.SELL if side == Side.BUY else Side.BUY
+        covered = sum(
+            float(leg.size)
+            for leg in self.ledger.positions.values()
+            if leg.side == hedge_side
+        )
+        covered += sum(
+            float(order.size)
+            for order in self.ledger.working_orders.values()
+            if order.purpose == OrderPurpose.HEDGE_COVER and order.side == hedge_side
+        )
+        return max(0.0, open_sz - covered)
+
+    def _has_unprotected_open_book(self) -> bool:
+        """True if any open BUY or SELL legs lack full hedge cover."""
+        return (
+            self._unprotected_open_size(Side.BUY) > 1e-9
+            or self._unprotected_open_size(Side.SELL) > 1e-9
+        )
+
     def _find_working_entry(self, *, opposite_of: Side | None = None) -> WorkingOrder | None:
         """Latest ENTRY working order, optionally opposite the child side (TP/hedge)."""
         entries = [
@@ -206,6 +235,10 @@ class RiskGate:
                     return
                 if self._same_level_primary(side, float(action.level)):
                     result.rejected.append("place_limit:same_level_primary")
+                    return
+                # Do not add new directional risk while existing legs are naked.
+                if self.ledger.positions and self._has_unprotected_open_book():
+                    result.rejected.append("place_limit:unhedged_open_book")
                     return
             if purpose in ("tp", "close"):
                 # Prefer explicit position_id; else bracket a working entry; else auto-link
@@ -309,6 +342,9 @@ class RiskGate:
                     return
                 if self._same_level_primary(side, float(action.level)):
                     result.rejected.append("place_stop:same_level_primary")
+                    return
+                if self.ledger.positions and self._has_unprotected_open_book():
+                    result.rejected.append("place_stop:unhedged_open_book")
                     return
             if purpose in ("tp", "close"):
                 if action.position_id:
