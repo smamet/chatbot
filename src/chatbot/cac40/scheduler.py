@@ -178,19 +178,8 @@ class LiveScheduler:
 
         flatten_meta = self._build_flatten_meta()
         flatten_active = bool(flatten_meta.get("flatten_now"))
-        bar_positions_due = bool(
-            not self.dry_run
-            and bar_ts
-            and bar_ts != self._last_positions_bar_ts
-        )
-        need_positions = (
-            flatten_active
-            or self._force_position_reconcile
-            or self._mirror_needs_positions
-            or bar_positions_due
-            or bool(wo_sync.get("changed"))
-        )
-        reconcile = self._reconcile_positions_from_ig(force=need_positions)
+        # Live: always reconcile positions from IG (incl. Run cycle now). Paper skips.
+        reconcile = self._reconcile_positions_from_ig(force=not self.dry_run)
         if reconcile.get("ran"):
             self._force_position_reconcile = False
             self._mirror_needs_positions = False
@@ -469,15 +458,18 @@ class LiveScheduler:
 
     def _sync_working_orders_from_ig(self) -> dict[str, Any]:
         """
-        Live: drop local working orders whose IG dealId vanished.
+        Live: drop local WOs whose IG dealId vanished; adopt IG WOs missing locally.
 
         Never open/close legs from WO disappearance alone — that requires
         GET /positions (see ``_reconcile_positions_from_ig``). Attached
         sentinels (``attached:…``) are ignored here.
         """
+        from chatbot.application.cac40_live_service import adopt_ig_snapshot_into_ledger
+
         out: dict[str, Any] = {
             "ran": False,
             "dropped": [],
+            "imported": [],
             "changed": False,
             "warnings": [],
         }
@@ -493,7 +485,7 @@ class LiveScheduler:
         remote_ids = {
             str(row.get("dealId") or "").strip()
             for row in remote
-            if str(row.get("dealId") or "").strip()
+            if isinstance(row, dict) and str(row.get("dealId") or "").strip()
         }
         for oid, order in list(self.ig.ledger.working_orders.items()):
             deal_id = (order.deal_id or "").strip()
@@ -512,6 +504,34 @@ class LiveScheduler:
             )
             out["changed"] = True
             out.setdefault("pending_position_check", True)
+
+        # Import IG working orders not yet in the local ledger (additive).
+        try:
+            adopt = adopt_ig_snapshot_into_ledger(
+                self.ig.ledger,
+                positions=[],
+                working_orders=list(remote),
+                epic=self.config.epic,
+                mode="additive",
+            )
+            imported = list(adopt.get("imported_orders") or [])
+            if imported:
+                out["imported"] = imported
+                out["changed"] = True
+                try:
+                    primary_id = self.order_connectors[0][0]
+                    book = self._load_order_book(primary_id)
+                    for row in imported:
+                        oid = str(row.get("id") or "")
+                        did = str(row.get("deal_id") or "")
+                        if oid and did:
+                            book[oid] = did
+                    self._save_order_book(primary_id, book)
+                except Exception:
+                    logger.exception("Failed to update order book after WO adopt")
+        except Exception as exc:
+            logger.exception("adopt working orders failed")
+            out["warnings"].append(f"working_order_adopt:{exc}")
         return out
 
     def _reconcile_positions_from_ig(self, *, force: bool = False) -> dict[str, Any]:

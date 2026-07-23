@@ -253,6 +253,7 @@ def test_mirror_entry_with_tp_child_sends_limit_level(tmp_path: Path):
     )
     sched.ig._cst = "cst"
     sched.ig.epic_compatible_with_account = MagicMock(return_value=True)
+    sched.ig.list_working_orders = MagicMock(return_value=[])
     ledger = sched.ig.ledger
     entry = ledger.place_order(
         WorkingOrder(
@@ -323,6 +324,7 @@ def test_mirror_hedge_force_opens_after_primary(tmp_path: Path):
     )
     sched.ig._cst = "cst"
     sched.ig.epic_compatible_with_account = MagicMock(return_value=True)
+    sched.ig.list_working_orders = MagicMock(return_value=[])
     ledger = sched.ig.ledger
     leg = ledger._open_leg(Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_P")
     hedge = ledger.place_order(
@@ -366,6 +368,7 @@ def test_mirror_attaches_tp_instead_of_force_open(tmp_path: Path):
     )
     sched.ig._cst = "cst"
     sched.ig.epic_compatible_with_account = MagicMock(return_value=True)
+    sched.ig.list_working_orders = MagicMock(return_value=[])
     ledger = sched.ig.ledger
     leg = ledger._open_leg(Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_P")
     tp = ledger.place_order(

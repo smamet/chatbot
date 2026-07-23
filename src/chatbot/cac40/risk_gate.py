@@ -108,6 +108,16 @@ class RiskGate:
                 return True
         return False
 
+    def _same_level_primary(self, side: Side, level: float) -> bool:
+        """True if an open same-side leg sits within llm_level_band_points of level."""
+        band = abs(float(self.config.llm_level_band_points or 15.0))
+        for leg in self.ledger.positions.values():
+            if leg.side != side:
+                continue
+            if abs(float(leg.entry) - float(level)) <= band:
+                return True
+        return False
+
     def _find_working_entry(self, *, opposite_of: Side | None = None) -> WorkingOrder | None:
         """Latest ENTRY working order, optionally opposite the child side (TP/hedge)."""
         entries = [
@@ -193,6 +203,9 @@ class RiskGate:
                     return
                 if self._has_entry_working(side):
                     result.rejected.append("place_limit:duplicate_entry")
+                    return
+                if self._same_level_primary(side, float(action.level)):
+                    result.rejected.append("place_limit:same_level_primary")
                     return
             if purpose in ("tp", "close"):
                 # Prefer explicit position_id; else bracket a working entry; else auto-link
@@ -293,6 +306,9 @@ class RiskGate:
                     return
                 if self._has_entry_working(side):
                     result.rejected.append("place_stop:duplicate_entry")
+                    return
+                if self._same_level_primary(side, float(action.level)):
+                    result.rejected.append("place_stop:same_level_primary")
                     return
             if purpose in ("tp", "close"):
                 if action.position_id:

@@ -198,6 +198,86 @@ def test_loss_exit_flag_on_rejects_losing_close_fill():
     assert not ledger.working_orders  # cancelled, not left working
 
 
+def test_rejects_same_level_same_side_entry():
+    from chatbot.cac40.models import LegRole
+
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+        llm_level_band_points=15.0,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8345
+    ledger._open_leg(Side.BUY, 1.0, 8341.0, LegRole.PRIMARY)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=8340.0, size=1, purpose="entry")
+        )
+    )
+    assert any("same_level_primary" in r for r in result.rejected)
+    assert not any(o.purpose.value == "entry" for o in ledger.working_orders.values())
+
+
+def test_allows_opposite_side_short_entry_with_open_long():
+    """Open BUY does not block a new SELL entry (short sell, not TP)."""
+    from chatbot.cac40.models import LegRole
+
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+        llm_level_band_points=15.0,
+        prevent_loss_exits=True,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8380
+    ledger._open_leg(Side.BUY, 1.0, 8341.0, LegRole.PRIMARY)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="SELL", level=8420.0, size=1, purpose="entry"),
+            LlmAction(op="place_limit", side="BUY", level=8380.0, size=1, purpose="tp"),
+            LlmAction(
+                op="place_stop", side="BUY", level=8430.0, size=1, purpose="hedge_cover"
+            ),
+        )
+    )
+    assert len(result.executed) == 3
+    assert not result.rejected
+    assert any(
+        o.purpose.value == "entry" and o.side == Side.SELL
+        for o in ledger.working_orders.values()
+    )
+
+
+def test_same_level_entry_allowed_after_primary_closed():
+    from chatbot.cac40.models import LegRole
+
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+        llm_level_band_points=15.0,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8350
+    leg = ledger._open_leg(Side.BUY, 1.0, 8341.0, LegRole.PRIMARY)
+    ledger.close_position(leg.id, 8350.0)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=8340.0, size=1, purpose="entry")
+        )
+    )
+    assert result.executed
+    assert not any("same_level_primary" in r for r in result.rejected)
+
+
 def test_hedge_cover_sizes_to_full_long_exposure():
     """Two BUY legs → SELL hedge_cover must be size 2, not order_size."""
     cfg = Cac40Config(
@@ -230,17 +310,21 @@ def test_hedge_cover_sizes_to_full_long_exposure():
 
 
 def test_hedge_cover_includes_working_entry_with_open_leg():
-    """Open BUY + new BUY entry → SELL hedge covers both (size 2)."""
+    """Open BUY + new BUY entry at a different level → SELL hedge covers both (size 2)."""
+    from chatbot.cac40.models import LegRole
+
     cfg = Cac40Config(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
         max_open_positions=4,
         prevent_loss_exits=True,
+        llm_level_band_points=15.0,
     )
     ledger = HedgeLedger(config=cfg)
-    ledger.last_price = 8345
-    ledger.market_open(Side.BUY, 1)
+    ledger.last_price = 8380
+    # Primary far from new support entry so same_level_primary does not fire.
+    ledger._open_leg(Side.BUY, 1.0, 8420.0, LegRole.PRIMARY)
     gate = RiskGate(cfg, ledger)
     result = gate.apply(
         _decision(
