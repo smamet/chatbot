@@ -940,6 +940,7 @@ class LiveScheduler:
                 "connector_id": connector_id,
                 "placed": [],
                 "cancelled": [],
+                "deferred": [],
                 "errors": [],
             }
             try:
@@ -980,26 +981,33 @@ class LiveScheduler:
             for local_id, order in desired.items():
                 if local_id in book:
                     continue
-                # Bracket children of a still-working entry: attach on the entry WO,
-                # never push as standalone forceOpen (rogue opposite position).
-                if order.parent_order_id and order.parent_order_id in desired:
-                    if order.purpose in (
-                        OrderPurpose.TP,
-                        OrderPurpose.HEDGE_COVER,
-                        OrderPurpose.CLOSE,
-                    ):
+                # TP children of a still-working entry: attach via limitLevel on the
+                # entry (IG take-profit). Never attach stopLevel — that is a closing
+                # stop-loss, not our reverse-side hedge.
+                if (
+                    order.purpose == OrderPurpose.TP
+                    and order.parent_order_id
+                    and order.parent_order_id in desired
+                ):
+                    continue
+                # Hedge children stay local-only until the entry fills (primary exists).
+                # Then we push a forceOpen STOP on the reverse side — not IG stopLevel.
+                if (
+                    order.purpose == OrderPurpose.HEDGE_COVER
+                    and order.parent_order_id
+                    and order.parent_order_id in desired
+                ):
+                    continue
+                if order.purpose == OrderPurpose.CLOSE and order.parent_order_id:
+                    if order.parent_order_id in desired:
                         continue
-                # Already-attached sentinel on ledger — skip HTTP.
+                # Already-attached TP sentinel on ledger — skip HTTP.
                 if (order.deal_id or "").startswith("attached:"):
                     book[local_id] = order.deal_id
                     continue
                 try:
-                    # Post-fill TP/stop: attach on the open IG deal (PUT position).
-                    if order.purpose in (
-                        OrderPurpose.TP,
-                        OrderPurpose.HEDGE_COVER,
-                        OrderPurpose.CLOSE,
-                    ):
+                    # Take-profit on an open deal: attach limitLevel (closing TP).
+                    if order.purpose in (OrderPurpose.TP, OrderPurpose.CLOSE):
                         leg = (
                             self.ig.ledger.positions.get(order.position_id or "")
                             if order.position_id
@@ -1007,20 +1015,9 @@ class LiveScheduler:
                         )
                         deal_for_attach = (leg.deal_id or "").strip() if leg else ""
                         if deal_for_attach:
-                            stop_lvl = (
-                                float(order.level)
-                                if order.purpose == OrderPurpose.HEDGE_COVER
-                                else None
-                            )
-                            limit_lvl = (
-                                float(order.level)
-                                if order.purpose in (OrderPurpose.TP, OrderPurpose.CLOSE)
-                                else None
-                            )
                             conn.update_position_protection(
                                 deal_for_attach,
-                                stop_level=stop_lvl,
-                                limit_level=limit_lvl,
+                                limit_level=float(order.level),
                             )
                             sentinel = f"attached:{deal_for_attach}"
                             book[local_id] = sentinel
@@ -1030,35 +1027,47 @@ class LiveScheduler:
                                 {
                                     "order_id": local_id,
                                     "deal_id": sentinel,
-                                    "via": "position_attach",
+                                    "via": "position_attach_tp",
                                 }
                             )
                             continue
-                        # No primary deal yet — wait (do not forceOpen a close/hedge).
                         row["errors"].append(
                             f"place:{local_id}:pending_primary_deal"
                         )
                         continue
 
+                    # Hedge cover: forceOpen reverse STOP/LIMIT — never IG stopLevel.
+                    if order.purpose == OrderPurpose.HEDGE_COVER:
+                        leg = (
+                            self.ig.ledger.positions.get(order.position_id or "")
+                            if order.position_id
+                            else None
+                        )
+                        if leg is None or not (leg.deal_id or "").strip():
+                            # Wait until a primary exists (entry filled).
+                            row["deferred"].append(
+                                f"place:{local_id}:hedge_awaits_primary"
+                            )
+                            continue
+                        # Fall through to normal place (forceOpen working order).
+
                     limit_level: float | None = None
-                    stop_level: float | None = None
                     tp_child_id: str | None = None
-                    stop_child_id: str | None = None
                     if order.purpose == OrderPurpose.ENTRY:
                         for cid, child in desired.items():
-                            if child.parent_order_id != local_id:
-                                continue
-                            if child.purpose == OrderPurpose.TP:
+                            if (
+                                child.parent_order_id == local_id
+                                and child.purpose == OrderPurpose.TP
+                            ):
                                 limit_level = float(child.level)
                                 tp_child_id = cid
-                            elif child.purpose == OrderPurpose.HEDGE_COVER:
-                                stop_level = float(child.level)
-                                stop_child_id = cid
+                                break
                     if conn is self.ig:
                         pushed = conn.push_working_order(
                             order,
                             limit_level=limit_level,
-                            stop_level=stop_level,
+                            # Never attach stopLevel — hedge is a separate forceOpen STOP.
+                            stop_level=None,
                         )
                         deal_id = pushed.deal_id
                     else:
@@ -1075,22 +1084,32 @@ class LiveScheduler:
                         pushed = conn.place_order(
                             clone,
                             limit_level=limit_level,
-                            stop_level=stop_level,
+                            stop_level=None,
                         )
                         deal_id = pushed.deal_id
                     if not deal_id:
                         raise IgApiError("IG place returned empty dealId")
                     book[local_id] = deal_id
-                    row["placed"].append({"order_id": local_id, "deal_id": deal_id})
-                    for child_id in (tp_child_id, stop_child_id):
-                        if child_id and child_id not in book:
-                            book[child_id] = f"attached:{deal_id}"
-                            row["placed"].append(
-                                {
-                                    "order_id": child_id,
-                                    "deal_id": f"attached:{deal_id}",
-                                }
-                            )
+                    row["placed"].append(
+                        {
+                            "order_id": local_id,
+                            "deal_id": deal_id,
+                            "via": (
+                                "force_open_hedge"
+                                if order.purpose == OrderPurpose.HEDGE_COVER
+                                else "working_order"
+                            ),
+                        }
+                    )
+                    if tp_child_id and tp_child_id not in book:
+                        book[tp_child_id] = f"attached:{deal_id}"
+                        row["placed"].append(
+                            {
+                                "order_id": tp_child_id,
+                                "deal_id": f"attached:{deal_id}",
+                                "via": "entry_limitLevel",
+                            }
+                        )
                 except Exception as exc:
                     row["errors"].append(f"place:{local_id}:{exc}")
                     logger.exception(

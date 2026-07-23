@@ -275,11 +275,23 @@ def test_mirror_entry_with_tp_child_sends_limit_level(tmp_path: Path):
             parent_order_id=entry.id,
         )
     )
+    hedge = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=8470.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            parent_order_id=entry.id,
+        )
+    )
 
     def _push(order, *, currency=None, limit_level=None, stop_level=None):
         order.deal_id = "WO_ENTRY_1"
         assert order.id == entry.id
         assert limit_level == 8425.0
+        assert stop_level is None  # never IG attached stop-loss
         return order
 
     sched.ig.push_working_order = MagicMock(side_effect=_push)
@@ -290,6 +302,53 @@ def test_mirror_entry_with_tp_child_sends_limit_level(tmp_path: Path):
     book = sched._load_order_book(0)
     assert book.get(entry.id) == "WO_ENTRY_1"
     assert book.get(tp.id) == "attached:WO_ENTRY_1"
+    assert hedge.id not in book  # dormant until primary fills
+    errs = sched.last_mirror_results[0].get("errors") or []
+    assert not any("hedge" in e and "failed" in e for e in errs)
+
+
+def test_mirror_hedge_force_opens_after_primary(tmp_path: Path):
+    """hedge_cover on an open primary is a forceOpen reverse STOP, not stopLevel."""
+    cfg = _cfg()
+    sched = LiveScheduler(
+        cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
+    )
+    sched.ig._cst = "cst"
+    sched.ig.epic_compatible_with_account = MagicMock(return_value=True)
+    ledger = sched.ig.ledger
+    leg = ledger._open_leg(Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_P")
+    hedge = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=8470.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            position_id=leg.id,
+        )
+    )
+    sched.ig.update_position_protection = MagicMock(
+        side_effect=AssertionError("must not attach stopLevel for hedge")
+    )
+
+    def _push(order, *, currency=None, limit_level=None, stop_level=None):
+        assert order.id == hedge.id
+        assert order.purpose == OrderPurpose.HEDGE_COVER
+        assert stop_level is None
+        assert limit_level is None
+        order.deal_id = "WO_HEDGE_1"
+        return order
+
+    sched.ig.push_working_order = MagicMock(side_effect=_push)
+    from chatbot.cac40.risk_gate import GateResult
+
+    sched._mirror_orders_to_ig(GateResult(executed=[f"place_stop:{hedge.id}"]))
+    assert sched.ig.push_working_order.called
+    book = sched._load_order_book(0)
+    assert book.get(hedge.id) == "WO_HEDGE_1"
+    via = sched.last_mirror_results[0]["placed"][0].get("via")
+    assert via == "force_open_hedge"
 
 
 def test_mirror_attaches_tp_instead_of_force_open(tmp_path: Path):

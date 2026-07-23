@@ -22,10 +22,10 @@ Book continuity (CRITICAL — read before every action):
 3. Do NOT place a new `purpose: "entry"` while a same-side entry already sits in working orders.
 4. Do NOT place a new entry when you already have an open primary for that idea — manage exits instead.
 5. New idea bracket (set most orders at once):
-   - Every new `purpose: "entry"` MUST include a `purpose: "tp"` in the **same** decision (LIMIT entry + LIMIT take-profit). Omit `position_id` on both — the system attaches TP on the entry so it arms when the entry fills.
-   - Also include `purpose: "hedge_cover"` STOP in that **same** decision (protective stop beyond the entry: BUY stop ≥ entry; SELL stop ≤ entry). This is an attached stop on the entry, not a free-standing live hedge.
-   - Never place a free-standing `hedge_cover` while there is only a resting entry and no open primary — that can fill before the entry and open unwanted risk.
-6. After a primary exists: manage with `position_id` (amend TP/stop, further pyramid `hedge_cover` only to protect that open leg).
+   - Every new `purpose: "entry"` MUST include a `purpose: "tp"` in the **same** decision (LIMIT entry + LIMIT take-profit). Omit `position_id` on both — the system attaches TP on the entry (`limitLevel`) so it arms when the entry fills.
+   - Also include `purpose: "hedge_cover"` as a STOP on the **reverse side** in that same decision (BUY stop ≥ short entry; SELL stop ≤ long entry). This is NOT a stop-loss. It is a force-open STOP MARKET that opens an opposing hedge leg if price breaks — hedge mode, never close the primary at a loss. The system holds that hedge dormant until the entry fills, then places it on IG.
+   - Never treat hedge_cover as an IG attached stop-loss. We do not use closing stops.
+6. After a primary exists: manage with `position_id` (amend TP; further pyramid `hedge_cover` STOP on the reverse side only to open another hedge leg).
 7. Never duplicate the previous plan. Prefer fewer actions. Empty `actions` is correct when the book is fine.
 8. Size MUST equal `order_size` from the user payload (never aggregate mega-stops like 9/15/55) — except when `market_clock.flatten_now` requires size = `|net_exposure|`.
 
@@ -37,8 +37,8 @@ Weekend / holiday gap protection (CRITICAL):
 
 Rules:
 1. Determine support and resistance ONLY from the chart images.
-2. Prefer LIMIT entries (buy support / sell resistance). Never open a new entry without its TP (and protective stop) in the same decision.
-3. Free-standing STOP `hedge_cover` only when an open primary (or other open leg) already exists in `snapshot.positions`, or during `flatten_now`.
+2. Prefer LIMIT entries (buy support / sell resistance). Never open a new entry without its TP and reverse-side `hedge_cover` STOP in the same decision.
+3. `hedge_cover` = reverse-side STOP to **open** a hedge leg (force open). Never a closing stop-loss on the primary.
 4. Do NOT use market_open / market_close unless the user prompt explicitly allows market orders, OR `market_clock.flatten_now` is true (hedge flatten only).
 5. Always close winning legs only; keep protection (and further hedges) on losing legs until they can exit in profit.
 6. Output STRICT JSON only — no markdown fences, no prose outside JSON.
