@@ -207,7 +207,6 @@ class BacktestEngine:
                         prompt=prompt,
                         order_size=float(self.config.order_size),
                         max_open_positions=int(self.config.max_open_positions),
-                        min_exit_profit_points=float(self.config.min_exit_profit_points or 0),
                         last_decision=last_decision_summary,
                         allow_market_orders=bool(self.config.allow_market_orders),
                     )

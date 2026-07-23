@@ -33,7 +33,6 @@ def test_live_config_roundtrip(settings: Settings) -> None:
                 "max_open_positions": 2,
                 "order_size": 0.5,
                 "prevent_loss_exits": True,
-                "min_exit_profit_points": 20,
                 "llm_trigger_mode": "interval",
                 "llm_every_n": 3,
                 "llm_every_unit": "1h",
@@ -50,7 +49,6 @@ def test_live_config_roundtrip(settings: Settings) -> None:
     assert loaded["strategy"]["max_open_positions"] == 2
     assert loaded["strategy"]["order_size"] == 0.5
     assert loaded["strategy"]["prevent_loss_exits"] is True
-    assert loaded["strategy"]["min_exit_profit_points"] == 20
     assert loaded["strategy"]["llm_every_n"] == 3
     assert loaded["strategy"]["llm_every_unit"] == "1h"
 

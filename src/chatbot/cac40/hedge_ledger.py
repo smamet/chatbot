@@ -23,21 +23,8 @@ def realized_exit_pnl(leg: PositionLeg, exit_price: float, point_value: float = 
     return (exit_price - leg.entry) * direction * leg.size * point_value
 
 
-def exit_below_min_profit(
-    leg: PositionLeg,
-    exit_price: float,
-    point_value: float = 1.0,
-    min_profit: float = 0.0,
-) -> bool:
-    """True when exit PnL is strictly below min_profit (or ≤ 0 when min_profit ≤ 0)."""
-    pnl = realized_exit_pnl(leg, exit_price, point_value)
-    if float(min_profit) > 0:
-        return pnl < float(min_profit)
-    return pnl <= 0
-
-
 def exit_would_lose(leg: PositionLeg, exit_price: float, point_value: float = 1.0) -> bool:
-    return exit_below_min_profit(leg, exit_price, point_value, min_profit=0.0)
+    return realized_exit_pnl(leg, exit_price, point_value) <= 0
 
 
 @dataclass
@@ -313,29 +300,20 @@ class HedgeLedger:
                     )
                     continue
                 leg = self.positions.get(order.position_id)
-                if leg is not None:
-                    pnl = realized_exit_pnl(
-                        leg, fill.fill_price, self.config.point_value
+                if (
+                    self.config.prevent_loss_exits
+                    and leg is not None
+                    and exit_would_lose(leg, fill.fill_price, self.config.point_value)
+                ):
+                    events.append(
+                        {
+                            "type": "rejected_fill",
+                            "reason": "loss_exit_blocked",
+                            "order": order.to_dict(),
+                            "fill": fill.fill_price,
+                        }
                     )
-                    min_profit = float(self.config.min_exit_profit_points or 0)
-                    reject_reason: str | None = None
-                    if min_profit > 0 and pnl < min_profit:
-                        reject_reason = "min_profit_blocked"
-                    elif (
-                        self.config.prevent_loss_exits
-                        and exit_would_lose(leg, fill.fill_price, self.config.point_value)
-                    ):
-                        reject_reason = "loss_exit_blocked"
-                    if reject_reason:
-                        events.append(
-                            {
-                                "type": "rejected_fill",
-                                "reason": reject_reason,
-                                "order": order.to_dict(),
-                                "fill": fill.fill_price,
-                            }
-                        )
-                        continue
+                    continue
                 trade = self.close_position(order.position_id, fill.fill_price, closed_at=ts)
                 events.append(
                     {
