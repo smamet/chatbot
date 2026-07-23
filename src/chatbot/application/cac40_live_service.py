@@ -808,13 +808,15 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
 
     positions = state_raw.get("positions") or []
     working = state_raw.get("working_orders") or []
-    closed = state_raw.get("closed_trades") or []
+    closed_raw = state_raw.get("closed_trades") or []
     if not isinstance(positions, list):
         positions = list(positions.values()) if isinstance(positions, dict) else []
     if not isinstance(working, list):
         working = list(working.values()) if isinstance(working, dict) else []
-    if not isinstance(closed, list):
-        closed = []
+    if not isinstance(closed_raw, list):
+        closed_raw = []
+    closed = [t for t in closed_raw if isinstance(t, dict) and not t.get("phantom")]
+    phantom_closed = [t for t in closed_raw if isinstance(t, dict) and t.get("phantom")]
     net_upl = sum(float(p.get("upl") or 0) for p in positions if isinstance(p, dict))
     realized = float(state_raw.get("realized_session") or 0)
     mode = live_cfg["mode"]
@@ -857,15 +859,24 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
                     "exit": t.get("exit"),
                     "pnl": t.get("realized_pnl"),
                     "bars_held": t.get("bars_held"),
+                    "deal_id": t.get("deal_id"),
                 }
                 for t in closed
-                if isinstance(t, dict)
+            ],
+            "phantom_closed_trades": [
+                {
+                    "id": t.get("id"),
+                    "deal_id": t.get("deal_id"),
+                    "pnl": t.get("realized_pnl"),
+                }
+                for t in phantom_closed
             ],
             "summary": {
                 "cycles": status.get("cycles") or len(decisions),
                 "open_legs": len(positions),
                 "realized": realized,
                 "net_upl": net_upl,
+                "phantom_closes": len(phantom_closed),
             },
             "book": {
                 "positions": positions,
@@ -1069,12 +1080,18 @@ def adopt_ig_snapshot_into_ledger(
     positions: list[dict[str, Any]],
     working_orders: list[dict[str, Any]],
     epic: str = "",
+    mode: str = "additive",
 ) -> dict[str, Any]:
     """
-    Additive import of IG positions/orders into a local ledger (idempotent by deal_id).
+    Import IG positions/orders into a local ledger.
 
-    Returns ``{imported_positions, imported_orders, skipped, warnings, order_book}``
-    where ``order_book`` maps new local order ids → IG dealId.
+    ``mode``:
+    - ``additive`` (default): idempotent by deal_id; never deletes local open legs.
+    - ``replace_open``: clear open positions/WOs, quarantine phantom closes for
+      reappearing dealIds, then import IG snapshot as the open book.
+
+    Returns ``{imported_positions, imported_orders, skipped, warnings, order_book,
+    quarantined, replaced}``.
     """
     from chatbot.cac40.models import (
         LegRole,
@@ -1085,6 +1102,22 @@ def adopt_ig_snapshot_into_ledger(
     )
 
     want = (epic or "").strip()
+    mode_l = (mode or "additive").strip().lower()
+    replaced = False
+    quarantined: list[str] = []
+
+    ig_deal_ids = {
+        str(row.get("deal_id") or "").strip()
+        for row in positions
+        if isinstance(row, dict) and str(row.get("deal_id") or "").strip()
+    }
+
+    if mode_l == "replace_open":
+        quarantined = ledger.quarantine_phantom_closes(ig_deal_ids)
+        ledger.positions.clear()
+        ledger.working_orders.clear()
+        replaced = True
+
     known_pos = {
         (p.deal_id or "").strip()
         for p in ledger.positions.values()
@@ -1111,6 +1144,17 @@ def adopt_ig_snapshot_into_ledger(
             skipped.append("position:missing_deal_id")
             continue
         if deal_id in known_pos:
+            # Refresh size/entry from IG when already present.
+            for leg in ledger.positions.values():
+                if (leg.deal_id or "").strip() == deal_id:
+                    try:
+                        leg.size = float(row.get("size") or leg.size)
+                        level = float(row.get("level") or 0)
+                        if level > 0:
+                            leg.entry = level
+                    except (TypeError, ValueError):
+                        pass
+                    break
             skipped.append(f"position:exists:{deal_id}")
             continue
         row_epic = str(row.get("epic") or "").strip()
@@ -1140,12 +1184,53 @@ def adopt_ig_snapshot_into_ledger(
             first = next(iter(ledger.positions.values()))
             role = LegRole.PRIMARY if side == first.side else LegRole.HEDGE
 
-        leg = ledger._open_leg(side, size, level, role)  # noqa: SLF001
-        leg.deal_id = deal_id
+        leg = ledger._open_leg(side, size, level, role, deal_id=deal_id)  # noqa: SLF001
         known_pos.add(deal_id)
         imported_positions.append(
             {"id": leg.id, "deal_id": deal_id, "side": side.value, "size": size, "level": level}
         )
+
+        # Model attached stop/limit from the position payload (not in /workingorders).
+        close_side = Side.SELL if side == Side.BUY else Side.BUY
+        for purpose, lvl_key, otype in (
+            (OrderPurpose.TP, "limit_level", OrderType.LIMIT),
+            (OrderPurpose.HEDGE_COVER, "stop_level", OrderType.STOP),
+        ):
+            raw_lvl = row.get(lvl_key)
+            if raw_lvl is None:
+                continue
+            try:
+                attached_lvl = float(raw_lvl)
+            except (TypeError, ValueError):
+                continue
+            if attached_lvl <= 0:
+                continue
+            sentinel = f"attached:{deal_id}:{purpose.value}"
+            if sentinel in known_wo:
+                continue
+            placed = ledger.place_order(
+                WorkingOrder(
+                    id="",
+                    type=otype,
+                    side=close_side,
+                    level=attached_lvl,
+                    size=size,
+                    purpose=purpose,
+                    position_id=leg.id,
+                    deal_id=sentinel,
+                )
+            )
+            known_wo.add(sentinel)
+            order_book[placed.id] = sentinel
+            imported_orders.append(
+                {
+                    "id": placed.id,
+                    "deal_id": sentinel,
+                    "purpose": purpose.value,
+                    "side": close_side.value,
+                    "level": attached_lvl,
+                }
+            )
 
     # --- working orders ---
     for raw in working_orders:
@@ -1216,8 +1301,12 @@ def adopt_ig_snapshot_into_ledger(
             }
         )
 
-    if not imported_positions and not imported_orders and not warnings:
+    if not imported_positions and not imported_orders and not warnings and not replaced:
         warnings.append("nothing_new")
+
+    ledger.infer_phase()
+    if ledger.last_price:
+        ledger.mark_to_market(ledger.last_price)
 
     return {
         "imported_positions": imported_positions,
@@ -1225,6 +1314,9 @@ def adopt_ig_snapshot_into_ledger(
         "skipped": skipped,
         "warnings": warnings,
         "order_book": order_book,
+        "quarantined": quarantined,
+        "replaced": replaced,
+        "mode": mode_l,
     }
 
 
@@ -1232,12 +1324,15 @@ def adopt_ig_book(
     session: Session,
     settings: Settings,
     slug: str,
+    *,
+    mode: str = "replace_open",
 ) -> dict[str, Any]:
     """
-    Fetch IG positions + working orders and merge into the local live ledger.
+    Fetch IG positions + working orders into the local live ledger.
 
-    Additive only (matched by deal_id). Updates the primary connector order book
-    so the mirror neither cancels nor re-pushes imported rows.
+    Default ``mode=replace_open`` rebuilds the open book from IG (primary SoT).
+    Updates connector order books so the mirror neither cancels nor re-pushes
+    imported rows.
     """
     from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 
@@ -1328,17 +1423,18 @@ def adopt_ig_book(
             positions=positions,
             working_orders=raw_orders,
             epic=cfg.epic,
+            mode=mode,
         )
 
-        # Merge deal ids into every selected connector order book so the mirror
-        # neither cancels nor re-pushes adopted rows on secondary accounts.
+        # Replace-mode: rewrite books from imported mapping. Additive: merge.
         books_dir = live_dir(settings, slug) / "order_books"
         books_dir.mkdir(parents=True, exist_ok=True)
         connector_ids = [cid for cid, _ in connectors] or [primary_id]
+        replace_books = str(result.get("mode") or mode).lower() == "replace_open"
         for cid in connector_ids:
             book_path = books_dir / f"orders_{cid}.json"
             book: dict[str, str] = {}
-            if book_path.exists():
+            if not replace_books and book_path.exists():
                 try:
                     raw_book = json.loads(book_path.read_text(encoding="utf-8"))
                     if isinstance(raw_book, dict):
@@ -1347,6 +1443,11 @@ def adopt_ig_book(
                     book = {}
             for oid, deal_id in (result.get("order_book") or {}).items():
                 book[str(oid)] = str(deal_id)
+            # Also map local WO deal_ids already on the ledger.
+            for oid, order in ledger.working_orders.items():
+                did = (order.deal_id or "").strip()
+                if did:
+                    book[str(oid)] = did
             book_path.write_text(json.dumps(book, indent=2), encoding="utf-8")
 
         _write_json(live_state_path(settings, slug), ledger.to_state_dict())
@@ -1355,9 +1456,17 @@ def adopt_ig_book(
 
     n_pos = len(result.get("imported_positions") or [])
     n_ord = len(result.get("imported_orders") or [])
-    msg = f"Synced from IG: +{n_pos} position(s), +{n_ord} order(s)."
-    if n_pos == 0 and n_ord == 0:
-        msg = "Sync from IG: nothing new to import (already in sync or empty)."
+    n_q = len(result.get("quarantined") or [])
+    if result.get("replaced"):
+        msg = (
+            f"Open book rebuilt from IG: {n_pos} position(s), {n_ord} order(s)"
+            + (f", {n_q} phantom close(s) quarantined" if n_q else "")
+            + "."
+        )
+    else:
+        msg = f"Synced from IG: +{n_pos} position(s), +{n_ord} order(s)."
+        if n_pos == 0 and n_ord == 0:
+            msg = "Sync from IG: nothing new to import (already in sync or empty)."
     return {
         "ok": True,
         "message": msg,

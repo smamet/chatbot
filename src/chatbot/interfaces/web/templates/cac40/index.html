@@ -293,7 +293,7 @@
       </button>
     </form>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/sync-book" class="no-loader" style="display:inline;"
-          onsubmit="return confirm('Import open IG positions and working orders into the local book? Additive only — nothing is deleted.');">
+          onsubmit="return confirm('Rebuild the local open book from IG (positions + working/attached orders)? Phantom local closes for reopened deals are quarantined.');">
       <button type="submit" class="btn-secondary btn-sm" {% if live_mode == 'off' %}disabled{% endif %}
               data-loading="Syncing book…">
         Sync book from IG

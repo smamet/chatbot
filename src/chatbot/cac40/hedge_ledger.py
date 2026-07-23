@@ -154,6 +154,7 @@ class HedgeLedger:
         role: LegRole,
         *,
         opened_at: str = "",
+        deal_id: str = "",
     ) -> PositionLeg:
         leg = PositionLeg(
             id=self._next_id("p"),
@@ -163,6 +164,7 @@ class HedgeLedger:
             role=role,
             opened_bar=self.bar_index,
             opened_at=opened_at,
+            deal_id=(deal_id or "").strip(),
         )
         self.positions[leg.id] = leg
         return leg
@@ -185,6 +187,7 @@ class HedgeLedger:
             opened_at=leg.opened_at,
             closed_at=closed_at,
             bars_held=max(0, self.bar_index - leg.opened_bar),
+            deal_id=(leg.deal_id or "").strip(),
         )
         self.closed_trades.append(trade)
         # Cancel linked working orders
@@ -192,6 +195,29 @@ class HedgeLedger:
             if order.position_id == position_id:
                 self.working_orders.pop(oid, None)
         return trade
+
+    def quarantine_phantom_closes(self, deal_ids: set[str]) -> list[str]:
+        """
+        Mark closed trades as phantom when their IG dealId is open again.
+
+        Reverses cash / realized_session for newly quarantined rows.
+        """
+        flagged: list[str] = []
+        want = {d.strip() for d in deal_ids if d and str(d).strip()}
+        if not want:
+            return flagged
+        for trade in self.closed_trades:
+            did = (trade.deal_id or "").strip()
+            if not did or did not in want or trade.phantom:
+                continue
+            trade.phantom = True
+            self.realized_session -= trade.realized_pnl
+            self.cash -= trade.realized_pnl
+            flagged.append(trade.id)
+        return flagged
+
+    def trusted_closed_trades(self) -> list[ClosedTrade]:
+        return [t for t in self.closed_trades if not t.phantom]
 
     def market_close_fill_price(self, leg: PositionLeg) -> float:
         half = abs(self.config.spread_points) / 2.0
@@ -231,30 +257,36 @@ class HedgeLedger:
             self.realized_session -= fee
         return charge
 
-    def process_bar(self, bar: dict, *, ts: str = "") -> list[dict]:
-        """Match working orders against OHLC bar; update MTM. Returns fill events."""
+    def process_bar(
+        self, bar: dict, *, ts: str = "", apply_fills: bool = True
+    ) -> list[dict]:
+        """
+        Advance bar / MTM. When ``apply_fills`` (paper/backtest), match working
+        orders against OHLC. Live must pass ``apply_fills=False`` and rely on IG.
+        """
         self.bar_index += 1
         self.last_price = float(bar["close"])
         events: list[dict] = []
 
-        candidates: list[tuple[WorkingOrder, object]] = []
-        for order in list(self.working_orders.values()):
-            if order.active_from_bar > self.bar_index:
-                continue
-            if self._is_dormant_child(order):
-                continue
-            fill = evaluate_order_fill(order, bar, self.config)
-            if fill:
-                candidates.append((order, fill))
+        if apply_fills:
+            candidates: list[tuple[WorkingOrder, object]] = []
+            for order in list(self.working_orders.values()):
+                if order.active_from_bar > self.bar_index:
+                    continue
+                if self._is_dormant_child(order):
+                    continue
+                fill = evaluate_order_fill(order, bar, self.config)
+                if fill:
+                    candidates.append((order, fill))
 
-        events.extend(
-            self._apply_fills(
-                candidates,
-                bar=bar,
-                ts=ts,
-                allow_arm_children=True,
+            events.extend(
+                self._apply_fills(
+                    candidates,
+                    bar=bar,
+                    ts=ts,
+                    allow_arm_children=True,
+                )
             )
-        )
 
         net = self.mark_to_market(self.last_price)
         self.infer_phase()
@@ -396,12 +428,15 @@ class HedgeLedger:
 
     def pnl_payload(self) -> dict:
         net = sum(p.upl for p in self.positions.values())
+        trusted = self.trusted_closed_trades()
         return {
             "net_upl": net,
             "gross_upl": self.gross_upl(),
             "realized_session": self.realized_session,
             "legs_count": self.legs_count(),
             "working_orders_count": len(self.working_orders),
+            "closed_trades_trusted": len(trusted),
+            "closed_trades_phantom": sum(1 for t in self.closed_trades if t.phantom),
         }
 
     def to_state_dict(self) -> dict:

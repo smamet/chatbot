@@ -131,6 +131,8 @@ class ClosedTrade:
     opened_at: str
     closed_at: str
     bars_held: int
+    deal_id: str = ""  # IG dealId of the closed leg (live)
+    phantom: bool = False  # local close not confirmed on IG / later reopened
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -144,6 +146,8 @@ class ClosedTrade:
             "opened_at": self.opened_at,
             "closed_at": self.closed_at,
             "bars_held": self.bars_held,
+            "deal_id": self.deal_id,
+            "phantom": self.phantom,
         }
 
     @classmethod
@@ -160,6 +164,8 @@ class ClosedTrade:
             opened_at=str(raw.get("opened_at") or ""),
             closed_at=str(raw.get("closed_at") or ""),
             bars_held=int(raw.get("bars_held") or 0),
+            deal_id=str(raw.get("deal_id") or ""),
+            phantom=bool(raw.get("phantom") or False),
         )
 
 

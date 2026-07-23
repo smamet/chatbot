@@ -34,10 +34,13 @@ class RiskGate:
         ledger: HedgeLedger,
         *,
         flatten_active: bool = False,
+        broker: object | None = None,
     ) -> None:
         self.config = config
         self.ledger = ledger
         self.flatten_active = bool(flatten_active)
+        # Live: IgConnector with real market_open/close. Paper/backtest: None → ledger.
+        self.broker = broker
 
     def apply(self, decision: LlmDecision) -> GateResult:
         result = GateResult()
@@ -392,13 +395,21 @@ class RiskGate:
                 return
             if is_flatten_hedge:
                 size = self._flatten_hedge_size(action)
-                pid = self.ledger.market_open(
-                    Side(action.side), size, role=LegRole.HEDGE
-                )
+                role = LegRole.HEDGE
+                side = Side(action.side)
             else:
-                pid = self.ledger.market_open(
-                    Side(action.side), self._clamp_size(action)
-                )
+                size = self._clamp_size(action)
+                role = LegRole.PRIMARY
+                side = Side(action.side)
+            try:
+                if self.broker is not None:
+                    pid = self.broker.market_open(side, size, role=role)
+                else:
+                    pid = self.ledger.market_open(side, size, role=role)
+            except Exception as exc:
+                logger.exception("market_open failed")
+                result.rejected.append(f"market_open:broker:{exc}")
+                return
             result.executed.append(f"market_open:{pid}")
             return
 
@@ -412,7 +423,15 @@ class RiskGate:
                 if self._loss_exit_blocked(leg, exit_px):
                     result.rejected.append("market_close:loss_exit_blocked")
                     return
-            self.ledger.market_close(action.position_id)
+            try:
+                if self.broker is not None:
+                    self.broker.market_close(action.position_id)
+                else:
+                    self.ledger.market_close(action.position_id)
+            except Exception as exc:
+                logger.exception("market_close failed")
+                result.rejected.append(f"market_close:broker:{exc}")
+                return
             result.executed.append(f"market_close:{action.position_id}")
             return
 

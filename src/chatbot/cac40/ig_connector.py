@@ -562,12 +562,29 @@ class IgConnector:
         # Keep a sensible number of decimals for JSON (no binary float junk).
         return float(snapped)
 
-    def place_order(self, order: WorkingOrder, *, currency: str | None = None, limit_level: float | None = None) -> WorkingOrder:
+    def place_order(
+        self,
+        order: WorkingOrder,
+        *,
+        currency: str | None = None,
+        limit_level: float | None = None,
+        stop_level: float | None = None,
+    ) -> WorkingOrder:
         placed = self.ledger.place_order(order)
         if self.dry_run or not self._cst:
-            logger.info("IG dry-run place %s limit_level=%s", placed.to_dict(), limit_level)
+            logger.info(
+                "IG dry-run place %s limit_level=%s stop_level=%s",
+                placed.to_dict(),
+                limit_level,
+                stop_level,
+            )
             return placed
-        return self.push_working_order(placed, currency=currency, limit_level=limit_level)
+        return self.push_working_order(
+            placed,
+            currency=currency,
+            limit_level=limit_level,
+            stop_level=stop_level,
+        )
 
     def push_working_order(
         self,
@@ -575,15 +592,22 @@ class IgConnector:
         *,
         currency: str | None = None,
         limit_level: float | None = None,
+        stop_level: float | None = None,
     ) -> WorkingOrder:
         """Submit an already-ledgered working order to IG (no second ledger place)."""
         if self.dry_run or not self._cst:
             logger.info(
-                "IG dry-run push %s limit_level=%s", order.to_dict(), limit_level
+                "IG dry-run push %s limit_level=%s stop_level=%s",
+                order.to_dict(),
+                limit_level,
+                stop_level,
             )
             return order
         body = self._ig_working_order_body(
-            order, currency=currency, limit_level=limit_level
+            order,
+            currency=currency,
+            limit_level=limit_level,
+            stop_level=stop_level,
         )
         resp = self._client.post(
             f"{self.base_url}/workingorders/otc",
@@ -696,6 +720,21 @@ class IgConnector:
                 level = float(pos.get("level") or pos.get("openLevel") or 0)
             except (TypeError, ValueError):
                 level = 0.0
+            stop_level: float | None = None
+            limit_level: float | None = None
+            for key, dest in (("stopLevel", "stop"), ("limitLevel", "limit")):
+                raw_lvl = pos.get(key)
+                if raw_lvl is None:
+                    continue
+                try:
+                    val = float(raw_lvl)
+                except (TypeError, ValueError):
+                    continue
+                if val > 0:
+                    if dest == "stop":
+                        stop_level = val
+                    else:
+                        limit_level = val
             out.append(
                 {
                     "deal_id": str(pos.get("dealId") or ""),
@@ -703,6 +742,8 @@ class IgConnector:
                     "side": side,
                     "size": size,
                     "level": level,
+                    "stop_level": stop_level,
+                    "limit_level": limit_level,
                     "currency": str(pos.get("currency") or ""),
                     "raw": row,
                 }
@@ -762,10 +803,12 @@ class IgConnector:
         deal = resp.json() if resp.content else {}
         deal_ref = str((deal or {}).get("dealReference") or "").strip()
         fill = float(self.ledger.last_price or 0)
+        deal_id = ""
         if deal_ref:
             confirmed = self.confirm_deal(deal_ref)
             deal_status = str(confirmed.get("dealStatus") or "").upper()
             reason = str(confirmed.get("reason") or "").strip()
+            deal_id = str(confirmed.get("dealId") or "").strip()
             if deal_status and deal_status != "ACCEPTED":
                 raise IgApiError(
                     "IG market open rejected: "
@@ -784,12 +827,13 @@ class IgConnector:
                 if side == Side.BUY
                 else float(self.ledger.last_price or 0) - half
             )
-        leg = self.ledger._open_leg(side, qty, fill, role)
+        leg = self.ledger._open_leg(side, qty, fill, role, deal_id=deal_id)
         logger.info(
-            "IG market open accepted %s size=%s dealRef=%s leg=%s",
+            "IG market open accepted %s size=%s dealRef=%s dealId=%s leg=%s",
             side.value,
             qty,
             deal_ref or "—",
+            deal_id or "—",
             leg.id,
         )
         return leg.id
@@ -827,9 +871,34 @@ class IgConnector:
         order = self.ledger.amend_order(order_id, level=level)
         if self.dry_run or not self._cst:
             return order
-        # IG amend requires dealId; keep ledger as source in V1 dry path
-        logger.info("IG amend requested for %s -> %s", order_id, level)
-        return order
+        deal_id = (order.deal_id or "").strip()
+        snapped = self.snap_level(float(level))
+        order.level = snapped
+        if order.id in self.ledger.working_orders:
+            self.ledger.working_orders[order.id].level = snapped
+        if not deal_id or deal_id.startswith("attached:"):
+            logger.warning(
+                "IG amend skipped (no standalone dealId) for local order %s", order_id
+            )
+            return order
+        # PUT /workingorders/otc/{dealId}
+        body = {
+            "type": "LIMIT" if order.type == OrderType.LIMIT else "STOP",
+            "level": snapped,
+            "timeInForce": "GOOD_TILL_CANCELLED",
+        }
+        url = f"{self.base_url}/workingorders/otc/{deal_id}"
+        last_exc: IgApiError | None = None
+        for version in ("2", "1"):
+            resp = self._client.put(url, headers=self._headers(version=version), json=body)
+            if not resp.is_error:
+                logger.info("IG amend accepted order=%s dealId=%s level=%s", order_id, deal_id, snapped)
+                return order
+            last_exc = IgApiError(
+                format_ig_http_error(resp, action="amend_working_order", url=url)
+            )
+        assert last_exc is not None
+        raise last_exc
 
     def cancel_order(self, order_id: str) -> None:
         order = self.ledger.working_orders.get(order_id)
@@ -837,11 +906,46 @@ class IgConnector:
         self.ledger.cancel_order(order_id)
         if self.dry_run or not self._cst:
             return
-        if not deal_id:
+        if not deal_id or deal_id.startswith("attached:"):
             # Best-effort: match by client_ref via open working orders
-            logger.warning("IG cancel skipped (no dealId) for local order %s", order_id)
+            if not deal_id:
+                logger.warning("IG cancel skipped (no dealId) for local order %s", order_id)
             return
         self.cancel_working_order(deal_id)
+
+    def update_position_protection(
+        self,
+        deal_id: str,
+        *,
+        stop_level: float | None = None,
+        limit_level: float | None = None,
+    ) -> dict[str, Any]:
+        """PUT /positions/otc/{dealId} — attach/amend stop/limit on an open deal."""
+        did = (deal_id or "").strip()
+        if not did:
+            raise IgApiError("update_position_protection requires dealId")
+        body: dict[str, Any] = {}
+        if stop_level is not None:
+            body["stopLevel"] = self.snap_level(float(stop_level))
+        if limit_level is not None:
+            body["limitLevel"] = self.snap_level(float(limit_level))
+        if not body:
+            return {}
+        if self.dry_run or not self._cst:
+            logger.info("IG dry-run position protection dealId=%s %s", did, body)
+            return {"dealId": did, "dry_run": True, **body}
+        url = f"{self.base_url}/positions/otc/{did}"
+        last_exc: IgApiError | None = None
+        for version in ("2", "1"):
+            resp = self._client.put(url, headers=self._headers(version=version), json=body)
+            if not resp.is_error:
+                payload = resp.json() if resp.content else {}
+                return payload if isinstance(payload, dict) else {"raw": payload}
+            last_exc = IgApiError(
+                format_ig_http_error(resp, action="update_position_protection", url=url)
+            )
+        assert last_exc is not None
+        raise last_exc
 
     def close_position(
         self,
@@ -854,8 +958,33 @@ class IgConnector:
         if not leg:
             return
         if order_type == OrderType.MARKET or level is None:
-            self.ledger.market_close(position_id)
+            self.market_close(position_id)
             return
+        # Prefer attaching/updating limit on the IG deal when we have dealId.
+        deal_id = (leg.deal_id or "").strip()
+        if deal_id and not self.dry_run and self._cst:
+            try:
+                self.update_position_protection(deal_id, limit_level=float(level))
+                from chatbot.cac40.models import OrderPurpose
+
+                self.place_order(
+                    WorkingOrder(
+                        id="",
+                        type=OrderType.LIMIT,
+                        side=Side.SELL if leg.side == Side.BUY else Side.BUY,
+                        level=float(level),
+                        size=leg.size,
+                        purpose=OrderPurpose.TP,
+                        position_id=position_id,
+                        deal_id=f"attached:{deal_id}",
+                    )
+                )
+                return
+            except Exception:
+                logger.exception(
+                    "IG attach TP failed dealId=%s; falling back to local WO only",
+                    deal_id,
+                )
         close_side = Side.SELL if leg.side == Side.BUY else Side.BUY
         from chatbot.cac40.models import OrderPurpose
 
@@ -875,7 +1004,61 @@ class IgConnector:
         return self.open_market_position(side, size, role=role)
 
     def market_close(self, position_id: str) -> None:
-        self.ledger.market_close(position_id)
+        """Close a leg at market. Live: POST /positions/otc with dealId; paper: ledger."""
+        leg = self.ledger.positions.get(position_id)
+        if not leg:
+            return
+        if self.dry_run or not self._cst:
+            self.ledger.market_close(position_id)
+            return
+        deal_id = (leg.deal_id or "").strip()
+        if not deal_id:
+            raise IgApiError(
+                f"market_close requires IG dealId on leg {position_id} "
+                "(reconcile/adopt first)"
+            )
+        close_side = Side.SELL if leg.side == Side.BUY else Side.BUY
+        qty = abs(float(leg.size))
+        ccy = self.resolve_order_currency().strip().upper()
+        expiry = self.resolve_order_expiry()
+        body = {
+            "dealId": deal_id,
+            "epic": self.config.epic,
+            "expiry": expiry,
+            "direction": "BUY" if close_side == Side.BUY else "SELL",
+            "size": qty,
+            "orderType": "MARKET",
+            "currencyCode": ccy,
+        }
+        url = f"{self.base_url}/positions/otc"
+        resp = self._client.post(url, headers=self._headers(version="2"), json=body)
+        if resp.is_error:
+            raise IgApiError(format_ig_http_error(resp, action="market_close", url=url))
+        deal = resp.json() if resp.content else {}
+        deal_ref = str((deal or {}).get("dealReference") or "").strip()
+        exit_px = self.ledger.market_close_fill_price(leg)
+        if deal_ref:
+            confirmed = self.confirm_deal(deal_ref)
+            deal_status = str(confirmed.get("dealStatus") or "").upper()
+            reason = str(confirmed.get("reason") or "").strip()
+            if deal_status and deal_status != "ACCEPTED":
+                raise IgApiError(
+                    "IG market close rejected: "
+                    f"dealStatus={deal_status or '—'} reason={reason or '—'} "
+                    f"confirm={confirmed}"
+                )
+            try:
+                if confirmed.get("level") is not None:
+                    exit_px = float(confirmed["level"])
+            except (TypeError, ValueError):
+                pass
+        self.ledger.close_position(position_id, exit_px)
+        logger.info(
+            "IG market close accepted leg=%s dealId=%s exit=%s",
+            position_id,
+            deal_id,
+            exit_px,
+        )
 
     def _ig_working_order_body(
         self,
@@ -883,6 +1066,7 @@ class IgConnector:
         *,
         currency: str | None = None,
         limit_level: float | None = None,
+        stop_level: float | None = None,
     ) -> dict[str, Any]:
         ccy = (currency or self.resolve_order_currency()).strip().upper()
         expiry = self.resolve_order_expiry()
@@ -898,12 +1082,14 @@ class IgConnector:
             "currencyCode": ccy,
             "timeInForce": "GOOD_TILL_CANCELLED",
             "guaranteedStop": False,
-            # IG requires forceOpen=true for LIMIT working orders.
+            # IG requires forceOpen=true for LIMIT/STOP working orders that open.
             "forceOpen": True,
         }
         if limit_level is not None:
             # Attached TP: IG creates this limit the moment the entry fills.
             body["limitLevel"] = self.snap_level(float(limit_level))
+        if stop_level is not None:
+            body["stopLevel"] = self.snap_level(float(stop_level))
         return body
 
 
