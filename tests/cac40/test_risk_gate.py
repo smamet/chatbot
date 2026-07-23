@@ -289,6 +289,51 @@ def test_hedge_cover_residual_after_filled_opposing_hedge():
     assert hedge.size == 1.0
 
 
+def test_hedge_cover_residual_after_working_hedge():
+    """+2 BUY with a resting 1-lot SELL hedge → next SELL hedge is residual 1."""
+    from chatbot.cac40.models import OrderPurpose, OrderType, WorkingOrder
+
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8340
+    p1 = ledger.market_open(Side.BUY, 1)
+    ledger.market_open(Side.BUY, 1)
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.SELL,
+            level=8330.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            position_id=p1,
+        )
+    )
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_stop",
+                side="SELL",
+                level=8325.0,
+                size=1.0,
+                purpose="hedge_cover",
+            )
+        )
+    )
+    assert result.executed
+    hedges = [
+        o for o in ledger.working_orders.values() if o.purpose == OrderPurpose.HEDGE_COVER
+    ]
+    assert len(hedges) == 2
+    assert sorted(h.size for h in hedges) == [1.0, 1.0]
+
+
 def test_bracket_entry_tp_hedge_accepted():
     """Screenshot decision: SELL entry + BUY TP + BUY stop hedge in one batch."""
     cfg = Cac40Config(order_size=1.0, spread_points=0, prevent_loss_exits=True)

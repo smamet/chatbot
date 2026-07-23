@@ -64,22 +64,23 @@ class RiskGate:
     def _clamp_size(self, action: LlmAction) -> float:
         return float(self.config.order_size)
 
-    def _exposure_with_entries(self) -> float:
-        """Signed exposure including working ENTRY orders (+BUY / −SELL)."""
+    def _exposure_with_entries_and_working_hedges(self) -> float:
+        """Signed exposure: positions + working ENTRY + working HEDGE_COVER (+BUY / −SELL)."""
         exp = float(self.ledger.net_size())
         for order in self.ledger.working_orders.values():
-            if order.purpose != OrderPurpose.ENTRY:
+            if order.purpose not in (OrderPurpose.ENTRY, OrderPurpose.HEDGE_COVER):
                 continue
             exp += float(order.size) if order.side == Side.BUY else -float(order.size)
         return exp
 
     def _hedge_cover_size(self, hedge_side: Side) -> float:
-        """Size hedge to cover full unprotected directional exposure, not just order_size.
+        """Size hedge to cover residual unprotected exposure, not just order_size.
 
-        Example: two BUY legs (or one leg + one BUY entry) → SELL hedge_cover size 2.
-        Filled opposing hedge legs already reduce net_size(), so only the residual is covered.
+        Example: two BUY legs → SELL hedge_cover size 2. If a 1-lot SELL hedge already
+        rests, a further SELL hedge is sized to the residual 1 (not another full 2).
+        Filled opposing legs reduce net_size(); working hedges are counted too.
         """
-        exp = self._exposure_with_entries()
+        exp = self._exposure_with_entries_and_working_hedges()
         need = exp if hedge_side == Side.SELL else -exp
         if need > 0:
             return float(need)
