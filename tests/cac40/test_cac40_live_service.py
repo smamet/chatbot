@@ -5,15 +5,30 @@ from pathlib import Path
 import pytest
 
 from chatbot.application.cac40_live_service import (
+    SYNC_LOG_MAX,
+    append_sync_log,
+    append_sync_log_from_payload,
     clear_live_history,
+    clear_sync_log,
     default_live_config,
+    group_open_book,
     load_live_config,
+    preview_ig_book,
+    read_live_book,
+    read_sync_log,
     save_live_config,
     set_live_mode,
 )
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.models import OrderPurpose, OrderType, Side, WorkingOrder
+from chatbot.cac40.models import (
+    ClosedTrade,
+    LegRole,
+    OrderPurpose,
+    OrderType,
+    Side,
+    WorkingOrder,
+)
 from chatbot.config.settings import Settings
 
 
@@ -27,7 +42,7 @@ def test_live_config_roundtrip(settings: Settings) -> None:
         settings,
         "demo-bot",
         {
-            "mode": "paper",
+            "mode": "live",
             "ig_connector_ids": [3, 7],
             "strategy": {
                 "max_open_positions": 2,
@@ -39,18 +54,38 @@ def test_live_config_roundtrip(settings: Settings) -> None:
             },
         },
     )
-    assert saved["mode"] == "paper"
+    assert saved["mode"] == "live"
     assert saved["ig_connector_ids"] == [3, 7]
     assert saved["strategy"]["max_open_positions"] == 2
     assert saved["strategy"]["llm_every_bars"] == 12
     loaded = load_live_config(settings, "demo-bot")
-    assert loaded["mode"] == "paper"
+    assert loaded["mode"] == "live"
     assert loaded["ig_connector_ids"] == [3, 7]
     assert loaded["strategy"]["max_open_positions"] == 2
     assert loaded["strategy"]["order_size"] == 0.5
     assert loaded["strategy"]["prevent_loss_exits"] is True
     assert loaded["strategy"]["llm_every_n"] == 3
     assert loaded["strategy"]["llm_every_unit"] == "1h"
+
+
+def test_legacy_paper_mode_coerces_to_off(settings: Settings) -> None:
+    from chatbot.application.cac40_live_service import live_config_path, _write_json
+
+    _write_json(
+        live_config_path(settings, "demo-bot"),
+        {"mode": "paper", "ig_connector_ids": [1], "strategy": {}},
+    )
+    loaded = load_live_config(settings, "demo-bot")
+    assert loaded["mode"] == "off"
+    # Self-heal persisted to disk.
+    reloaded = load_live_config(settings, "demo-bot")
+    assert reloaded["mode"] == "off"
+    saved = save_live_config(
+        settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [1], "strategy": {}}
+    )
+    assert saved["mode"] == "off"
+    coerced = set_live_mode(settings, "demo-bot", "paper")
+    assert coerced["mode"] == "off"
 
 
 def test_set_live_mode_requires_connectors(settings: Settings) -> None:
@@ -110,7 +145,7 @@ def test_trading_banner_shows_mode_when_active(settings: Settings) -> None:
 
     from chatbot.application.cac40_live_service import resolve_cac40_trading_banner
 
-    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [], "strategy": {}})
+    save_live_config(settings, "demo-bot", {"mode": "live", "ig_connector_ids": [1], "strategy": {}})
     session = MagicMock()
     with patch("chatbot.application.cac40_live_service.IntegrationService") as mock_is:
         mock_is.return_value.find_active.return_value = MagicMock()
@@ -121,7 +156,7 @@ def test_trading_banner_shows_mode_when_active(settings: Settings) -> None:
             slug="demo-bot",
             allowed_integrations=None,
         )
-    assert banner == {"active": True, "mode": "paper", "slug": "demo-bot"}
+    assert banner == {"active": True, "mode": "live", "slug": "demo-bot"}
 
 
 def test_live_cycle_slot_key_aligns_to_candle_close() -> None:
@@ -150,7 +185,7 @@ def test_live_cycle_slot_key_aligns_to_candle_close() -> None:
 def test_clear_history_removes_order_books(settings: Settings) -> None:
     from chatbot.application.cac40_live_service import clear_live_history, live_dir
 
-    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [], "strategy": {}})
+    save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [], "strategy": {}})
     books = live_dir(settings, "demo-bot") / "order_books"
     books.mkdir(parents=True, exist_ok=True)
     (books / "orders_1.json").write_text('{"x":"y"}', encoding="utf-8")
@@ -223,7 +258,7 @@ def test_get_live_report_from_journal_cycle(settings: Settings, tmp_path: Path) 
         save_live_config,
     )
 
-    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [1], "strategy": {}})
+    save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [1], "strategy": {}})
     journal = live_journal_dir(settings, "demo-bot")
     cycle = journal / "20260721_120015"
     charts = cycle / "charts"
@@ -296,7 +331,7 @@ def test_get_live_report_merges_decisions_log(settings: Settings) -> None:
         save_live_config,
     )
 
-    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [1], "strategy": {}})
+    save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [1], "strategy": {}})
     journal = live_journal_dir(settings, "demo-bot")
     cycle = journal / "20260721_130000"
     cycle.mkdir(parents=True)
@@ -360,7 +395,7 @@ def test_llm_schedule_persists_and_seeds(settings: Settings) -> None:
         save_live_config,
     )
 
-    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [1], "strategy": {}})
+    save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [1], "strategy": {}})
     journal = live_journal_dir(settings, "demo-bot")
     cycle = journal / "20260721_120000"
     cycle.mkdir(parents=True)
@@ -400,7 +435,7 @@ def test_live_report_render_with_realized_session_only(settings: Settings) -> No
     from chatbot.application.cac40_live_service import get_live_report, save_live_config
     from chatbot.interfaces.web.templates import dumps_json
 
-    save_live_config(settings, "demo-bot", {"mode": "paper", "ig_connector_ids": [], "strategy": {}})
+    save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [], "strategy": {}})
     from chatbot.application.cac40_live_service import live_decisions_path, _write_json
 
     _write_json(
@@ -441,3 +476,335 @@ def test_live_report_render_with_realized_session_only(settings: Settings) -> No
     )
     assert "Live results" in html
     assert "flat" in html or "no decision" in html or "PnL" in html
+    assert "Open book" in html
+
+
+def test_group_open_book_position_tp_entry_orphan() -> None:
+    positions = [
+        {
+            "id": "p1",
+            "side": "BUY",
+            "size": 1.0,
+            "entry": 7800.0,
+            "role": "primary",
+            "deal_id": "DI_POS",
+            "upl": 12.5,
+        }
+    ]
+    working = [
+        {
+            "id": "o_tp",
+            "type": "LIMIT",
+            "side": "SELL",
+            "level": 7850.0,
+            "size": 1.0,
+            "purpose": "tp",
+            "position_id": "p1",
+            "deal_id": "attached:DI_POS:tp",
+        },
+        {
+            "id": "o_entry",
+            "type": "LIMIT",
+            "side": "SELL",
+            "level": 7900.0,
+            "size": 1.0,
+            "purpose": "entry",
+            "deal_id": "DI_ENTRY",
+        },
+        {
+            "id": "o_entry_tp",
+            "type": "LIMIT",
+            "side": "BUY",
+            "level": 7850.0,
+            "size": 1.0,
+            "purpose": "tp",
+            "parent_order_id": "o_entry",
+            "deal_id": "",
+        },
+        {
+            "id": "o_orphan",
+            "type": "STOP",
+            "side": "SELL",
+            "level": 7700.0,
+            "size": 1.0,
+            "purpose": "hedge_cover",
+            "deal_id": "DI_ORPHAN",
+        },
+    ]
+    groups = group_open_book(positions, working)
+    assert [g["kind"] for g in groups] == ["position", "entry", "orphan"]
+
+    pos_g = groups[0]
+    assert pos_g["parent"]["row_kind"] == "position"
+    assert pos_g["parent"]["id"] == "p1"
+    assert pos_g["parent"]["level"] == 7800.0
+    assert pos_g["parent"]["upl"] == 12.5
+    assert len(pos_g["children"]) == 1
+    assert pos_g["children"][0]["purpose"] == "tp"
+    assert pos_g["children"][0]["link"] == "p1"
+
+    entry_g = groups[1]
+    assert entry_g["parent"]["purpose"] == "entry"
+    assert len(entry_g["children"]) == 1
+    assert entry_g["children"][0]["id"] == "o_entry_tp"
+    assert entry_g["children"][0]["link"] == "o_entry"
+
+    orphan_g = groups[2]
+    assert orphan_g["parent"]["id"] == "o_orphan"
+    assert orphan_g["children"] == []
+
+
+def test_group_open_book_empty() -> None:
+    assert group_open_book([], []) == []
+
+
+def test_read_live_book_includes_groups(settings: Settings) -> None:
+    from chatbot.application.cac40_live_service import (
+        live_state_path,
+        write_live_status,
+        _write_json,
+    )
+
+    write_live_status(
+        settings,
+        "demo-bot",
+        {"last_cycle_at": "2026-07-24T12:15:48.151923+00:00"},
+    )
+    _write_json(
+        live_state_path(settings, "demo-bot"),
+        {
+            "phase": "Long",
+            "last_price": 7810.5,
+            "positions": [
+                {
+                    "id": "p1",
+                    "side": "BUY",
+                    "size": 1.0,
+                    "entry": 7800.0,
+                    "role": "primary",
+                    "deal_id": "DI1",
+                    "upl": 5.0,
+                }
+            ],
+            "working_orders": [
+                {
+                    "id": "o1",
+                    "type": "LIMIT",
+                    "side": "SELL",
+                    "level": 7850.0,
+                    "size": 1.0,
+                    "purpose": "tp",
+                    "position_id": "p1",
+                    "deal_id": "attached:DI1:tp",
+                }
+            ],
+        },
+    )
+    book = read_live_book(settings, "demo-bot")
+    assert book["phase"] == "Long"
+    assert book["last_price"] == 7810.5
+    assert book["as_of"] == "2026-07-24T12:15:48.151923+00:00"
+    assert len(book["groups"]) == 1
+    assert book["groups"][0]["kind"] == "position"
+    assert book["groups"][0]["children"][0]["purpose"] == "tp"
+
+
+def test_closed_trade_ig_confirmed_roundtrip() -> None:
+    trade = ClosedTrade(
+        id="p1",
+        side=Side.BUY,
+        size=1.0,
+        entry=7800.0,
+        exit=7810.0,
+        role=LegRole.PRIMARY,
+        realized_pnl=10.0,
+        opened_at="",
+        closed_at="",
+        bars_held=1,
+        deal_id="DI1",
+        ig_confirmed=True,
+    )
+    restored = ClosedTrade.from_dict(trade.to_dict())
+    assert restored.ig_confirmed is True
+    assert restored.deal_id == "DI1"
+    legacy = ClosedTrade.from_dict({"id": "p2", "side": "SELL", "size": 1})
+    assert legacy.ig_confirmed is False
+
+
+def test_close_position_ig_confirmed_flag() -> None:
+    from chatbot.cac40.models import PositionLeg
+
+    ledger = HedgeLedger(Cac40Config())
+    leg = PositionLeg(
+        id="p1",
+        side=Side.BUY,
+        size=1.0,
+        entry=7800.0,
+        role=LegRole.PRIMARY,
+        deal_id="DI1",
+    )
+    ledger.positions[leg.id] = leg
+    ledger.last_price = 7810.0
+    trade = ledger.close_position("p1", 7810.0, ig_confirmed=True)
+    assert trade is not None
+    assert trade.ig_confirmed is True
+    paper = ledger.close_position("missing", 0.0)
+    assert paper is None
+
+
+def test_sync_log_append_cap_and_clear(settings: Settings) -> None:
+    for i in range(SYNC_LOG_MAX + 5):
+        append_sync_log(
+            settings,
+            "demo-bot",
+            {"source": "cycle", "dropped": [{"i": i}], "imported_orders": []},
+        )
+    rows = read_sync_log(settings, "demo-bot", limit=500)
+    assert len(rows) == SYNC_LOG_MAX
+    assert rows[0]["dropped"][0]["i"] == SYNC_LOG_MAX + 4
+    clear_sync_log(settings, "demo-bot")
+    assert read_sync_log(settings, "demo-bot") == []
+
+
+def test_append_sync_log_from_payload_only_when_changed(settings: Settings) -> None:
+    assert (
+        append_sync_log_from_payload(
+            settings,
+            "demo-bot",
+            {"ts": "2026-07-24T12:00:00+00:00", "working_order_sync": {}, "reconcile": {}},
+        )
+        is False
+    )
+    assert read_sync_log(settings, "demo-bot") == []
+    assert (
+        append_sync_log_from_payload(
+            settings,
+            "demo-bot",
+            {
+                "ts": "2026-07-24T12:15:00+00:00",
+                "cycle_dir": "20260724_121500",
+                "working_order_sync": {
+                    "dropped": [{"order_id": "o1", "deal_id": "DIX"}],
+                    "imported": [],
+                },
+                "reconcile": {},
+            },
+        )
+        is True
+    )
+    rows = read_sync_log(settings, "demo-bot")
+    assert len(rows) == 1
+    assert rows[0]["cycle_id"] == "20260724_121500"
+    assert len(rows[0]["dropped"]) == 1
+
+
+def test_preview_ig_book_diff_statuses(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    from chatbot.application.cac40_live_service import live_state_path, _write_json
+
+    save_live_config(
+        settings,
+        "demo-bot",
+        {"mode": "live", "ig_connector_ids": [1], "strategy": {}},
+    )
+    _write_json(
+        live_state_path(settings, "demo-bot"),
+        {
+            "phase": "Long",
+            "positions": [
+                {
+                    "id": "p1",
+                    "side": "BUY",
+                    "size": 1.0,
+                    "entry": 7800.0,
+                    "role": "primary",
+                    "deal_id": "DI_LOCAL",
+                    "upl": 0.0,
+                }
+            ],
+            "working_orders": [
+                {
+                    "id": "o_gone",
+                    "type": "LIMIT",
+                    "side": "SELL",
+                    "level": 7900.0,
+                    "size": 1.0,
+                    "purpose": "entry",
+                    "deal_id": "DI_GONE",
+                }
+            ],
+            "closed_trades": [
+                {
+                    "id": "p_old",
+                    "side": "BUY",
+                    "size": 1.0,
+                    "entry": 7700.0,
+                    "exit": 7750.0,
+                    "role": "primary",
+                    "realized_pnl": 50.0,
+                    "opened_at": "",
+                    "closed_at": "",
+                    "bars_held": 2,
+                    "deal_id": "DI_REOPEN",
+                    "phantom": False,
+                    "ig_confirmed": True,
+                }
+            ],
+        },
+    )
+
+    def fake_fetch(session, settings_arg, slug):
+        return {
+            "ok": True,
+            "cfg": Cac40Config(),
+            "connectors": [(1, {})],
+            "primary_id": 1,
+            "live_cfg": {"mode": "live"},
+            "positions": [
+                {
+                    "deal_id": "DI_REOPEN",
+                    "side": Side.BUY,
+                    "size": 1.0,
+                    "level": 7805.0,
+                    "epic": "IX.D.CAC.BMU.IP",
+                    "limit_level": None,
+                    "stop_level": None,
+                },
+                {
+                    "deal_id": "DI_NEW",
+                    "side": Side.SELL,
+                    "size": 1.0,
+                    "level": 7820.0,
+                    "epic": "IX.D.CAC.BMU.IP",
+                    "limit_level": 7780.0,
+                    "stop_level": None,
+                },
+            ],
+            "raw_orders": [],
+        }
+
+    monkeypatch.setattr(
+        "chatbot.application.cac40_live_service._fetch_ig_snapshot",
+        fake_fetch,
+    )
+    preview = preview_ig_book(None, settings, "demo-bot")  # type: ignore[arg-type]
+    assert preview["ok"] is True
+    statuses = {
+        (g["parent"].get("deal_id") or g["parent"].get("id")): g["parent"]["status"]
+        for g in preview["groups"]
+    }
+    assert statuses.get("DI_LOCAL") == "remove"
+    assert statuses.get("DI_GONE") == "remove"
+    assert statuses.get("DI_NEW") == "new"
+    closed = {c["deal_id"]: c["status"] for c in preview["closed_trades"]}
+    assert closed["DI_REOPEN"] == "reopened"
+    # State file untouched (local still has DI_LOCAL).
+    book = read_live_book(settings, "demo-bot")
+    assert any(p.get("deal_id") == "DI_LOCAL" for p in book["positions"])
+
+
+def test_clear_live_history_clears_sync_log(settings: Settings) -> None:
+    save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [], "strategy": {}})
+    append_sync_log(settings, "demo-bot", {"source": "cycle", "dropped": [1]})
+    assert read_sync_log(settings, "demo-bot")
+    clear_live_history(settings, "demo-bot")
+    assert read_sync_log(settings, "demo-bot") == []

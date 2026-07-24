@@ -169,7 +169,14 @@ class HedgeLedger:
         self.positions[leg.id] = leg
         return leg
 
-    def close_position(self, position_id: str, exit_price: float, *, closed_at: str = "") -> ClosedTrade | None:
+    def close_position(
+        self,
+        position_id: str,
+        exit_price: float,
+        *,
+        closed_at: str = "",
+        ig_confirmed: bool = False,
+    ) -> ClosedTrade | None:
         leg = self.positions.pop(position_id, None)
         if leg is None:
             return None
@@ -188,6 +195,7 @@ class HedgeLedger:
             closed_at=closed_at,
             bars_held=max(0, self.bar_index - leg.opened_bar),
             deal_id=(leg.deal_id or "").strip(),
+            ig_confirmed=bool(ig_confirmed),
         )
         self.closed_trades.append(trade)
         # Cancel linked working orders

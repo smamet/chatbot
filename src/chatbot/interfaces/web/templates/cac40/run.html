@@ -9,7 +9,7 @@
        data-initial-status="{{ run.state.status }}"
        data-poll="{% if run.state.status in ('running', 'stopping') and not live %}1{% else %}0{% endif %}">
       {% if live %}
-      Mode: <span class="badge {% if run.mode == 'live' %}failed{% elif run.mode == 'paper' %}done{% else %}off{% endif %}">{{ run.mode or '—' }}</span>
+      Mode: <span class="badge {% if run.mode == 'live' %}failed{% else %}off{% endif %}">{{ run.mode or '—' }}</span>
       · Cycles {{ run.state.current_bar or 0 }}
       {% if run.pnl %}
       · Open legs {{ run.pnl.legs_count or 0 }}
@@ -39,8 +39,8 @@
     <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40#cac40-live">Live settings</a>
     {% if run.mode != 'live' %}
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/clear"
-          onsubmit="return confirm('Clear paper journal, decisions, and ledger snapshot?');">
-      <button type="submit" class="btn-secondary">Clear paper history</button>
+          onsubmit="return confirm('Clear journal, decisions, and ledger snapshot?');">
+      <button type="submit" class="btn-secondary">Clear history</button>
     </form>
     {% endif %}
     {% else %}
@@ -69,25 +69,33 @@
 </section>
 {% endif %}
 
+{% if live %}
+{% from "cac40/_open_book.html" import open_book_table %}
+{{ open_book_table(run.report.book if run.report else none, live_mode=run.mode or 'off', heading='Open book') }}
+{% endif %}
+
 {% set report = run.report %}
 {% if report %}
 <section class="card">
   <h2>Report</h2>
-  <div class="stat-grid">
-    <div><strong>Final equity</strong><br>{{ '%.2f'|format(report.final_equity or 0) }}</div>
-    <div><strong>Realized PnL</strong><br>{{ '%.2f'|format(report.realized_pnl or 0) }}</div>
-    <div><strong>Max DD</strong><br>{{ '%.2f'|format(report.max_drawdown or 0) }}</div>
-    <div><strong>Trades</strong><br>{{ report.trades }}{% if report.trades %} (WR {{ '%.0f'|format((report.winrate or 0) * 100) }}%){% else %} (WR —){% endif %}</div>
-    <div><strong>LLM decisions</strong><br>{{ report.decisions_count or (run.decisions|length) }}</div>
-    <div><strong>LLM calls (total)</strong><br>{{ report.llm_calls_total if report.llm_calls_total is defined else '—' }}</div>
-  </div>
+  <p class="cac40-report-stats">
+    <span><strong>Final equity</strong> {{ '%.2f'|format(report.final_equity or 0) }}</span>
+    <span><strong>Realized PnL</strong> {{ '%.2f'|format(report.realized_pnl or 0) }}</span>
+    <span><strong>Max DD</strong> {{ '%.2f'|format(report.max_drawdown or 0) }}</span>
+    <span><strong>Trades</strong> {{ report.trades }}{% if report.trades %} (WR {{ '%.0f'|format((report.winrate or 0) * 100) }}%){% else %} (WR —){% endif %}</span>
+    <span><strong>LLM decisions</strong> {{ report.decisions_count or (run.decisions|length) }}</span>
+    <span><strong>LLM calls</strong> {{ report.llm_calls_total if report.llm_calls_total is defined else '—' }}</span>
+  </p>
 </section>
 
 <section class="card">
   <h2>Closed trades (per leg)</h2>
   <table class="data-table">
     <thead>
-      <tr><th>ID</th><th>Side</th><th>Role</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Bars</th></tr>
+      <tr>
+        <th>ID</th><th>Side</th><th>Role</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Bars</th>
+        {% if live %}<th>IG</th>{% endif %}
+      </tr>
     </thead>
     <tbody>
       {% for t in report.closed_trades or [] %}
@@ -99,9 +107,17 @@
         <td>{{ t.exit }}</td>
         <td>{{ '%.2f'|format(t.pnl) if t.pnl is number else '—' }}</td>
         <td>{{ t.bars_held }}</td>
+        {% if live %}
+        <td>
+          {% if t.phantom %}<span class="badge failed">phantom</span>
+          {% elif t.ig_confirmed %}<span class="badge done">confirmed on IG</span>
+          {% elif t.deal_id %}<span class="badge warn">unverified</span>
+          {% else %}<span class="badge off">local</span>{% endif %}
+        </td>
+        {% endif %}
       </tr>
       {% else %}
-      <tr><td colspan="7" class="empty-state">No closed trades</td></tr>
+      <tr><td colspan="{% if live %}8{% else %}7{% endif %}" class="empty-state">No closed trades</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -116,7 +132,11 @@
     {% for d in run.decisions %}
     <details class="cac40-decision" id="cycle-{{ d.cycle_dir or loop.index }}" {% if loop.first %}open{% endif %}>
       <summary>
-        <span class="cac40-decision__ts">{{ d.ts }}</span>
+        {% if d.ts %}
+        <time class="cac40-decision__ts js-local-datetime" datetime="{{ d.ts }}">{{ d.ts }}</time>
+        {% else %}
+        <span class="cac40-decision__ts">—</span>
+        {% endif %}
         <span class="badge">{{ d.bias or 'no decision' }}</span>
         <span class="text-muted">S={{ d.support if d.support is not none else '—' }} · R={{ d.resistance if d.resistance is not none else '—' }}</span>
         <span class="text-muted">{{ d.actions|length }} actions</span>
@@ -240,7 +260,7 @@
 
   {% if run.state.status == 'running' or run.state.status == 'stopping' %}
   <p class="text-muted" id="cac40-run-poll-hint">Updating progress… (reloads quietly when new decisions arrive)</p>
-  {% elif live and run.mode in ('paper', 'live') %}
+  {% elif live and run.mode == 'live' %}
   <p class="text-muted">Live report — refresh the page manually when you want the latest cycles.</p>
   {% endif %}
 </section>

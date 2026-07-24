@@ -1,0 +1,133 @@
+{% extends "base.html" %}
+{% from "cac40/_open_book.html" import open_book_diff_table, _status_badge %}
+{% block body %}
+<section class="page-header">
+  <div>
+    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40?tab=live">← Live trading</a></p>
+    <h1>Book vs IG</h1>
+    <p class="subtitle">
+      Preview what <strong>Apply sync</strong> would change. Auto-sync still runs each cycle —
+      desyncs are logged below as anomalies.
+    </p>
+  </div>
+  <div class="header-actions">
+    {% if preview and preview.ok and live_mode != 'off' %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/sync-book"
+          onsubmit="return confirm('Rebuild the local open book from IG? This applies the preview below.');">
+      <button type="submit" class="btn-primary" data-loading="Syncing book…">Apply sync from IG</button>
+    </form>
+    {% endif %}
+    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/book-sync">Refresh preview</a>
+  </div>
+</section>
+
+{% if live_ok %}
+<section class="card"><div class="callout">{{ live_ok }}</div></section>
+{% endif %}
+{% if live_error %}
+<section class="card"><div class="callout callout--danger" style="white-space:pre-wrap;">{{ live_error }}</div></section>
+{% endif %}
+
+{% if not preview or not preview.ok %}
+<section class="card">
+  <h2>Preview unavailable</h2>
+  <p class="text-muted">{{ preview.message if preview else 'Could not load IG snapshot.' }}</p>
+</section>
+{% else %}
+{% set counts = preview.counts or {} %}
+<section class="card">
+  <h2>Open book diff</h2>
+  <p class="cac40-report-stats">
+    <span><strong>In sync</strong> {{ counts.in_sync or 0 }}</span>
+    <span><strong>New from IG</strong> {{ counts.new or 0 }}</span>
+    <span><strong>Remove (not on IG)</strong> {{ counts.remove or 0 }}</span>
+    <span><strong>IG positions</strong> {{ counts.ig_positions or 0 }}</span>
+    <span><strong>IG orders</strong> {{ counts.ig_orders or 0 }}</span>
+    {% if preview.as_of %}
+    <span>Fetched <time class="js-local-datetime" datetime="{{ preview.as_of }}">{{ preview.as_of }}</time></span>
+    {% endif %}
+  </p>
+  {% if (counts.new or 0) == 0 and (counts.remove or 0) == 0 and (counts.reopened or 0) == 0 %}
+  <p class="field-hint">Local open book matches IG for all dealIds.</p>
+  {% else %}
+  <p class="field-hint cac40-sync-warn">
+    Discrepancies detected — red rows would be dropped from local; “new” rows would be imported.
+  </p>
+  {% endif %}
+  {{ open_book_diff_table(preview.groups or [], live_mode=live_mode) }}
+</section>
+
+<section class="card">
+  <h2>Closed trades vs IG</h2>
+  <p class="field-hint">
+    IG only exposes <em>open</em> positions. A closed local deal is verified when it is absent from
+    IG opens; if it reappears, Apply sync will quarantine it as phantom.
+  </p>
+  <table class="data-table data-table--compact">
+    <thead>
+      <tr><th>ID</th><th>Side</th><th>Deal</th><th>PnL</th><th>IG</th></tr>
+    </thead>
+    <tbody>
+      {% for t in preview.closed_trades or [] %}
+      <tr class="{% if t.status == 'reopened' %}cac40-book__row--remove{% endif %}">
+        <td>{{ t.id }}</td>
+        <td>{{ t.side or '—' }}</td>
+        <td>{% if t.deal_id %}<code>{{ t.deal_id }}</code>{% else %}—{% endif %}</td>
+        <td>{{ '%.2f'|format(t.pnl) if t.pnl is number else '—' }}</td>
+        <td>{{ _status_badge(t.status) }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="empty-state">No closed trades</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% if preview.quarantined %}
+  <p class="field-hint" style="margin-top:0.5rem;">
+    Would quarantine as phantom: {% for q in preview.quarantined %}<code>{{ q }}</code>{% if not loop.last %}, {% endif %}{% endfor %}
+  </p>
+  {% endif %}
+</section>
+{% endif %}
+
+<section class="card cac40-sync-log" id="desync-log">
+  <div class="cac40-live-heading">
+    <h2>Desync log</h2>
+    {% if sync_log %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/sync-log/clear"
+          onsubmit="return confirm('Flush the desync log? This cannot be undone.');">
+      <button type="submit" class="btn-secondary btn-sm">Flush log</button>
+    </form>
+    {% endif %}
+  </div>
+  <p class="field-hint">
+    Auto-sync still applies each live cycle without confirmation. Entries here mean the book
+    changed to match IG — treat as anomalies to investigate.
+  </p>
+  {% if sync_log %}
+  <ul class="cac40-sync-log__list">
+    {% for e in sync_log %}
+    <li class="cac40-sync-log__item">
+      <div class="cac40-sync-log__head">
+        {% if e.ts %}
+        <time class="js-local-datetime" datetime="{{ e.ts }}">{{ e.ts }}</time>
+        {% else %}—{% endif %}
+        <span class="badge failed">{{ e.source or 'cycle' }}</span>
+        {% if e.cycle_id %}<code>{{ e.cycle_id }}</code>{% endif %}
+      </div>
+      <div class="cac40-sync-log__meta text-muted">
+        {% if e.dropped %}dropped {{ e.dropped|length }} · {% endif %}
+        {% if e.imported_orders %}+orders {{ e.imported_orders|length }} · {% endif %}
+        {% if e.opened %}+legs {{ e.opened|length }} · {% endif %}
+        {% if e.closed %}closed {{ e.closed|length }} · {% endif %}
+        {% if e.quarantined %}quarantined {{ e.quarantined|length }} · {% endif %}
+        {% if e.repair %}repaired · {% endif %}
+        {% if e.warnings %}warnings {{ e.warnings|length }}{% endif %}
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="empty-state">No desync events recorded.</p>
+  {% endif %}
+</section>
+{% endblock %}

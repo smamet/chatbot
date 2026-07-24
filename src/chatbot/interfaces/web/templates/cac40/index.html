@@ -100,7 +100,7 @@
   <div class="callout callout--muted">
     <strong>Old history holes only</strong> — {{ ohlc.historical_gap_count }} mid-session gap{{ 's' if ohlc.historical_gap_count != 1 else '' }}
     before the last {{ ohlc.gap_recent_days or 90 }} days (typical in long BacktestMarket files).
-    Your live lookback is clean; Paper/Live do not need a re-upload for this.
+    Your live lookback is clean; Live does not need a re-upload for this.
     {% if ohlc.gap_fix_hint %}<p style="margin:0.5rem 0 0;">{{ ohlc.gap_fix_hint }}</p>{% endif %}
   </div>
   {% endif %}
@@ -228,29 +228,38 @@
 {% from "cac40/_strategy_fields.html" import strategy_fields %}
 
 <section class="card" id="cac40-live">
-  <h2>Live trading</h2>
-  <p class="text-muted">
-    Off = worker skips this bot · Paper = Gemini + simulated ledger (no IG orders) ·
-    Live = real working orders on selected IG accounts (DEMO or LIVE env from each connector).
-    Disarming stops new cycles but leaves existing IG working orders untouched.
-    Automatic cycles run at <code>:00:15</code>, <code>:15:15</code>, <code>:30:15</code>, <code>:45:15</code> Europe/Paris (15s after each 15m candle close).
-  </p>
-  <p class="text-muted" style="margin-top:0.5rem;">
+  <div class="cac40-live-heading">
+    <h2>Live trading</h2>
+    <details class="cac40-mode-help">
+      <summary title="Off = worker skips this bot · Live = real working orders on selected IG accounts (DEMO or LIVE env from each connector). Use an IG DEMO connector to practice. Disarming stops new cycles but leaves existing IG working orders untouched. Automatic cycles run at :00:15, :15:15, :30:15, :45:15 Europe/Paris (15s after each 15m candle close).">How modes work</summary>
+      <p class="field-hint">
+        Off = worker skips this bot ·
+        Live = real working orders on selected IG accounts (DEMO or LIVE env from each connector).
+        Use an IG DEMO connector to practice without a live account.
+        Disarming stops new cycles but leaves existing IG working orders untouched.
+        Automatic cycles run at <code>:00:15</code>, <code>:15:15</code>, <code>:30:15</code>, <code>:45:15</code> Europe/Paris (15s after each 15m candle close).
+      </p>
+    </details>
+  </div>
+  <p class="text-muted cac40-live-status">
     Mode
     {% if live_mode == 'live' %}<span class="badge failed">LIVE</span>
-    {% elif live_mode == 'paper' %}<span class="badge done">PAPER</span>
     {% else %}<span class="badge off">OFF</span>{% endif %}
-    {% if live_status.dry_run %}<span class="badge">dry-run</span>{% endif %}
-    {% if live_status.last_cycle_at %}· last bot cycle <code>{{ live_status.last_cycle_at }}</code>{% endif %}
+    {% if live_status.last_cycle_at %}
+      · last bot cycle <time class="js-local-datetime" datetime="{{ live_status.last_cycle_at }}">{{ live_status.last_cycle_at }}</time>
+    {% endif %}
     {% if live_status.open_legs is defined %}· legs <code>{{ live_status.open_legs }}</code>{% endif %}
     {% if live_status.pnl and live_status.pnl.realized_session is defined %}
       · realized <code>{{ '%.2f'|format(live_status.pnl.realized_session) }}</code>
     {% endif %}
     {% if live_worker_status and live_worker_status.finished_at %}
-      · worker poll <code>{{ live_worker_status.finished_at }}</code>
+      · worker poll <time class="js-local-datetime" datetime="{{ live_worker_status.finished_at }}">{{ live_worker_status.finished_at }}</time>
       (ok {{ live_worker_status.tenants_ok or 0 }} /
       failed {{ live_worker_status.tenants_failed or 0 }} /
       skipped {{ live_worker_status.tenants_skipped or 0 }})
+    {% endif %}
+    {% if sync_log_count %}
+      · <a href="/dashboard/bots/{{ tenant.slug }}/cac40/live/book-sync#desync-log">Sync log ({{ sync_log_count }})</a>
     {% endif %}
   </p>
   {% if live_stale and live_mode != 'off' %}
@@ -281,10 +290,6 @@
       <input type="hidden" name="mode" value="off">
       <button type="submit" class="btn-secondary btn-sm" {% if live_mode == 'off' %}disabled{% endif %}>Off</button>
     </form>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/mode" class="no-loader" style="display:inline;">
-      <input type="hidden" name="mode" value="paper">
-      <button type="submit" class="btn-secondary btn-sm" {% if live_mode == 'paper' %}disabled{% endif %}>Paper</button>
-    </form>
     <button type="button" class="btn-primary btn-sm" id="cac40-live-arm-btn" {% if live_mode == 'live' %}disabled{% endif %}>Arm Live…</button>
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/run-once" class="no-loader" style="display:inline;">
       <label class="checkbox-row" style="display:inline-flex;align-items:center;gap:0.35rem;margin-right:0.35rem;font-size:0.85rem;" title="Bypass Adaptive/Fixed LLM schedule for this cycle">
@@ -296,36 +301,39 @@
         Run cycle now
       </button>
     </form>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/sync-book" class="no-loader" style="display:inline;"
-          onsubmit="return confirm('Rebuild the local open book from IG (positions + working/attached orders)? Phantom local closes for reopened deals are quarantined.');">
-      <button type="submit" class="btn-secondary btn-sm" {% if live_mode == 'off' %}disabled{% endif %}
-              data-loading="Syncing book…">
-        Sync book from IG
-      </button>
-    </form>
+    <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/book-sync"
+       {% if live_mode == 'off' %}aria-disabled="true" style="pointer-events:none;opacity:0.5;"{% endif %}>
+      Review &amp; sync book…
+    </a>
     <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report">View results</a>
     {% if live_mode != 'live' %}
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/clear" class="no-loader" style="display:inline;"
-          onsubmit="return confirm('Clear paper journal, decisions, and ledger snapshot?');">
-      <button type="submit" class="btn-secondary btn-sm">Clear paper history</button>
+          onsubmit="return confirm('Clear journal, decisions, and ledger snapshot?');">
+      <button type="submit" class="btn-secondary btn-sm">Clear history</button>
     </form>
     {% endif %}
   </div>
 
+  {% from "cac40/_open_book.html" import open_book_table %}
+  {{ open_book_table(live_book, live_mode=live_mode, heading='Open book', embedded=true, sync_href='/dashboard/bots/' ~ tenant.slug ~ '/cac40/live/book-sync') }}
+
   {% if live_cycles %}
   <h3 class="card-title" style="font-size:1rem;margin-top:1rem;">Live cycles</h3>
-  <p class="field-hint">Recent paper/live cycles with charts &amp; LLM answers (same viewer as backtest).</p>
-  <ul class="cac40-runs__list" style="margin-bottom:1rem;">
+  <p class="field-hint">Latest 3 cycles — open <a href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report">View results</a> for full history.</p>
+  <ul class="cac40-runs__list cac40-runs__list--compact" style="margin-bottom:1rem;">
     {% for c in live_cycles %}
-    <li class="cac40-run">
+    <li class="cac40-run cac40-run--compact">
       <div class="cac40-run__main">
         <a class="cac40-run__id" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report#cycle-{{ c.cycle_id }}" title="{{ c.cycle_id }}">{{ c.cycle_id }}</a>
         {% if c.skipped %}<span class="badge off">skipped</span>
         {% elif c.bias %}<span class="badge">{{ c.bias }}</span>
         {% else %}<span class="badge">decision</span>{% endif %}
         {% if c.has_charts %}<span class="badge done">charts</span>{% endif %}
-        {% if c.dry_run %}<span class="badge">dry-run</span>{% endif %}
-        <span class="text-muted">{{ c.ts or '—' }}</span>
+        {% if c.ts %}
+        <time class="text-muted js-local-datetime" datetime="{{ c.ts }}">{{ c.ts }}</time>
+        {% else %}
+        <span class="text-muted">—</span>
+        {% endif %}
       </div>
       <div class="cac40-run__metrics">
         <span class="cac40-run__metric">
@@ -392,7 +400,7 @@
         <p class="confirm-dialog__lead">
           Working orders will be placed on the selected IG accounts below.
           Each account uses its own Environment (DEMO / LIVE) from the connector.
-          Switching back to Off/Paper stops new cycles but does <strong>not</strong> cancel open IG orders.
+          Switching back to Off stops new cycles but does <strong>not</strong> cancel open IG orders.
         </p>
       </header>
       <div class="confirm-dialog__body">

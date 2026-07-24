@@ -382,7 +382,7 @@ def test_run_due_skips_armed_bots(mock_sync, tmp_path: Path) -> None:
         patch("chatbot.application.connector_service.ConnectorService"),
         patch(
             "chatbot.application.cac40_live_service.load_live_config",
-            return_value={"mode": "paper", "ig_connector_ids": [1]},
+            return_value={"mode": "live", "ig_connector_ids": [1]},
         ),
         patch(
             "chatbot.application.cac40_live_service.resolve_primary_ig_config",
@@ -393,5 +393,5 @@ def test_run_due_skips_armed_bots(mock_sync, tmp_path: Path) -> None:
         mock_tenant_svc.return_value.get_by_id.return_value = tenant
         logs = run_due_ig_ohlc_syncs(session, settings)
 
-    assert any("armed (paper)" in line for line in logs)
+    assert any("armed (live)" in line for line in logs)
     mock_sync.assert_not_called()

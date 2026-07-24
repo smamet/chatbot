@@ -1,0 +1,144 @@
+{# Shared open-book table (positions + linked TP/orders). #}
+{% macro _deal_cell(deal_id, live_mode) %}
+  {% set did = deal_id or '' %}
+  {% if did.startswith('attached:') %}
+    <code title="{{ did }}">att:{{ did.split(':')[1][:8] }}{% if did.split(':')|length > 2 %}:{{ did.split(':')[2] }}{% endif %}</code>
+  {% elif did %}
+    <code title="{{ did }}">{{ did[:12] }}{% if did|length > 12 %}…{% endif %}</code>
+  {% elif live_mode == 'live' %}
+    <span class="badge warn" title="No IG dealId — not mirrored to broker">not mirrored</span>
+  {% else %}
+    <span class="text-muted">—</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro _status_badge(status) %}
+  {% if status == 'in_sync' %}<span class="badge done">in sync</span>
+  {% elif status == 'new' %}<span class="badge on">new</span>
+  {% elif status == 'remove' %}<span class="badge failed">remove</span>
+  {% elif status == 'reopened' %}<span class="badge failed">reopened</span>
+  {% elif status == 'confirmed' %}<span class="badge done">confirmed on IG</span>
+  {% elif status == 'verified_closed' %}<span class="badge done">verified closed</span>
+  {% elif status == 'paper' %}<span class="badge off">local</span>
+  {% elif status == 'unverified' %}<span class="badge warn">unverified</span>
+  {% elif status %}<span class="badge">{{ status }}</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro _book_row(row, child=false, live_mode='off', show_status=false) %}
+  <tr class="{% if child %}cac40-book__child{% else %}cac40-book__parent{% endif %}{% if row.status == 'remove' %} cac40-book__row--remove{% elif row.status == 'new' %} cac40-book__row--new{% endif %}">
+    <td class="cac40-book__kind">
+      {% if child %}<span class="cac40-book__nest">└</span>{% endif %}
+      {% if row.row_kind == 'position' %}
+        Position{% if row.purpose and row.purpose != 'primary' %} <span class="text-muted">({{ row.purpose }})</span>{% endif %}
+      {% else %}
+        {% if row.purpose == 'entry' %}Entry
+        {% elif row.purpose == 'tp' %}TP
+        {% elif row.purpose == 'hedge_cover' %}Hedge
+        {% elif row.purpose == 'close' %}Close
+        {% else %}{{ row.purpose or 'Order' }}{% endif %}
+        {% if row.order_type %}<span class="text-muted"> {{ row.order_type }}</span>{% endif %}
+      {% endif %}
+    </td>
+    <td>{{ row.side }}</td>
+    <td>{{ row.size if row.size is not none else '—' }}</td>
+    <td>{% if row.level is number %}{{ '%.2f'|format(row.level) }}{% else %}{{ row.level or '—' }}{% endif %}</td>
+    <td>
+      {% if row.upl is number %}
+        <span class="{% if row.upl > 0 %}cac40-decision__pnl--pos{% elif row.upl < 0 %}cac40-decision__pnl--neg{% endif %}">
+          {{ '%+.2f'|format(row.upl) }}
+        </span>
+      {% else %}—{% endif %}
+    </td>
+    <td class="text-muted">{% if row.link %}<code>{{ row.link }}</code>{% else %}—{% endif %}</td>
+    <td>{{ _deal_cell(row.deal_id, live_mode) }}</td>
+    {% if show_status %}
+    <td>{{ _status_badge(row.status) }}</td>
+    {% endif %}
+  </tr>
+{% endmacro %}
+
+{% macro open_book_table(book, live_mode='off', heading='Open book', embedded=false, sync_href='') %}
+{% set groups = book.groups if book else [] %}
+{% if embedded %}
+<div class="cac40-book cac40-book--embedded">
+  <h3 class="card-title" style="font-size:1rem;margin-top:1rem;">{{ heading }}</h3>
+{% else %}
+<section class="card cac40-book">
+  <h2>{{ heading }}</h2>
+{% endif %}
+  <p class="field-hint cac40-book__caption">
+    Local book
+    {% if book and book.as_of %}
+      as of <time class="js-local-datetime" datetime="{{ book.as_of }}">{{ book.as_of }}</time>
+    {% else %}
+      (no cycle yet)
+    {% endif %}
+    · phase {{ book.phase if book and book.phase else 'Flat' }}
+    {% if book and book.last_price is not none %}· last {{ book.last_price }}{% endif %}
+    {% if sync_href %}
+    — <a href="{{ sync_href }}">Review &amp; sync book</a> to compare with IG.
+    {% else %}
+    — use <strong>Review &amp; sync book</strong> to refresh from the broker.
+    {% endif %}
+  </p>
+  <table class="data-table data-table--compact cac40-book__table">
+    <thead>
+      <tr>
+        <th>Kind</th>
+        <th>Side</th>
+        <th>Size</th>
+        <th>Level</th>
+        <th>UPL</th>
+        <th>Link</th>
+        <th>Deal</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if groups %}
+        {% for g in groups %}
+          {{ _book_row(g.parent, child=false, live_mode=live_mode) }}
+          {% for child in g.children or [] %}
+            {{ _book_row(child, child=true, live_mode=live_mode) }}
+          {% endfor %}
+        {% endfor %}
+      {% else %}
+        <tr><td colspan="7" class="empty-state">No open positions or working orders</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+{% if embedded %}
+</div>
+{% else %}
+</section>
+{% endif %}
+{% endmacro %}
+
+{% macro open_book_diff_table(groups, live_mode='off') %}
+  <table class="data-table data-table--compact cac40-book__table">
+    <thead>
+      <tr>
+        <th>Kind</th>
+        <th>Side</th>
+        <th>Size</th>
+        <th>Level</th>
+        <th>UPL</th>
+        <th>Link</th>
+        <th>Deal</th>
+        <th>Status</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% if groups %}
+        {% for g in groups %}
+          {{ _book_row(g.parent, child=false, live_mode=live_mode, show_status=true) }}
+          {% for child in g.children or [] %}
+            {{ _book_row(child, child=true, live_mode=live_mode, show_status=true) }}
+          {% endfor %}
+        {% endfor %}
+      {% else %}
+        <tr><td colspan="8" class="empty-state">No open positions or working orders on either side</td></tr>
+      {% endif %}
+    </tbody>
+  </table>
+{% endmacro %}

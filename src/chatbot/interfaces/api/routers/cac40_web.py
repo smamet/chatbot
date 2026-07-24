@@ -26,11 +26,15 @@ from chatbot.application.cac40_live_service import (
     LIVE_CYCLE_SECONDS,
     adopt_ig_book,
     clear_live_history,
+    clear_sync_log,
     get_live_report,
     list_live_cycles,
     load_live_config,
+    preview_ig_book,
+    read_live_book,
     read_live_status,
     read_live_worker_status,
+    read_sync_log,
     resolve_live_chart_file,
     resolve_primary_ig_config,
     run_live_cycle_now,
@@ -205,7 +209,9 @@ def cac40_index(
             "ig_connectors": ig_connectors,
             "cac40_live_poll_seconds": settings.cac40_live_poll_seconds,
             "live_cycle_seconds": LIVE_CYCLE_SECONDS,
-            "live_cycles": list_live_cycles(settings, slug, limit=50),
+            "live_cycles": list_live_cycles(settings, slug, limit=3),
+            "live_book": read_live_book(settings, slug),
+            "sync_log_count": len(read_sync_log(settings, slug, limit=200)),
         },
     )
 
@@ -794,6 +800,38 @@ async def cac40_live_run_once(
     )
 
 
+@router.get("/bots/{slug}/cac40/live/book-sync", response_class=HTMLResponse)
+def cac40_live_book_sync(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    """Preview local vs IG open book; apply via POST sync-book."""
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    _require_cac40_active(tenant, session)
+    live_cfg = load_live_config(settings, slug)
+    preview = preview_ig_book(session, settings, slug)
+    return templates.TemplateResponse(
+        request,
+        "cac40/book_sync.html",
+        {
+            "user": user,
+            "tenant": tenant,
+            "title": f"Book vs IG — {tenant.name}",
+            "live_mode": live_cfg.get("mode") or "off",
+            "preview": preview,
+            "sync_log": read_sync_log(settings, slug, limit=100),
+            "live_ok": request.query_params.get("live_ok"),
+            "live_error": request.query_params.get("live_error"),
+        },
+    )
+
+
 @router.post("/bots/{slug}/cac40/live/sync-book")
 def cac40_live_sync_book(
     slug: str,
@@ -812,11 +850,38 @@ def cac40_live_sync_book(
     result = adopt_ig_book(session, settings, slug)
     if result.get("ok"):
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote(str(result['message']))}",
+            url=(
+                f"/dashboard/bots/{slug}/cac40/live/book-sync"
+                f"?live_ok={quote(str(result['message']))}"
+            ),
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_error={quote(str(result['message']))}",
+        url=(
+            f"/dashboard/bots/{slug}/cac40/live/book-sync"
+            f"?live_error={quote(str(result['message']))}"
+        ),
+        status_code=303,
+    )
+
+
+@router.post("/bots/{slug}/cac40/live/sync-log/clear")
+def cac40_live_sync_log_clear(
+    slug: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    from urllib.parse import quote
+
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    _require_cac40_active(tenant, session)
+    clear_sync_log(settings, slug)
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}/cac40/live/book-sync?live_ok={quote('Desync log flushed')}",
         status_code=303,
     )
 

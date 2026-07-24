@@ -29,7 +29,7 @@ from chatbot.domain.models.integration import IntegrationType
 
 logger = logging.getLogger(__name__)
 
-LIVE_MODES = frozenset({"off", "paper", "live"})
+LIVE_MODES = frozenset({"off", "live"})
 LIVE_CYCLE_SECONDS = 900
 # Run shortly after each 15m candle close so OHLC is available (Paris market clock).
 LIVE_CYCLE_OFFSET_SECONDS = 15
@@ -167,6 +167,93 @@ def live_decisions_path(settings: Settings, slug: str) -> Path:
     return live_dir(settings, slug) / "decisions_log.json"
 
 
+def sync_log_path(settings: Settings, slug: str) -> Path:
+    return live_dir(settings, slug) / "sync_log.json"
+
+
+SYNC_LOG_MAX = 200
+
+
+def read_sync_log(settings: Settings, slug: str, *, limit: int = 100) -> list[dict[str, Any]]:
+    raw = _read_json(sync_log_path(settings, slug), default=[]) or []
+    if not isinstance(raw, list):
+        return []
+    rows = [r for r in raw if isinstance(r, dict)]
+    return rows[: max(1, int(limit))]
+
+
+def append_sync_log(settings: Settings, slug: str, entry: dict[str, Any]) -> None:
+    path = sync_log_path(settings, slug)
+    existing = _read_json(path, default=[]) or []
+    if not isinstance(existing, list):
+        existing = []
+    row = dict(entry)
+    row.setdefault("ts", datetime.now(timezone.utc).isoformat())
+    rows = [row, *[r for r in existing if isinstance(r, dict)]]
+    _write_json(path, rows[:SYNC_LOG_MAX])
+
+
+def clear_sync_log(settings: Settings, slug: str) -> None:
+    path = sync_log_path(settings, slug)
+    if path.exists():
+        path.unlink()
+
+
+def _sync_changes_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract desync deltas from a cycle payload; None when nothing changed."""
+    wo = payload.get("working_order_sync") if isinstance(payload, dict) else None
+    rec = payload.get("reconcile") if isinstance(payload, dict) else None
+    if not isinstance(wo, dict):
+        wo = {}
+    if not isinstance(rec, dict):
+        rec = {}
+    dropped = list(wo.get("dropped") or [])
+    imported_orders = list(wo.get("imported") or [])
+    opened = list(rec.get("opened") or [])
+    closed = list(rec.get("closed") or [])
+    repair = rec.get("repair") if isinstance(rec.get("repair"), dict) else None
+    quarantined: list[Any] = []
+    if repair:
+        quarantined = list(repair.get("quarantined") or [])
+    warnings = list(wo.get("warnings") or []) + list(rec.get("warnings") or [])
+    if not (dropped or imported_orders or opened or closed or repair or quarantined):
+        return None
+    return {
+        "dropped": dropped,
+        "imported_orders": imported_orders,
+        "opened": opened,
+        "closed": closed,
+        "quarantined": quarantined,
+        "repair": repair,
+        "warnings": warnings,
+        "desync": bool(rec.get("desync") or repair),
+    }
+
+
+def append_sync_log_from_payload(
+    settings: Settings,
+    slug: str,
+    payload: dict[str, Any],
+    *,
+    source: str = "cycle",
+) -> bool:
+    """Append a sync-log entry when the cycle changed the book. Returns True if logged."""
+    changes = _sync_changes_from_payload(payload)
+    if changes is None:
+        return False
+    append_sync_log(
+        settings,
+        slug,
+        {
+            "ts": payload.get("ts") or datetime.now(timezone.utc).isoformat(),
+            "source": source,
+            "cycle_id": payload.get("cycle_dir") or None,
+            **changes,
+        },
+    )
+    return True
+
+
 def live_journal_dir(settings: Settings, slug: str) -> Path:
     path = live_dir(settings, slug) / "journal"
     path.mkdir(parents=True, exist_ok=True)
@@ -300,14 +387,23 @@ def default_live_config() -> dict[str, Any]:
     }
 
 
+def normalize_live_mode(mode: Any) -> str:
+    """Map legacy ``paper`` / unknown values to ``off``; keep ``off``|``live``."""
+    value = str(mode or "off").strip().lower()
+    if value == "paper":
+        return "off"
+    if value in LIVE_MODES:
+        return value
+    return "off"
+
+
 def load_live_config(settings: Settings, slug: str) -> dict[str, Any]:
     raw = _read_json(live_config_path(settings, slug), default=None)
     base = default_live_config()
     if not isinstance(raw, dict):
         return base
-    mode = str(raw.get("mode") or "off").strip().lower()
-    if mode not in LIVE_MODES:
-        mode = "off"
+    raw_mode = str(raw.get("mode") or "off").strip().lower()
+    mode = normalize_live_mode(raw_mode)
     ids: list[int] = []
     for item in raw.get("ig_connector_ids") or []:
         try:
@@ -319,7 +415,11 @@ def load_live_config(settings: Settings, slug: str) -> dict[str, Any]:
     for key in list(strategy.keys()):
         if key in incoming and incoming[key] is not None:
             strategy[key] = incoming[key]
-    return {"mode": mode, "ig_connector_ids": ids, "strategy": strategy}
+    cfg = {"mode": mode, "ig_connector_ids": ids, "strategy": strategy}
+    # Self-heal live_config.json when legacy paper/unknown mode is on disk.
+    if raw_mode != mode:
+        _write_json(live_config_path(settings, slug), cfg)
+    return cfg
 
 
 def resolve_cac40_trading_banner(
@@ -334,7 +434,7 @@ def resolve_cac40_trading_banner(
     Topbar indicator when CAC40 Backtest is active for this bot.
 
     Returns None when the integration is inactive/disallowed; otherwise
-    ``{"active": True, "mode": "off"|"paper"|"live", "slug": ...}``.
+    ``{"active": True, "mode": "off"|"live", "slug": ...}``.
     """
     from chatbot.domain.models.integration_schema import is_integration_allowed
 
@@ -347,17 +447,13 @@ def resolve_cac40_trading_banner(
     )
     if active is None:
         return None
-    mode = load_live_config(settings, slug)["mode"]
-    if mode not in LIVE_MODES:
-        mode = "off"
+    mode = normalize_live_mode(load_live_config(settings, slug)["mode"])
     return {"active": True, "mode": mode, "slug": slug}
 
 
 def save_live_config(settings: Settings, slug: str, payload: dict[str, Any]) -> dict[str, Any]:
     current = load_live_config(settings, slug)
-    mode = str(payload.get("mode") or current["mode"]).strip().lower()
-    if mode not in LIVE_MODES:
-        mode = current["mode"]
+    mode = normalize_live_mode(payload.get("mode") or current["mode"])
     ids: list[int] = []
     for item in payload.get("ig_connector_ids", current["ig_connector_ids"]) or []:
         try:
@@ -412,9 +508,13 @@ def set_live_mode(
     tenant_id: int | None = None,
     ig_connector_ids: list[int] | None = None,
 ) -> dict[str, Any]:
-    mode = str(mode or "").strip().lower()
-    if mode not in LIVE_MODES:
-        raise ValueError(f"Invalid mode {mode!r}; expected off|paper|live")
+    raw_mode = str(mode or "").strip().lower()
+    if raw_mode == "paper" or not raw_mode:
+        mode = "off"
+    elif raw_mode in LIVE_MODES:
+        mode = raw_mode
+    else:
+        raise ValueError(f"Invalid mode {raw_mode!r}; expected off|live")
     cfg = load_live_config(settings, slug)
     if ig_connector_ids is not None:
         ids: list[int] = []
@@ -443,8 +543,8 @@ def set_live_mode(
                 cfg["ig_connector_ids"] = usable
     cfg["mode"] = mode
     saved = save_live_config(settings, slug, cfg)
-    # Force GET /positions on the next cycle after arming paper/live.
-    if mode in ("paper", "live"):
+    # Force GET /positions on the next cycle after arming live.
+    if mode == "live":
         with _LOCK:
             sched = _SCHEDULERS.get(slug)
             if sched is not None:
@@ -601,17 +701,20 @@ def _append_decision(settings: Settings, slug: str, payload: dict[str, Any]) -> 
 
 
 def clear_live_history(settings: Settings, slug: str, *, mode: str | None = None) -> None:
-    """Clear paper journal/state. Blocked when mode is live."""
+    """Clear live journal/state. Blocked when mode is live."""
     cfg = load_live_config(settings, slug)
     current = mode or cfg["mode"]
     if current == "live":
         raise ValueError("Cannot clear history while Live mode is armed.")
     state = live_state_path(settings, slug)
     decisions = live_decisions_path(settings, slug)
+    sync_log = sync_log_path(settings, slug)
     if state.exists():
         state.unlink()
     if decisions.exists():
         decisions.unlink()
+    if sync_log.exists():
+        sync_log.unlink()
     # Drop mirrored dealId books so a later Live arm does not cancel stale IG orders.
     books = live_dir(settings, slug) / "order_books"
     if books.is_dir():
@@ -798,25 +901,166 @@ def _load_live_decision_entries(settings: Settings, slug: str) -> list[dict[str,
     return out
 
 
+def _as_dict_list(raw: Any) -> list[dict[str, Any]]:
+    if isinstance(raw, list):
+        return [x for x in raw if isinstance(x, dict)]
+    if isinstance(raw, dict):
+        return [x for x in raw.values() if isinstance(x, dict)]
+    return []
+
+
+def read_live_book(settings: Settings, slug: str) -> dict[str, Any]:
+    """Open book from local ledger state.json (positions + working orders)."""
+    state_raw = _read_json(live_state_path(settings, slug), default={}) or {}
+    if not isinstance(state_raw, dict):
+        state_raw = {}
+    positions = _as_dict_list(state_raw.get("positions"))
+    working = _as_dict_list(state_raw.get("working_orders"))
+    status = read_live_status(settings, slug)
+    as_of = status.get("last_cycle_at") or status.get("finished_at")
+    return {
+        "positions": positions,
+        "working_orders": working,
+        "phase": state_raw.get("phase") or "Flat",
+        "last_price": state_raw.get("last_price"),
+        "as_of": as_of,
+        "groups": group_open_book(positions, working),
+    }
+
+
+def _book_position_row(pos: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "row_kind": "position",
+        "id": str(pos.get("id") or ""),
+        "side": pos.get("side") or "—",
+        "size": pos.get("size"),
+        "level": pos.get("entry"),
+        "purpose": pos.get("role") or "primary",
+        "order_type": None,
+        "link": None,
+        "deal_id": str(pos.get("deal_id") or ""),
+        "upl": pos.get("upl"),
+    }
+
+
+def _book_order_row(order: dict[str, Any]) -> dict[str, Any]:
+    purpose = str(order.get("purpose") or "")
+    link = order.get("position_id") or order.get("parent_order_id")
+    return {
+        "row_kind": "order",
+        "id": str(order.get("id") or ""),
+        "side": order.get("side") or "—",
+        "size": order.get("size"),
+        "level": order.get("level"),
+        "purpose": purpose or "—",
+        "order_type": order.get("type"),
+        "link": str(link) if link else None,
+        "deal_id": str(order.get("deal_id") or ""),
+        "upl": None,
+    }
+
+
+def group_open_book(
+    positions: list[dict[str, Any]],
+    working_orders: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """
+    Group open legs with linked WOs (position_id) and pending entries with
+    bracket children (parent_order_id). Leftover WOs become orphan groups.
+    """
+    orders = [o for o in working_orders if isinstance(o, dict)]
+    used: set[str] = set()
+    groups: list[dict[str, Any]] = []
+
+    by_position: dict[str, list[dict[str, Any]]] = {}
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    for order in orders:
+        oid = str(order.get("id") or "")
+        if not oid:
+            continue
+        pid = order.get("position_id")
+        if pid:
+            by_position.setdefault(str(pid), []).append(order)
+        parent = order.get("parent_order_id")
+        if parent:
+            by_parent.setdefault(str(parent), []).append(order)
+
+    for pos in positions:
+        if not isinstance(pos, dict):
+            continue
+        pid = str(pos.get("id") or "")
+        children_raw = by_position.get(pid, []) if pid else []
+        children: list[dict[str, Any]] = []
+        for order in children_raw:
+            oid = str(order.get("id") or "")
+            if oid and oid not in used:
+                used.add(oid)
+                children.append(_book_order_row(order))
+        groups.append(
+            {
+                "kind": "position",
+                "parent": _book_position_row(pos),
+                "children": children,
+            }
+        )
+
+    for order in orders:
+        oid = str(order.get("id") or "")
+        if not oid or oid in used:
+            continue
+        purpose = str(order.get("purpose") or "").lower()
+        if purpose != "entry":
+            continue
+        used.add(oid)
+        children: list[dict[str, Any]] = []
+        for child in by_parent.get(oid, []):
+            cid = str(child.get("id") or "")
+            if cid and cid not in used:
+                used.add(cid)
+                children.append(_book_order_row(child))
+        groups.append(
+            {
+                "kind": "entry",
+                "parent": _book_order_row(order),
+                "children": children,
+            }
+        )
+
+    for order in orders:
+        oid = str(order.get("id") or "")
+        if not oid or oid in used:
+            continue
+        used.add(oid)
+        groups.append(
+            {
+                "kind": "orphan",
+                "parent": _book_order_row(order),
+                "children": [],
+            }
+        )
+
+    return groups
+
+
 def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
     """Build a run-like report payload for the live results page."""
     live_cfg = load_live_config(settings, slug)
     status = read_live_status(settings, slug)
     state_raw = _read_json(live_state_path(settings, slug), default={}) or {}
+    if not isinstance(state_raw, dict):
+        state_raw = {}
     root = live_dir(settings, slug)
     decisions = _load_live_decision_entries(settings, slug)
 
-    positions = state_raw.get("positions") or []
-    working = state_raw.get("working_orders") or []
+    book = read_live_book(settings, slug)
+    positions = book["positions"]
+    working = book["working_orders"]
     closed_raw = state_raw.get("closed_trades") or []
-    if not isinstance(positions, list):
-        positions = list(positions.values()) if isinstance(positions, dict) else []
-    if not isinstance(working, list):
-        working = list(working.values()) if isinstance(working, dict) else []
     if not isinstance(closed_raw, list):
         closed_raw = []
-    closed = [t for t in closed_raw if isinstance(t, dict) and not t.get("phantom")]
-    phantom_closed = [t for t in closed_raw if isinstance(t, dict) and t.get("phantom")]
+    closed_all = [t for t in closed_raw if isinstance(t, dict)]
+    closed = [t for t in closed_all if not t.get("phantom")]
+    phantom_closed = [t for t in closed_all if t.get("phantom")]
     net_upl = sum(float(p.get("upl") or 0) for p in positions if isinstance(p, dict))
     realized = float(state_raw.get("realized_session") or 0)
     mode = live_cfg["mode"]
@@ -860,14 +1104,18 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
                     "pnl": t.get("realized_pnl"),
                     "bars_held": t.get("bars_held"),
                     "deal_id": t.get("deal_id"),
+                    "phantom": bool(t.get("phantom")),
+                    "ig_confirmed": bool(t.get("ig_confirmed")),
                 }
-                for t in closed
+                for t in closed_all
             ],
             "phantom_closed_trades": [
                 {
                     "id": t.get("id"),
                     "deal_id": t.get("deal_id"),
                     "pnl": t.get("realized_pnl"),
+                    "phantom": True,
+                    "ig_confirmed": bool(t.get("ig_confirmed")),
                 }
                 for t in phantom_closed
             ],
@@ -878,12 +1126,7 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
                 "net_upl": net_upl,
                 "phantom_closes": len(phantom_closed),
             },
-            "book": {
-                "positions": positions,
-                "working_orders": working,
-                "phase": state_raw.get("phase") or "Flat",
-                "last_price": state_raw.get("last_price"),
-            },
+            "book": book,
         },
         "decisions": decisions,
         "mode": mode,
@@ -1320,19 +1563,16 @@ def adopt_ig_snapshot_into_ledger(
     }
 
 
-def adopt_ig_book(
+def _fetch_ig_snapshot(
     session: Session,
     settings: Settings,
     slug: str,
-    *,
-    mode: str = "replace_open",
 ) -> dict[str, Any]:
     """
-    Fetch IG positions + working orders into the local live ledger.
+    Login to primary IG connector and fetch open positions + working orders.
 
-    Default ``mode=replace_open`` rebuilds the open book from IG (primary SoT).
-    Updates connector order books so the mirror neither cancels nor re-pushes
-    imported rows.
+    Returns ``{ok, cfg, connectors, primary_id, positions, raw_orders, live_cfg}``
+    or ``{ok: False, message, error}``.
     """
     from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 
@@ -1390,11 +1630,10 @@ def adopt_ig_book(
                 "message": "IG login failed — check connector credentials.",
                 "error": "login_failed",
             }
-        # Force session for GETs even though dry_run (login sets _cst).
         positions = connector.list_open_positions(epic=cfg.epic)
         raw_orders = connector.list_working_orders()
     except Exception as exc:
-        logger.exception("adopt_ig_book fetch failed for %s", slug)
+        logger.exception("IG snapshot fetch failed for %s", slug)
         return {
             "ok": False,
             "message": f"IG fetch failed: {exc}",
@@ -1405,6 +1644,320 @@ def adopt_ig_book(
             connector.close()
         except Exception:
             pass
+
+    return {
+        "ok": True,
+        "cfg": cfg,
+        "connectors": connectors,
+        "primary_id": primary_id,
+        "positions": positions,
+        "raw_orders": raw_orders,
+        "live_cfg": live_cfg,
+    }
+
+
+def _ig_deal_sets(
+    positions: list[dict[str, Any]],
+    raw_orders: list[Any],
+    *,
+    epic: str,
+) -> tuple[set[str], set[str], dict[str, dict[str, Any]]]:
+    """Return (position_deal_ids, working_order_deal_ids incl. attached, pos_by_deal)."""
+    pos_by_deal: dict[str, dict[str, Any]] = {}
+    pos_ids: set[str] = set()
+    wo_ids: set[str] = set()
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        did = str(row.get("deal_id") or "").strip()
+        if not did:
+            continue
+        pos_ids.add(did)
+        pos_by_deal[did] = row
+        for purpose, lvl_key in (("tp", "limit_level"), ("hedge_cover", "stop_level")):
+            raw_lvl = row.get(lvl_key)
+            if raw_lvl is None:
+                continue
+            try:
+                if float(raw_lvl) > 0:
+                    wo_ids.add(f"attached:{did}:{purpose}")
+            except (TypeError, ValueError):
+                continue
+    for raw in raw_orders:
+        parsed = _parse_ig_working_order_row(
+            raw if isinstance(raw, dict) else {}, epic=epic
+        )
+        if parsed is None and isinstance(raw, dict) and raw.get("deal_id"):
+            parsed = raw
+        if not parsed:
+            continue
+        did = str(parsed.get("deal_id") or "").strip()
+        if did:
+            wo_ids.add(did)
+    return pos_ids, wo_ids, pos_by_deal
+
+
+def _annotate_status(row: dict[str, Any], status: str) -> dict[str, Any]:
+    out = dict(row)
+    out["status"] = status
+    return out
+
+
+def preview_ig_book(
+    session: Session,
+    settings: Settings,
+    slug: str,
+) -> dict[str, Any]:
+    """
+    Diff local open book vs IG without mutating state.
+
+    Runs ``adopt_ig_snapshot_into_ledger(..., mode=replace_open)`` on a throwaway
+    ledger copy so the preview matches what Apply sync would do.
+    """
+    snap = _fetch_ig_snapshot(session, settings, slug)
+    if not snap.get("ok"):
+        return snap
+
+    cfg = snap["cfg"]
+    positions_ig: list[dict[str, Any]] = list(snap["positions"] or [])
+    raw_orders: list[Any] = list(snap["raw_orders"] or [])
+    live_cfg = snap["live_cfg"]
+    ig_pos_ids, ig_wo_ids, ig_pos_by_deal = _ig_deal_sets(
+        positions_ig, raw_orders, epic=cfg.epic
+    )
+
+    state_raw = _read_json(live_state_path(settings, slug), default={}) or {}
+    if not isinstance(state_raw, dict):
+        state_raw = {}
+    local_positions = _as_dict_list(state_raw.get("positions"))
+    local_orders = _as_dict_list(state_raw.get("working_orders"))
+    closed_raw = state_raw.get("closed_trades") or []
+    if not isinstance(closed_raw, list):
+        closed_raw = []
+
+    local_pos_deals = {
+        str(p.get("deal_id") or "").strip()
+        for p in local_positions
+        if str(p.get("deal_id") or "").strip()
+    }
+    local_wo_deals = {
+        str(o.get("deal_id") or "").strip()
+        for o in local_orders
+        if str(o.get("deal_id") or "").strip()
+    }
+
+    # Throwaway adopt — real state untouched.
+    copy = HedgeLedger.from_state_dict(cfg, state_raw)
+    adopt_result = adopt_ig_snapshot_into_ledger(
+        copy,
+        positions=positions_ig,
+        working_orders=raw_orders,
+        epic=cfg.epic,
+        mode="replace_open",
+    )
+
+    annotated_positions: list[dict[str, Any]] = []
+    for pos in local_positions:
+        row = _book_position_row(pos)
+        did = str(pos.get("deal_id") or "").strip()
+        if did and did in ig_pos_ids:
+            status = "in_sync"
+        else:
+            status = "remove"
+        annotated_positions.append(_annotate_status(row, status))
+
+    annotated_orders: list[dict[str, Any]] = []
+    for order in local_orders:
+        row = _book_order_row(order)
+        did = str(order.get("deal_id") or "").strip()
+        if did.startswith("attached:"):
+            parts = did.split(":")
+            parent = parts[1] if len(parts) > 1 else ""
+            purpose = parts[2] if len(parts) > 2 else ""
+            parent_row = ig_pos_by_deal.get(parent)
+            if parent_row is None:
+                status = "remove"
+            else:
+                lvl_key = "limit_level" if purpose == "tp" else "stop_level"
+                try:
+                    lvl = float(parent_row.get(lvl_key) or 0)
+                except (TypeError, ValueError):
+                    lvl = 0.0
+                status = "in_sync" if lvl > 0 else "remove"
+        elif did and did in ig_wo_ids:
+            status = "in_sync"
+        else:
+            status = "remove"
+        annotated_orders.append(_annotate_status(row, status))
+
+    # New rows from adopt imports that were not already local.
+    new_positions: list[dict[str, Any]] = []
+    for imp in adopt_result.get("imported_positions") or []:
+        if not isinstance(imp, dict):
+            continue
+        did = str(imp.get("deal_id") or "").strip()
+        if did and did in local_pos_deals:
+            continue
+        new_positions.append(
+            _annotate_status(
+                {
+                    "row_kind": "position",
+                    "id": str(imp.get("id") or ""),
+                    "side": imp.get("side") or "—",
+                    "size": imp.get("size"),
+                    "level": imp.get("level"),
+                    "purpose": "primary",
+                    "order_type": None,
+                    "link": None,
+                    "deal_id": did,
+                    "upl": None,
+                },
+                "new",
+            )
+        )
+
+    new_orders: list[dict[str, Any]] = []
+    for imp in adopt_result.get("imported_orders") or []:
+        if not isinstance(imp, dict):
+            continue
+        did = str(imp.get("deal_id") or "").strip()
+        if did and did in local_wo_deals:
+            continue
+        new_orders.append(
+            _annotate_status(
+                {
+                    "row_kind": "order",
+                    "id": str(imp.get("id") or ""),
+                    "side": imp.get("side") or "—",
+                    "size": imp.get("size"),
+                    "level": imp.get("level"),
+                    "purpose": imp.get("purpose") or "—",
+                    "order_type": None,
+                    "link": None,
+                    "deal_id": did,
+                    "upl": None,
+                },
+                "new",
+            )
+        )
+
+    # Build groups: keep local grouping, then orphan "new" rows.
+    local_groups = group_open_book(local_positions, local_orders)
+    status_by_id = {
+        r["id"]: r["status"]
+        for r in (*annotated_positions, *annotated_orders)
+        if r.get("id")
+    }
+    groups: list[dict[str, Any]] = []
+    for g in local_groups:
+        parent = dict(g["parent"])
+        parent["status"] = status_by_id.get(parent.get("id") or "", "remove")
+        children = []
+        for child in g.get("children") or []:
+            c = dict(child)
+            c["status"] = status_by_id.get(c.get("id") or "", "remove")
+            children.append(c)
+        groups.append({"kind": g["kind"], "parent": parent, "children": children})
+
+    for row in new_positions:
+        groups.append({"kind": "position", "parent": row, "children": []})
+    for row in new_orders:
+        groups.append({"kind": "orphan", "parent": row, "children": []})
+
+    closed_rows: list[dict[str, Any]] = []
+    for t in closed_raw:
+        if not isinstance(t, dict):
+            continue
+        did = str(t.get("deal_id") or "").strip()
+        phantom = bool(t.get("phantom"))
+        ig_confirmed = bool(t.get("ig_confirmed"))
+        if not did:
+            status = "paper"
+        elif did in ig_pos_ids:
+            status = "reopened"
+        elif phantom:
+            status = "reopened"
+        elif ig_confirmed:
+            status = "confirmed"
+        else:
+            status = "verified_closed"
+        closed_rows.append(
+            {
+                "id": t.get("id"),
+                "side": t.get("side"),
+                "role": t.get("role"),
+                "entry": t.get("entry"),
+                "exit": t.get("exit"),
+                "pnl": t.get("realized_pnl"),
+                "deal_id": did,
+                "phantom": phantom,
+                "ig_confirmed": ig_confirmed,
+                "status": status,
+            }
+        )
+
+    n_remove = sum(
+        1
+        for g in groups
+        for r in (g["parent"], *(g.get("children") or []))
+        if r.get("status") == "remove"
+    )
+    n_new = sum(
+        1
+        for g in groups
+        for r in (g["parent"], *(g.get("children") or []))
+        if r.get("status") == "new"
+    )
+    n_sync = sum(
+        1
+        for g in groups
+        for r in (g["parent"], *(g.get("children") or []))
+        if r.get("status") == "in_sync"
+    )
+    n_reopened = sum(1 for r in closed_rows if r["status"] == "reopened")
+
+    return {
+        "ok": True,
+        "mode": live_cfg.get("mode") or "off",
+        "groups": groups,
+        "closed_trades": closed_rows,
+        "quarantined": list(adopt_result.get("quarantined") or []),
+        "counts": {
+            "in_sync": n_sync,
+            "new": n_new,
+            "remove": n_remove,
+            "reopened": n_reopened,
+            "ig_positions": len(ig_pos_ids),
+            "ig_orders": len(ig_wo_ids),
+        },
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "warnings": list(adopt_result.get("warnings") or []),
+    }
+
+
+def adopt_ig_book(
+    session: Session,
+    settings: Settings,
+    slug: str,
+    *,
+    mode: str = "replace_open",
+) -> dict[str, Any]:
+    """
+    Fetch IG positions + working orders into the local live ledger.
+
+    Default ``mode=replace_open`` rebuilds the open book from IG (primary SoT).
+    Updates connector order books so the mirror neither cancels nor re-pushes
+    imported rows.
+    """
+    snap = _fetch_ig_snapshot(session, settings, slug)
+    if not snap.get("ok"):
+        return snap
+
+    cfg = snap["cfg"]
+    connectors = snap["connectors"]
+    primary_id = snap["primary_id"]
+    positions = snap["positions"]
+    raw_orders = snap["raw_orders"]
 
     with _LOCK:
         sched = _SCHEDULERS.get(slug)
@@ -1426,7 +1979,6 @@ def adopt_ig_book(
             mode=mode,
         )
 
-        # Replace-mode: rewrite books from imported mapping. Additive: merge.
         books_dir = live_dir(settings, slug) / "order_books"
         books_dir.mkdir(parents=True, exist_ok=True)
         connector_ids = [cid for cid, _ in connectors] or [primary_id]
@@ -1443,7 +1995,6 @@ def adopt_ig_book(
                     book = {}
             for oid, deal_id in (result.get("order_book") or {}).items():
                 book[str(oid)] = str(deal_id)
-            # Also map local WO deal_ids already on the ledger.
             for oid, order in ledger.working_orders.items():
                 did = (order.deal_id or "").strip()
                 if did:
@@ -1467,6 +2018,24 @@ def adopt_ig_book(
         msg = f"Synced from IG: +{n_pos} position(s), +{n_ord} order(s)."
         if n_pos == 0 and n_ord == 0:
             msg = "Sync from IG: nothing new to import (already in sync or empty)."
+
+    append_sync_log(
+        settings,
+        slug,
+        {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "source": "manual_sync",
+            "cycle_id": None,
+            "dropped": [],
+            "imported_orders": list(result.get("imported_orders") or []),
+            "opened": list(result.get("imported_positions") or []),
+            "closed": [],
+            "quarantined": list(result.get("quarantined") or []),
+            "repair": {"mode": result.get("mode"), "replaced": result.get("replaced")},
+            "warnings": list(result.get("warnings") or []),
+            "desync": bool(n_pos or n_ord or n_q or result.get("replaced")),
+        },
+    )
     return {
         "ok": True,
         "message": msg,
@@ -1577,6 +2146,9 @@ def run_live_cycle_now(
             _persist_llm_schedule(sched, settings, slug)
             _write_json(live_state_path(settings, slug), sched.ig.ledger.to_state_dict())
             _append_decision(settings, slug, payload)
+            append_sync_log_from_payload(
+                settings, slug, payload, source="cycle_manual"
+            )
             slot = _remember_cycle_slot(slug)
             pnl = sched.ig.ledger.pnl_payload()
             feed_status = _status_from_cycle_payload(payload, base_warnings=warnings)
@@ -1763,6 +2335,7 @@ def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
                 _persist_llm_schedule(sched, settings, slug)
                 _write_json(live_state_path(settings, slug), sched.ig.ledger.to_state_dict())
                 _append_decision(settings, slug, payload)
+                append_sync_log_from_payload(settings, slug, payload, source="cycle")
                 _remember_cycle_slot(slug, slot)
                 feed_status = _status_from_cycle_payload(payload, base_warnings=warnings)
                 write_live_status(

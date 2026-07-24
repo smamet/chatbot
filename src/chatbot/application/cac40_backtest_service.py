@@ -749,9 +749,9 @@ def run_due_ig_ohlc_syncs(session: Session, settings: Settings) -> list[str]:
 
         # Armed bots top up OHLC inside the live cycle — avoid double IG /prices spend.
         live_mode = str(load_live_config(settings, slug).get("mode") or "off").lower()
-        if live_mode in ("paper", "live"):
+        if live_mode == "live":
             skip_count += 1
-            logs.append(f"{slug}: skip — armed ({live_mode}); live cycle tops up OHLC")
+            logs.append(f"{slug}: skip — armed (live); live cycle tops up OHLC")
             continue
 
         ig_config = resolve_primary_ig_config(

@@ -613,7 +613,7 @@ class LiveScheduler:
                     pass
                 continue
             exit_px = self._exit_price_for_leg(leg)
-            trade = self.ig.ledger.close_position(leg.id, exit_px)
+            trade = self.ig.ledger.close_position(leg.id, exit_px, ig_confirmed=True)
             out["closed"].append(
                 {
                     "id": leg.id,

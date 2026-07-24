@@ -133,6 +133,7 @@ class ClosedTrade:
     bars_held: int
     deal_id: str = ""  # IG dealId of the closed leg (live)
     phantom: bool = False  # local close not confirmed on IG / later reopened
+    ig_confirmed: bool = False  # True when closed because deal vanished from IG
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -148,6 +149,7 @@ class ClosedTrade:
             "bars_held": self.bars_held,
             "deal_id": self.deal_id,
             "phantom": self.phantom,
+            "ig_confirmed": self.ig_confirmed,
         }
 
     @classmethod
@@ -166,6 +168,7 @@ class ClosedTrade:
             bars_held=int(raw.get("bars_held") or 0),
             deal_id=str(raw.get("deal_id") or ""),
             phantom=bool(raw.get("phantom") or False),
+            ig_confirmed=bool(raw.get("ig_confirmed") or False),
         )
 
 
