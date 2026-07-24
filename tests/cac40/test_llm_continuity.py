@@ -27,7 +27,7 @@ def test_build_user_payload_includes_continuity_fields():
     assert data["max_open_positions"] == 4
     assert data["last_decision"]["bias"] == "short_from_resistance"
     assert "Do not duplicate" in data["instructions"]
-    assert "market_*" in data["instructions"]
+    assert "market_open is disabled" in data["instructions"]
 
 
 def test_summarize_decision():

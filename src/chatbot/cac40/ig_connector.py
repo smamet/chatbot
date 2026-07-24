@@ -1018,7 +1018,7 @@ class IgConnector:
         return self.open_market_position(side, size, role=role)
 
     def market_close(self, position_id: str) -> None:
-        """Close a leg at market. Live: POST /positions/otc with dealId; paper: ledger."""
+        """Close a leg at market. Live: DELETE /positions/otc (via POST + _method); paper: ledger."""
         leg = self.ledger.positions.get(position_id)
         if not leg:
             return
@@ -1033,19 +1033,21 @@ class IgConnector:
             )
         close_side = Side.SELL if leg.side == Side.BUY else Side.BUY
         qty = abs(float(leg.size))
-        ccy = self.resolve_order_currency().strip().upper()
-        expiry = self.resolve_order_expiry()
+        # IG closes positions via DELETE /positions/otc (v1); since DELETE bodies
+        # are unreliable, IG documents POST + "_method: DELETE" header. A plain
+        # POST is treated as "open position" and fails validation
+        # (null-not-allowed.request.guaranteedStop). Close by dealId only —
+        # epic/expiry are for close-by-market and must not be combined.
         body = {
             "dealId": deal_id,
-            "epic": self.config.epic,
-            "expiry": expiry,
             "direction": "BUY" if close_side == Side.BUY else "SELL",
             "size": qty,
             "orderType": "MARKET",
-            "currencyCode": ccy,
         }
         url = f"{self.base_url}/positions/otc"
-        resp = self._client.post(url, headers=self._headers(version="2"), json=body)
+        headers = self._headers(version="1")
+        headers["_method"] = "DELETE"
+        resp = self._client.post(url, headers=headers, json=body)
         if resp.is_error:
             raise IgApiError(format_ig_http_error(resp, action="market_close", url=url))
         deal = resp.json() if resp.content else {}

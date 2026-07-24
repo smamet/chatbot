@@ -239,9 +239,16 @@ def test_market_close_live_posts_ig(tmp_path: Path):
     )
     conn.market_close(leg.id)
     assert conn._client.post.called
+    headers = conn._client.post.call_args.kwargs.get("headers") or {}
+    assert headers.get("_method") == "DELETE"
+    assert headers.get("VERSION") == "1"
     body = conn._client.post.call_args.kwargs.get("json") or {}
     assert body.get("dealId") == "DI_CLOSE"
     assert body.get("direction") == "BUY"
+    # Close-by-dealId must not carry open-position fields.
+    assert "epic" not in body
+    assert "expiry" not in body
+    assert "guaranteedStop" not in body
     assert leg.id not in conn.ledger.positions
 
 
