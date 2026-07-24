@@ -36,6 +36,30 @@ class IgApiError(RuntimeError):
 IgAuthError = IgApiError
 
 
+def compact_ig_error(exc: BaseException) -> dict[str, Any]:
+    """Parse an IG exception into a short structured dict for mirror/UI logs."""
+    msg = str(exc).strip()
+    error_code = ""
+    http_status: int | None = None
+    for line in msg.splitlines():
+        if "errorCode:" in line:
+            error_code = line.split("errorCode:", 1)[-1].strip().split()[0]
+        if line.startswith("IG ") and " failed: HTTP " in line:
+            try:
+                http_status = int(line.rsplit("HTTP ", 1)[-1].strip().split()[0])
+            except (TypeError, ValueError):
+                pass
+    head = msg.split("\n", 1)[0]
+    if len(head) > 160:
+        head = head[:159] + "…"
+    out: dict[str, Any] = {"error": head or msg[:160]}
+    if error_code:
+        out["error_code"] = error_code
+    if http_status is not None:
+        out["http_status"] = http_status
+    return out
+
+
 def format_ig_http_error(resp: httpx.Response, *, action: str, url: str) -> str:
     """Build a detailed error string from an IG HTTP response."""
     status = resp.status_code
@@ -105,6 +129,14 @@ class IgConnector:
         self._client = httpx.Client(timeout=30.0)
         # Last /prices metadata.allowance (remainingAllowance, totalAllowance, …).
         self.last_price_allowance: dict[str, Any] | None = None
+        # Compact last deal/confirm snapshot for mirror / cycle ops log (not raw HTTP).
+        self.last_ig_result: dict[str, Any] = {}
+
+    def _note_ig_result(self, **fields: Any) -> dict[str, Any]:
+        self.last_ig_result = {
+            k: v for k, v in fields.items() if v is not None and v != ""
+        }
+        return self.last_ig_result
 
     @property
     def base_url(self) -> str:
@@ -607,6 +639,11 @@ class IgConnector:
                 limit_level,
                 stop_level,
             )
+            self._note_ig_result(
+                action="place_working_order",
+                deal_status="DRY_RUN",
+                deal_id=order.deal_id or "",
+            )
             return order
         body = self._ig_working_order_body(
             order,
@@ -625,6 +662,8 @@ class IgConnector:
             )
         deal = resp.json() if resp.content else {}
         order.client_ref = str((deal or {}).get("dealReference") or order.client_ref)
+        deal_status = ""
+        reason = ""
         if order.client_ref:
             confirmed = self.confirm_deal(order.client_ref)
             deal_status = str(confirmed.get("dealStatus") or "").upper()
@@ -633,6 +672,13 @@ class IgConnector:
             if order.id in self.ledger.working_orders:
                 self.ledger.working_orders[order.id].client_ref = order.client_ref
                 self.ledger.working_orders[order.id].deal_id = order.deal_id
+            self._note_ig_result(
+                action="place_working_order",
+                deal_reference=order.client_ref,
+                deal_id=order.deal_id,
+                deal_status=deal_status or "UNKNOWN",
+                reason=reason,
+            )
             if deal_status and deal_status != "ACCEPTED":
                 raise IgApiError(
                     "IG working order rejected: "
@@ -643,6 +689,12 @@ class IgConnector:
                     f"({order.side.value} {order.type.value} @ {order.level}) "
                     f"confirm={confirmed}"
                 )
+        else:
+            self._note_ig_result(
+                action="place_working_order",
+                deal_id=order.deal_id or "",
+                deal_status="NO_REF",
+            )
         return order
 
     def confirm_deal(self, deal_reference: str, *, retries: int = 8, pause: float = 0.35) -> dict[str, Any]:
@@ -855,6 +907,9 @@ class IgConnector:
             raise IgApiError("IG cancel requires dealId")
         if self.dry_run or not self._cst:
             logger.info("IG dry-run cancel dealId=%s", did)
+            self._note_ig_result(
+                action="cancel_working_order", deal_id=did, deal_status="DRY_RUN"
+            )
             return {"dealId": did, "dry_run": True}
         url = f"{self.base_url}/workingorders/otc/{did}"
         last_exc: IgApiError | None = None
@@ -864,7 +919,14 @@ class IgConnector:
             resp = self._client.post(url, headers=headers, json={})
             if not resp.is_error:
                 payload = resp.json() if resp.content else {}
-                return payload if isinstance(payload, dict) else {"raw": payload}
+                out = payload if isinstance(payload, dict) else {"raw": payload}
+                self._note_ig_result(
+                    action="cancel_working_order",
+                    deal_id=did,
+                    deal_reference=str(out.get("dealReference") or ""),
+                    deal_status="ACCEPTED",
+                )
+                return out
             last_exc = IgApiError(
                 format_ig_http_error(resp, action="cancel_working_order", url=url)
             )
@@ -876,6 +938,12 @@ class IgConnector:
             # Already gone — treat as success so the local order book can drop it.
             if "not.found" in code.lower() or "cannot.be.found" in code.lower():
                 logger.info("IG cancel dealId=%s already gone (%s)", did, code or "not.found")
+                self._note_ig_result(
+                    action="cancel_working_order",
+                    deal_id=did,
+                    deal_status="ALREADY_GONE",
+                    reason=code or "not.found",
+                )
                 return {"dealId": did, "already_gone": True}
             # Try the other API version before giving up.
         assert last_exc is not None
@@ -907,6 +975,12 @@ class IgConnector:
                 limit_level,
                 stop_level,
             )
+            self._note_ig_result(
+                action="amend_working_order",
+                deal_id=did,
+                deal_status="DRY_RUN",
+                level=snapped,
+            )
             return snapped
         otype = (
             order_type
@@ -929,8 +1003,19 @@ class IgConnector:
         for version in ("2", "1"):
             resp = self._client.put(url, headers=self._headers(version=version), json=body)
             if not resp.is_error:
+                payload = resp.json() if resp.content else {}
+                ref = ""
+                if isinstance(payload, dict):
+                    ref = str(payload.get("dealReference") or "")
                 logger.info(
                     "IG amend accepted dealId=%s level=%s", did, snapped
+                )
+                self._note_ig_result(
+                    action="amend_working_order",
+                    deal_id=did,
+                    deal_reference=ref,
+                    deal_status="ACCEPTED",
+                    level=snapped,
                 )
                 return snapped
             last_exc = IgApiError(

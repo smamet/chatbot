@@ -13,6 +13,10 @@ from typing import Any
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from chatbot.application.cac40_cycle_ops_log import (
+    build_cycle_ops_log,
+    ops_log_line_count,
+)
 from chatbot.cac40.backtest_engine import BacktestEngine, new_run_dir
 from chatbot.cac40.config import Cac40Config, public_config_snapshot
 from chatbot.config.settings import Settings
@@ -234,18 +238,20 @@ def _load_decision_entries(
                 )
         dec = entry.get("decision") or {}
         analysis = dec.get("analysis") or {}
-        out.append(
-            {
-                **entry,
-                "chart_files": chart_files,
-                "charts": charts,
-                "bias": analysis.get("bias"),
-                "support": analysis.get("support"),
-                "resistance": analysis.get("resistance"),
-                "actions": dec.get("actions") or [],
-                "pnl": _resolve_entry_pnl(entry, by_bar, by_ts),
-            }
-        )
+        row = {
+            **entry,
+            "chart_files": chart_files,
+            "charts": charts,
+            "bias": analysis.get("bias"),
+            "support": analysis.get("support"),
+            "resistance": analysis.get("resistance"),
+            "actions": dec.get("actions") or [],
+            "pnl": _resolve_entry_pnl(entry, by_bar, by_ts),
+        }
+        ops_log = build_cycle_ops_log(row)
+        row["ops_log"] = ops_log
+        row["ops_log_line_count"] = ops_log_line_count(ops_log)
+        out.append(row)
     out.reverse()
     return out
 

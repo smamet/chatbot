@@ -10,7 +10,7 @@ from typing import Any, Callable
 from chatbot.cac40.chart_renderer import pivot_history_pad, render_multi_timeframe
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.fundmanager_client import FundManagerClient
-from chatbot.cac40.ig_connector import IgApiError, IgConnector
+from chatbot.cac40.ig_connector import IgApiError, IgConnector, compact_ig_error
 from chatbot.cac40.live_ohlc_feed import LiveOhlcFeed
 from chatbot.cac40.llm_decision import (
     GeminiDecisionClient,
@@ -753,6 +753,29 @@ class LiveScheduler:
         path = self._order_book_path(connector_id)
         path.write_text(json.dumps(book, indent=2), encoding="utf-8")
 
+    @staticmethod
+    def _ig_confirm_fields(conn: Any) -> dict[str, Any]:
+        raw = getattr(conn, "last_ig_result", None) or {}
+        if not isinstance(raw, dict):
+            return {}
+        out: dict[str, Any] = {}
+        for key in ("deal_status", "reason", "deal_reference"):
+            val = raw.get(key)
+            if val not in (None, ""):
+                out[key] = val
+        return out
+
+    @staticmethod
+    def _mirror_error_line(prefix: str, order_id: str, exc: BaseException) -> str:
+        compact = compact_ig_error(exc)
+        bits = [prefix, order_id]
+        if compact.get("error_code"):
+            bits.append(str(compact["error_code"]))
+        elif compact.get("http_status") is not None:
+            bits.append(f"HTTP{compact['http_status']}")
+        bits.append(str(compact.get("error") or exc))
+        return ":".join(bits)
+
     def _mirror_orders_to_ig(self, gate_result: Any) -> None:
         """Push ledger working orders to each IG account; cancel removed ones."""
         self.last_mirror_results = []
@@ -836,7 +859,13 @@ class LiveScheduler:
                 try:
                     conn.cancel_working_order(deal_id)
                     book.pop(local_id, None)
-                    row["cancelled"].append({"order_id": local_id, "deal_id": deal_id})
+                    row["cancelled"].append(
+                        {
+                            "order_id": local_id,
+                            "deal_id": deal_id,
+                            **self._ig_confirm_fields(conn),
+                        }
+                    )
                 except Exception as exc:
                     # If IG already has no such deal, drop the mapping and continue.
                     if deal_s and remote_deal_ids and deal_s not in remote_deal_ids:
@@ -849,7 +878,9 @@ class LiveScheduler:
                             }
                         )
                         continue
-                    row["errors"].append(f"cancel:{local_id}:{exc}")
+                    row["errors"].append(
+                        self._mirror_error_line("cancel", local_id, exc)
+                    )
                     logger.exception(
                         "IG cancel failed connector=%s order=%s", connector_id, local_id
                     )
@@ -899,10 +930,13 @@ class LiveScheduler:
                                 "order_id": local_id,
                                 "deal_id": deal_s,
                                 "via": "size_replace",
+                                **self._ig_confirm_fields(conn),
                             }
                         )
                     except Exception as exc:
-                        row["errors"].append(f"size_replace:{local_id}:{exc}")
+                        row["errors"].append(
+                            self._mirror_error_line("size_replace", local_id, exc)
+                        )
                         logger.exception(
                             "IG size-replace cancel failed connector=%s order=%s",
                             connector_id,
@@ -932,10 +966,13 @@ class LiveScheduler:
                             "order_id": local_id,
                             "deal_id": deal_s,
                             "level": snapped,
+                            **self._ig_confirm_fields(conn),
                         }
                     )
                 except Exception as exc:
-                    row["errors"].append(f"amend:{local_id}:{exc}")
+                    row["errors"].append(
+                        self._mirror_error_line("amend", local_id, exc)
+                    )
                     logger.exception(
                         "IG amend failed connector=%s order=%s", connector_id, local_id
                     )
@@ -985,6 +1022,7 @@ class LiveScheduler:
                                     "order_id": local_id,
                                     "deal_id": sentinel,
                                     "via": "position_attach_tp",
+                                    **self._ig_confirm_fields(conn),
                                 }
                             )
                             continue
@@ -1043,6 +1081,7 @@ class LiveScheduler:
                                 if order.purpose == OrderPurpose.HEDGE_COVER
                                 else "working_order"
                             ),
+                            **self._ig_confirm_fields(conn),
                         }
                     )
                     if tp_child_id and tp_child_id not in book:
@@ -1059,7 +1098,9 @@ class LiveScheduler:
                             }
                         )
                 except Exception as exc:
-                    row["errors"].append(f"place:{local_id}:{exc}")
+                    row["errors"].append(
+                        self._mirror_error_line("place", local_id, exc)
+                    )
                     logger.exception(
                         "IG place failed connector=%s order=%s", connector_id, local_id
                     )

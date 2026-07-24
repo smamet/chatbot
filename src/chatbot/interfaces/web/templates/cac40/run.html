@@ -128,6 +128,7 @@
   <h2>LLM decisions &amp; charts</h2>
   <p class="text-muted">Charts below are exactly what was sent to Gemini at each decision point, with the model analysis and RiskGate result. “Accepted” means RiskGate updated the <em>local</em> book — check Mirror below for what was pushed to IG.</p>
   {% if run.decisions %}
+  {% from "cac40/_cycle_ops_log.html" import cycle_ops_log %}
   <div class="cac40-decision-list">
     {% for d in run.decisions %}
     <details class="cac40-decision" id="cycle-{{ d.cycle_dir or loop.index }}" {% if loop.first %}open{% endif %}>
@@ -234,9 +235,10 @@
             <strong>Mirror IG #{{ m.connector_id }}:</strong>
             {% if m.placed %}<code>placed={{ m.placed|map(attribute='order_id')|list|join(', ') }}</code>{% endif %}
             {% if m.cancelled %}<code>cancelled={{ m.cancelled|map(attribute='order_id')|list|join(', ') }}</code>{% endif %}
+            {% if m.amended %}<code>amended={{ m.amended|map(attribute='order_id')|list|join(', ') }}</code>{% endif %}
             {% if m.deferred %}<code>deferred={{ m.deferred|join(', ') }}</code>{% endif %}
             {% if m.errors %}<code class="badge failed">errors={{ m.errors|join(', ') }}</code>{% endif %}
-            {% if not m.placed and not m.cancelled and not m.deferred and not m.errors %}<code>no-op</code>{% endif %}
+            {% if not m.placed and not m.cancelled and not m.amended and not m.deferred and not m.errors %}<code>no-op</code>{% endif %}
           </p>
           {% endfor %}
           {% endif %}
@@ -245,6 +247,8 @@
           {% endif %}
         </div>
         {% endif %}
+
+        {{ cycle_ops_log(d) }}
 
         <details class="cac40-decision__raw">
           <summary>Raw decision JSON</summary>

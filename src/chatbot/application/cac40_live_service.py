@@ -764,6 +764,11 @@ def _decision_row_from_entry(
     entry: dict[str, Any], *, slug: str, journal_root: Path
 ) -> dict[str, Any]:
     """Map a cycle.json / decisions_log entry into run.html decision shape."""
+    from chatbot.application.cac40_cycle_ops_log import (
+        build_cycle_ops_log,
+        ops_log_line_count,
+    )
+
     charts_rel = str(entry.get("charts_rel") or "").strip().replace("\\", "/")
     chart_files = list(entry.get("chart_files") or [])
     cycle = str(entry.get("cycle_dir") or "").strip()
@@ -790,7 +795,7 @@ def _decision_row_from_entry(
             book["positions"] = len(book["positions"])
         if isinstance(book.get("working_orders"), list):
             book["working_orders"] = len(book["working_orders"])
-    return {
+    row = {
         **entry,
         "cycle_dir": cycle,
         "chart_files": chart_files,
@@ -807,6 +812,10 @@ def _decision_row_from_entry(
             "last_price": book.get("last_price"),
         },
     }
+    ops_log = build_cycle_ops_log(row)
+    row["ops_log"] = ops_log
+    row["ops_log_line_count"] = ops_log_line_count(ops_log)
+    return row
 
 
 def _cycle_worth_showing(raw: dict[str, Any]) -> bool:

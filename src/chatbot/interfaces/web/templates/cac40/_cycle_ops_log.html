@@ -1,0 +1,17 @@
+{# Shared collapsible verbose cycle ops log (live + backtest). Expects d.ops_log. #}
+{% macro cycle_ops_log(d) %}
+{% if d.ops_log %}
+<details class="cac40-decision__ops">
+  <summary>Cycle ops log ({{ d.ops_log_line_count or 0 }} line{% if (d.ops_log_line_count or 0) != 1 %}s{% endif %})</summary>
+  <div class="cac40-ops-log">
+    {% for s in d.ops_log %}
+    <div class="cac40-ops-log__section">
+      <h4 class="cac40-ops-log__title">{{ s.title }}</h4>
+      <pre class="cac40-ops-log__lines">{% for line in s.lines %}{{ line }}
+{% endfor %}</pre>
+    </div>
+    {% endfor %}
+  </div>
+</details>
+{% endif %}
+{% endmacro %}
