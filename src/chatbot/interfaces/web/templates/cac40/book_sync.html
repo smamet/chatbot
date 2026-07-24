@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "cac40/_open_book.html" import open_book_diff_table, _status_badge %}
+{% from "cac40/_open_book.html" import open_book_diff_table, status_badge %}
 {% block body %}
 <section class="page-header">
   <div>
@@ -74,7 +74,7 @@
         <td>{{ t.side or '—' }}</td>
         <td>{% if t.deal_id %}<code>{{ t.deal_id }}</code>{% else %}—{% endif %}</td>
         <td>{{ '%.2f'|format(t.pnl) if t.pnl is number else '—' }}</td>
-        <td>{{ _status_badge(t.status) }}</td>
+        <td>{{ status_badge(t.status) }}</td>
       </tr>
       {% else %}
       <tr><td colspan="5" class="empty-state">No closed trades</td></tr>
