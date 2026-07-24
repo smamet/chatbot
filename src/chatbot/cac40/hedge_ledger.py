@@ -120,9 +120,13 @@ class HedgeLedger:
         self.working_orders[order.id] = order
         return order
 
-    def amend_order(self, order_id: str, *, level: float) -> WorkingOrder:
+    def amend_order(
+        self, order_id: str, *, level: float, size: float | None = None
+    ) -> WorkingOrder:
         order = self.working_orders[order_id]
         order.level = level
+        if size is not None and float(size) > 0:
+            order.size = float(size)
         return order
 
     def cancel_order(self, order_id: str) -> None:

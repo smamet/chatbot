@@ -64,10 +64,14 @@ class RiskGate:
     def _clamp_size(self, action: LlmAction) -> float:
         return float(self.config.order_size)
 
-    def _exposure_with_entries_and_working_hedges(self) -> float:
+    def _exposure_with_entries_and_working_hedges(
+        self, *, exclude_order_id: str | None = None
+    ) -> float:
         """Signed exposure: positions + working ENTRY + working HEDGE_COVER (+BUY / −SELL)."""
         exp = float(self.ledger.net_size())
         for order in self.ledger.working_orders.values():
+            if exclude_order_id and order.id == exclude_order_id:
+                continue
             if order.purpose not in (OrderPurpose.ENTRY, OrderPurpose.HEDGE_COVER):
                 continue
             exp += float(order.size) if order.side == Side.BUY else -float(order.size)
@@ -89,6 +93,28 @@ class RiskGate:
         if entry is not None:
             return float(entry.size)
         return float(self.config.order_size)
+
+    def _amend_size_for(self, existing: WorkingOrder, action: LlmAction) -> float | None:
+        """Return new size for amend, or None to leave size unchanged."""
+        purpose = (
+            (action.purpose or "").strip().lower()
+            or (existing.purpose.value if existing.purpose else "")
+        )
+        if purpose == "hedge_cover":
+            # Full cover as if this WO were absent — never residual-after-self.
+            exp = self._exposure_with_entries_and_working_hedges(
+                exclude_order_id=existing.id
+            )
+            need = exp if existing.side == Side.SELL else -exp
+            if need > 0:
+                return float(need)
+            return None
+        if action.size is None or float(action.size) <= 0:
+            return None
+        requested = abs(float(action.size))
+        if purpose in ("entry", "tp", "close"):
+            return min(requested, float(self.config.order_size))
+        return requested
 
     def _flatten_hedge_size(self, action: LlmAction) -> float:
         """Use requested size (or |net|) during weekend flatten — not order_size clamp."""
@@ -461,8 +487,17 @@ class RiskGate:
                     if self._loss_exit_blocked(leg, exit_px):
                         result.rejected.append("amend_order:loss_exit_blocked")
                         return
-            self.ledger.amend_order(action.order_id, level=float(action.level))
-            result.executed.append(f"amend_order:{action.order_id}->{action.level}")
+            old_size = float(existing.size)
+            new_size = self._amend_size_for(existing, action)
+            amended = self.ledger.amend_order(
+                action.order_id, level=float(action.level), size=new_size
+            )
+            if new_size is not None and abs(float(amended.size) - old_size) > 1e-9:
+                result.executed.append(
+                    f"amend_order:{action.order_id}->{action.level}x{amended.size}"
+                )
+            else:
+                result.executed.append(f"amend_order:{action.order_id}->{action.level}")
             return
 
         if op == "cancel_order":

@@ -628,3 +628,145 @@ def test_ig_working_order_body_includes_limit_level():
     assert body["stopLevel"] == 8465.0
     assert body["level"] == 8455.0
     conn.close()
+
+
+def test_amend_hedge_cover_grows_to_full_cover_excluding_self():
+    """Short + working entry + size-1 hedge → amend sizes hedge to 2."""
+    from chatbot.cac40.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8360
+    ledger._open_leg(Side.SELL, 1.0, 8348.0, LegRole.PRIMARY)
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.SELL,
+            level=8370.0,
+            size=1.0,
+            purpose=OrderPurpose.ENTRY,
+        )
+    )
+    hedge = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=8400.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+        )
+    )
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="amend_order",
+                order_id=hedge.id,
+                side="BUY",
+                level=8410.0,
+                size=2.0,
+                purpose="hedge_cover",
+            )
+        )
+    )
+    assert not result.rejected
+    assert hedge.size == 2.0
+    assert hedge.level == 8410.0
+    assert any(f"amend_order:{hedge.id}->8410.0x2" in e for e in result.executed)
+
+
+def test_amend_hedge_cover_with_second_hedge_uses_residual():
+    """Two hedges: amending one targets residual, not full book."""
+    from chatbot.cac40.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+
+    cfg = Cac40Config(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8360
+    ledger._open_leg(Side.BUY, 1.0, 8300.0, LegRole.PRIMARY)
+    ledger._open_leg(Side.BUY, 1.0, 8310.0, LegRole.PRIMARY)
+    hedge_a = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.SELL,
+            level=8280.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+        )
+    )
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.SELL,
+            level=8270.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+        )
+    )
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="amend_order",
+                order_id=hedge_a.id,
+                side="SELL",
+                level=8285.0,
+                size=2.0,
+                purpose="hedge_cover",
+            )
+        )
+    )
+    assert not result.rejected
+    # Other hedge still covers 1 → amend keeps size 1 (residual), only level moves.
+    assert hedge_a.size == 1.0
+    assert hedge_a.level == 8285.0
+    assert any(f"amend_order:{hedge_a.id}->8285.0" in e for e in result.executed)
+    assert not any("x2" in e for e in result.executed)
+
+
+def test_amend_entry_clamps_size_to_order_size():
+    from chatbot.cac40.models import OrderPurpose, OrderType, WorkingOrder
+
+    cfg = Cac40Config(order_size=1.0, spread_points=0, max_open_positions=4)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8360
+    entry = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.BUY,
+            level=8300.0,
+            size=1.0,
+            purpose=OrderPurpose.ENTRY,
+        )
+    )
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="amend_order",
+                order_id=entry.id,
+                side="BUY",
+                level=8290.0,
+                size=5.0,
+                purpose="entry",
+            )
+        )
+    )
+    assert not result.rejected
+    assert entry.level == 8290.0
+    assert entry.size == 1.0
+    assert any(f"amend_order:{entry.id}->8290.0" in e for e in result.executed)

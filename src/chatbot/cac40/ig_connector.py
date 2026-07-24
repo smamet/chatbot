@@ -881,8 +881,74 @@ class IgConnector:
         assert last_exc is not None
         raise last_exc
 
-    def amend_order(self, order_id: str, *, level: float) -> WorkingOrder:
-        order = self.ledger.amend_order(order_id, level=level)
+    def amend_working_order_by_deal_id(
+        self,
+        deal_id: str,
+        *,
+        order_type: OrderType | str,
+        level: float,
+        limit_level: float | None = None,
+        stop_level: float | None = None,
+    ) -> float:
+        """PUT /workingorders/otc/{dealId} — level amend; returns snapped level.
+
+        Re-send ``limitLevel`` / ``stopLevel`` when provided so attached TP/SL
+        on an ENTRY are not cleared by IG.
+        """
+        did = (deal_id or "").strip()
+        if not did or did.startswith("attached:"):
+            raise IgApiError("IG amend requires a standalone dealId")
+        snapped = self.snap_level(float(level))
+        if self.dry_run or not self._cst:
+            logger.info(
+                "IG dry-run amend dealId=%s level=%s limit=%s stop=%s",
+                did,
+                snapped,
+                limit_level,
+                stop_level,
+            )
+            return snapped
+        otype = (
+            order_type
+            if isinstance(order_type, OrderType)
+            else OrderType.STOP
+            if "STOP" in str(order_type).upper()
+            else OrderType.LIMIT
+        )
+        body: dict[str, Any] = {
+            "type": "LIMIT" if otype == OrderType.LIMIT else "STOP",
+            "level": snapped,
+            "timeInForce": "GOOD_TILL_CANCELLED",
+        }
+        if limit_level is not None:
+            body["limitLevel"] = self.snap_level(float(limit_level))
+        if stop_level is not None:
+            body["stopLevel"] = self.snap_level(float(stop_level))
+        url = f"{self.base_url}/workingorders/otc/{did}"
+        last_exc: IgApiError | None = None
+        for version in ("2", "1"):
+            resp = self._client.put(url, headers=self._headers(version=version), json=body)
+            if not resp.is_error:
+                logger.info(
+                    "IG amend accepted dealId=%s level=%s", did, snapped
+                )
+                return snapped
+            last_exc = IgApiError(
+                format_ig_http_error(resp, action="amend_working_order", url=url)
+            )
+        assert last_exc is not None
+        raise last_exc
+
+    def amend_order(
+        self, order_id: str, *, level: float, size: float | None = None
+    ) -> WorkingOrder:
+        """Amend local ledger; level PUT to IG when dealId exists.
+
+        Size changes on the live path are handled by the scheduler mirror
+        (cancel + re-place). This method updates ledger size when provided and
+        only PUTs level to IG.
+        """
+        order = self.ledger.amend_order(order_id, level=level, size=size)
         if self.dry_run or not self._cst:
             return order
         deal_id = (order.deal_id or "").strip()
@@ -895,24 +961,34 @@ class IgConnector:
                 "IG amend skipped (no standalone dealId) for local order %s", order_id
             )
             return order
-        # PUT /workingorders/otc/{dealId}
-        body = {
-            "type": "LIMIT" if order.type == OrderType.LIMIT else "STOP",
-            "level": snapped,
-            "timeInForce": "GOOD_TILL_CANCELLED",
-        }
-        url = f"{self.base_url}/workingorders/otc/{deal_id}"
-        last_exc: IgApiError | None = None
-        for version in ("2", "1"):
-            resp = self._client.put(url, headers=self._headers(version=version), json=body)
-            if not resp.is_error:
-                logger.info("IG amend accepted order=%s dealId=%s level=%s", order_id, deal_id, snapped)
-                return order
-            last_exc = IgApiError(
-                format_ig_http_error(resp, action="amend_working_order", url=url)
-            )
-        assert last_exc is not None
-        raise last_exc
+        limit_level: float | None = None
+        stop_level: float | None = None
+        try:
+            for raw in self.list_working_orders() or []:
+                if not isinstance(raw, dict):
+                    continue
+                data = raw.get("workingOrderData") if isinstance(
+                    raw.get("workingOrderData"), dict
+                ) else raw
+                if not isinstance(data, dict):
+                    continue
+                if str(data.get("dealId") or "").strip() != deal_id:
+                    continue
+                if data.get("limitLevel") is not None:
+                    limit_level = float(data["limitLevel"])
+                if data.get("stopLevel") is not None:
+                    stop_level = float(data["stopLevel"])
+                break
+        except Exception:
+            logger.exception("IG amend: failed to load remote WO for %s", deal_id)
+        self.amend_working_order_by_deal_id(
+            deal_id,
+            order_type=order.type,
+            level=snapped,
+            limit_level=limit_level,
+            stop_level=stop_level,
+        )
+        return order
 
     def cancel_order(self, order_id: str) -> None:
         order = self.ledger.working_orders.get(order_id)

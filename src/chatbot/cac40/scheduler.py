@@ -784,24 +784,27 @@ class LiveScheduler:
                 self.last_mirror_results.append(row)
                 continue
 
-            remote_deal_ids: set[str] = set()
+            remote_by_deal: dict[str, dict[str, Any]] = {}
             try:
                 for raw in conn.list_working_orders() or []:
                     if not isinstance(raw, dict):
                         continue
-                    wo = raw.get("workingOrderData") if isinstance(raw.get("workingOrderData"), dict) else raw
-                    did = str(
-                        (wo or {}).get("dealId")
-                        or raw.get("dealId")
-                        or ""
-                    ).strip()
+                    wo = (
+                        raw.get("workingOrderData")
+                        if isinstance(raw.get("workingOrderData"), dict)
+                        else raw
+                    )
+                    if not isinstance(wo, dict):
+                        continue
+                    did = str(wo.get("dealId") or raw.get("dealId") or "").strip()
                     if did:
-                        remote_deal_ids.add(did)
+                        remote_by_deal[did] = wo
             except Exception as exc:
                 row["errors"].append(f"list_working_orders:{exc}")
                 logger.exception(
                     "list_working_orders failed connector=%s", connector_id
                 )
+            remote_deal_ids = set(remote_by_deal)
 
             # Stale book rows (deal gone on IG but still mapped) block re-place — drop them.
             for local_id, deal_id in list(book.items()):
@@ -849,6 +852,92 @@ class LiveScheduler:
                     row["errors"].append(f"cancel:{local_id}:{exc}")
                     logger.exception(
                         "IG cancel failed connector=%s order=%s", connector_id, local_id
+                    )
+
+            # Sync booked orders: size drift → cancel+re-place; level drift → PUT.
+            row.setdefault("amended", [])
+            for local_id, deal_id in list(book.items()):
+                if local_id not in desired:
+                    continue
+                deal_s = str(deal_id or "")
+                if not deal_s or deal_s.startswith("attached:"):
+                    continue
+                order = desired[local_id]
+                remote = remote_by_deal.get(deal_s)
+                if not remote:
+                    continue
+                try:
+                    remote_size = float(
+                        remote["orderSize"]
+                        if remote.get("orderSize") is not None
+                        else remote.get("size")
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    remote_size = 0.0
+                try:
+                    remote_level = float(
+                        remote["orderLevel"]
+                        if remote.get("orderLevel") is not None
+                        else remote.get("level")
+                        or 0
+                    )
+                except (TypeError, ValueError):
+                    remote_level = 0.0
+                local_size = float(order.size)
+                snapped = float(conn.snap_level(float(order.level)))
+                size_drift = abs(local_size - remote_size) > 1e-6
+                level_drift = abs(snapped - remote_level) > 1e-4
+                if size_drift:
+                    try:
+                        conn.cancel_working_order(deal_s)
+                        book.pop(local_id, None)
+                        if conn is self.ig:
+                            order.deal_id = ""
+                        row["cancelled"].append(
+                            {
+                                "order_id": local_id,
+                                "deal_id": deal_s,
+                                "via": "size_replace",
+                            }
+                        )
+                    except Exception as exc:
+                        row["errors"].append(f"size_replace:{local_id}:{exc}")
+                        logger.exception(
+                            "IG size-replace cancel failed connector=%s order=%s",
+                            connector_id,
+                            local_id,
+                        )
+                    continue
+                if not level_drift:
+                    continue
+                try:
+                    limit_level = None
+                    stop_level = None
+                    if remote.get("limitLevel") is not None:
+                        limit_level = float(remote["limitLevel"])
+                    if remote.get("stopLevel") is not None:
+                        stop_level = float(remote["stopLevel"])
+                    conn.amend_working_order_by_deal_id(
+                        deal_s,
+                        order_type=order.type,
+                        level=snapped,
+                        limit_level=limit_level,
+                        stop_level=stop_level,
+                    )
+                    if conn is self.ig:
+                        order.level = snapped
+                    row["amended"].append(
+                        {
+                            "order_id": local_id,
+                            "deal_id": deal_s,
+                            "level": snapped,
+                        }
+                    )
+                except Exception as exc:
+                    row["errors"].append(f"amend:{local_id}:{exc}")
+                    logger.exception(
+                        "IG amend failed connector=%s order=%s", connector_id, local_id
                     )
 
             # Place new ledger orders missing from this account's book.

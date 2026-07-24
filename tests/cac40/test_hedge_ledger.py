@@ -221,3 +221,26 @@ def test_working_order_parent_roundtrip():
     )
     restored = WorkingOrder.from_dict(order.to_dict())
     assert restored.parent_order_id == "o1"
+
+
+def test_amend_order_updates_level_and_optional_size():
+    cfg = Cac40Config(spread_points=0.0)
+    ledger = HedgeLedger(config=cfg)
+    order = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=100,
+            size=1,
+            purpose=OrderPurpose.HEDGE_COVER,
+        )
+    )
+    ledger.amend_order(order.id, level=105.0)
+    assert ledger.working_orders[order.id].level == 105.0
+    assert ledger.working_orders[order.id].size == 1.0
+    ledger.amend_order(order.id, level=106.0, size=2.0)
+    assert ledger.working_orders[order.id].level == 106.0
+    assert ledger.working_orders[order.id].size == 2.0
+    ledger.amend_order(order.id, level=107.0, size=0)
+    assert ledger.working_orders[order.id].size == 2.0

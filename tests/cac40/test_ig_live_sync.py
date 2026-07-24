@@ -628,3 +628,170 @@ def test_sync_rebuilds_attached_tp_from_position(tmp_path: Path):
     tps = [o for o in ledger.working_orders.values() if o.purpose == OrderPurpose.TP]
     assert len(tps) == 1
     assert tps[0].deal_id == "attached:DI_POS:tp"
+
+
+def test_mirror_size_drift_cancels_and_replaces(tmp_path: Path):
+    from chatbot.cac40.risk_gate import GateResult
+
+    cfg = _cfg()
+    sched = LiveScheduler(
+        cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
+    )
+    sched.ig._cst = "cst"
+    sched.ig.epic_compatible_with_account = MagicMock(return_value=True)
+    sched.ig.snap_level = MagicMock(side_effect=lambda x, epic=None: float(x))
+    hedge = sched.ig.ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=8410.0,
+            size=2.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            deal_id="WO_OLD",
+        )
+    )
+    sched._save_order_book(0, {hedge.id: "WO_OLD"})
+    sched.ig.list_working_orders = MagicMock(
+        return_value=[
+            {
+                "workingOrderData": {
+                    "dealId": "WO_OLD",
+                    "orderSize": 1.0,
+                    "orderLevel": 8410.0,
+                    "direction": "BUY",
+                    "orderType": "STOP",
+                }
+            }
+        ]
+    )
+    sched.ig.cancel_working_order = MagicMock(return_value={"dealId": "WO_OLD"})
+
+    def _push(order, *, currency=None, limit_level=None, stop_level=None):
+        order.deal_id = "WO_NEW"
+        return order
+
+    sched.ig.push_working_order = MagicMock(side_effect=_push)
+    sched.ig.amend_working_order_by_deal_id = MagicMock(
+        side_effect=AssertionError("size drift must not PUT-amend")
+    )
+
+    sched._mirror_orders_to_ig(GateResult())
+    assert sched.ig.cancel_working_order.called
+    assert sched.ig.cancel_working_order.call_args.args[0] == "WO_OLD"
+    assert sched.ig.push_working_order.called
+    book = sched._load_order_book(0)
+    assert book.get(hedge.id) == "WO_NEW"
+    cancelled = sched.last_mirror_results[0]["cancelled"]
+    assert any(c.get("via") == "size_replace" for c in cancelled)
+
+
+def test_mirror_level_drift_puts_and_preserves_limit(tmp_path: Path):
+    from chatbot.cac40.risk_gate import GateResult
+
+    cfg = _cfg()
+    sched = LiveScheduler(
+        cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
+    )
+    sched.ig._cst = "cst"
+    sched.ig.epic_compatible_with_account = MagicMock(return_value=True)
+    sched.ig.snap_level = MagicMock(side_effect=lambda x, epic=None: float(x))
+    entry = sched.ig.ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.SELL,
+            level=8410.0,
+            size=1.0,
+            purpose=OrderPurpose.ENTRY,
+            deal_id="WO_ENTRY",
+        )
+    )
+    tp = sched.ig.ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.BUY,
+            level=8380.0,
+            size=1.0,
+            purpose=OrderPurpose.TP,
+            parent_order_id=entry.id,
+            deal_id="attached:WO_ENTRY:tp",
+        )
+    )
+    sched._save_order_book(
+        0, {entry.id: "WO_ENTRY", tp.id: "attached:WO_ENTRY:tp"}
+    )
+    sched.ig.list_working_orders = MagicMock(
+        return_value=[
+            {
+                "workingOrderData": {
+                    "dealId": "WO_ENTRY",
+                    "orderSize": 1.0,
+                    "orderLevel": 8400.0,
+                    "limitLevel": 8380.0,
+                    "direction": "SELL",
+                    "orderType": "LIMIT",
+                }
+            }
+        ]
+    )
+    sched.ig.cancel_working_order = MagicMock(
+        side_effect=AssertionError("level-only must not cancel")
+    )
+    sched.ig.push_working_order = MagicMock(
+        side_effect=AssertionError("level-only must not re-place")
+    )
+    sched.ig.amend_working_order_by_deal_id = MagicMock(return_value=8410.0)
+
+    sched._mirror_orders_to_ig(GateResult())
+    assert sched.ig.amend_working_order_by_deal_id.called
+    kwargs = sched.ig.amend_working_order_by_deal_id.call_args.kwargs
+    assert kwargs["level"] == 8410.0
+    assert kwargs["limit_level"] == 8380.0
+    book = sched._load_order_book(0)
+    assert book.get(entry.id) == "WO_ENTRY"
+    assert book.get(tp.id) == "attached:WO_ENTRY:tp"
+    amended = sched.last_mirror_results[0]["amended"]
+    assert amended and amended[0]["order_id"] == entry.id
+
+
+def test_mirror_skips_attached_sentinel_for_amend(tmp_path: Path):
+    from chatbot.cac40.risk_gate import GateResult
+
+    cfg = _cfg()
+    sched = LiveScheduler(
+        cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
+    )
+    sched.ig._cst = "cst"
+    sched.ig.epic_compatible_with_account = MagicMock(return_value=True)
+    leg = sched.ig.ledger._open_leg(
+        Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_P"
+    )
+    tp = sched.ig.ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.BUY,
+            level=8425.0,
+            size=1.0,
+            purpose=OrderPurpose.TP,
+            position_id=leg.id,
+            deal_id="attached:DI_P:tp",
+        )
+    )
+    sched._save_order_book(0, {tp.id: "attached:DI_P:tp"})
+    sched.ig.list_working_orders = MagicMock(return_value=[])
+    sched.ig.amend_working_order_by_deal_id = MagicMock(
+        side_effect=AssertionError("attached sentinel must not amend")
+    )
+    sched.ig.cancel_working_order = MagicMock(
+        side_effect=AssertionError("attached sentinel must not cancel")
+    )
+    sched.ig.update_position_protection = MagicMock()
+
+    sched._mirror_orders_to_ig(GateResult())
+    assert not sched.ig.amend_working_order_by_deal_id.called
+    assert not sched.ig.cancel_working_order.called
+    book = sched._load_order_book(0)
+    assert book.get(tp.id) == "attached:DI_P:tp"
