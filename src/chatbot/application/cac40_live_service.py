@@ -1317,6 +1317,51 @@ def _parse_ig_working_order_row(
     }
 
 
+def _find_attached_protection_twin(
+    ledger: HedgeLedger,
+    *,
+    purpose: Any,
+    side: Any,
+    level: float,
+    leg_id: str,
+) -> Any | None:
+    """
+    Find a local WO that already models the same attached stop/limit protection.
+
+    Matches empty deal_id, any ``attached:…`` sentinel, or a child of a vanished
+    entry — same side/level, not bound to a different open leg.
+    """
+    from chatbot.cac40.models import OrderPurpose, parse_attached_deal_id
+
+    want_purpose = purpose if isinstance(purpose, OrderPurpose) else OrderPurpose(str(purpose))
+    open_leg_ids = set(ledger.positions.keys())
+    for order in ledger.working_orders.values():
+        purpose_ok = order.purpose == want_purpose or (
+            want_purpose == OrderPurpose.TP and order.purpose == OrderPurpose.CLOSE
+        )
+        if not purpose_ok:
+            continue
+        if order.side != side:
+            continue
+        if abs(float(order.level) - float(level)) > 1e-6:
+            continue
+        if (
+            order.position_id
+            and order.position_id in open_leg_ids
+            and order.position_id != leg_id
+        ):
+            continue
+        did = (order.deal_id or "").strip()
+        parent_still_working = bool(
+            order.parent_order_id and order.parent_order_id in ledger.working_orders
+        )
+        if not did or parse_attached_deal_id(did) is not None:
+            return order
+        if order.parent_order_id and not parent_still_working:
+            return order
+    return None
+
+
 def adopt_ig_snapshot_into_ledger(
     ledger: HedgeLedger,
     *,
@@ -1342,6 +1387,7 @@ def adopt_ig_snapshot_into_ledger(
         OrderType,
         Side,
         WorkingOrder,
+        attached_deal_id,
     )
 
     want = (epic or "").strip()
@@ -1448,8 +1494,36 @@ def adopt_ig_snapshot_into_ledger(
                 continue
             if attached_lvl <= 0:
                 continue
-            sentinel = f"attached:{deal_id}:{purpose.value}"
+            sentinel = attached_deal_id(deal_id, purpose)
             if sentinel in known_wo:
+                continue
+            twin = _find_attached_protection_twin(
+                ledger,
+                purpose=purpose,
+                side=close_side,
+                level=attached_lvl,
+                leg_id=leg.id,
+            )
+            if twin is not None:
+                old_did = (twin.deal_id or "").strip()
+                if old_did and old_did in known_wo:
+                    known_wo.discard(old_did)
+                twin.deal_id = sentinel
+                twin.position_id = leg.id
+                twin.level = attached_lvl
+                twin.size = size
+                known_wo.add(sentinel)
+                order_book[twin.id] = sentinel
+                imported_orders.append(
+                    {
+                        "id": twin.id,
+                        "deal_id": sentinel,
+                        "purpose": purpose.value,
+                        "side": close_side.value,
+                        "level": attached_lvl,
+                        "upgraded": True,
+                    }
+                )
                 continue
             placed = ledger.place_order(
                 WorkingOrder(
@@ -1771,14 +1845,21 @@ def preview_ig_book(
         row = _book_order_row(order)
         did = str(order.get("deal_id") or "").strip()
         if did.startswith("attached:"):
-            parts = did.split(":")
-            parent = parts[1] if len(parts) > 1 else ""
-            purpose = parts[2] if len(parts) > 2 else ""
+            from chatbot.cac40.models import OrderPurpose, parse_attached_deal_id
+
+            parsed = parse_attached_deal_id(did)
+            parent = parsed[0] if parsed else ""
+            purpose = parsed[1] if parsed else OrderPurpose.TP.value
             parent_row = ig_pos_by_deal.get(parent)
             if parent_row is None:
                 status = "remove"
             else:
-                lvl_key = "limit_level" if purpose == "tp" else "stop_level"
+                # Legacy 2-part attached:{deal} defaults to tp → limit_level.
+                lvl_key = (
+                    "limit_level"
+                    if purpose in (OrderPurpose.TP.value, OrderPurpose.CLOSE.value)
+                    else "stop_level"
+                )
                 try:
                     lvl = float(parent_row.get(lvl_key) or 0)
                 except (TypeError, ValueError):

@@ -23,6 +23,41 @@ class OrderPurpose(StrEnum):
     CLOSE = "close"
 
 
+def attached_deal_id(parent_deal: str, purpose: OrderPurpose | str) -> str:
+    """Build ``attached:{parentDeal}:{purpose}`` sentinel for IG stop/limit on a deal."""
+    parent = (parent_deal or "").strip()
+    if isinstance(purpose, OrderPurpose):
+        purpose_s = purpose.value
+    else:
+        purpose_s = str(purpose or "").strip().lower() or OrderPurpose.TP.value
+    if purpose_s == OrderPurpose.CLOSE.value:
+        purpose_s = OrderPurpose.TP.value
+    return f"attached:{parent}:{purpose_s}"
+
+
+def parse_attached_deal_id(deal_id: str) -> tuple[str, str] | None:
+    """
+    Parse ``attached:{parent}[:purpose]``.
+
+    Legacy 2-part ``attached:{deal}`` is treated as purpose ``tp`` (limit attach).
+    """
+    raw = (deal_id or "").strip()
+    if not raw.startswith("attached:"):
+        return None
+    parts = raw.split(":")
+    if len(parts) < 2:
+        return None
+    parent = (parts[1] or "").strip()
+    if not parent:
+        return None
+    if len(parts) == 2:
+        return parent, OrderPurpose.TP.value
+    purpose = (parts[2] or "").strip().lower() or OrderPurpose.TP.value
+    if purpose == OrderPurpose.CLOSE.value:
+        purpose = OrderPurpose.TP.value
+    return parent, purpose
+
+
 class LegRole(StrEnum):
     PRIMARY = "primary"
     HEDGE = "hedge"

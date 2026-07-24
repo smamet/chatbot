@@ -979,7 +979,7 @@ class IgConnector:
         if deal_id and not self.dry_run and self._cst:
             try:
                 self.update_position_protection(deal_id, limit_level=float(level))
-                from chatbot.cac40.models import OrderPurpose
+                from chatbot.cac40.models import OrderPurpose, attached_deal_id
 
                 self.place_order(
                     WorkingOrder(
@@ -990,7 +990,7 @@ class IgConnector:
                         size=leg.size,
                         purpose=OrderPurpose.TP,
                         position_id=position_id,
-                        deal_id=f"attached:{deal_id}",
+                        deal_id=attached_deal_id(deal_id, OrderPurpose.TP),
                     )
                 )
                 return

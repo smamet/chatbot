@@ -20,7 +20,15 @@ from chatbot.cac40.llm_decision import (
 )
 from chatbot.cac40.llm_trigger import LlmTrigger
 from chatbot.cac40.market_calendar import flatten_check
-from chatbot.cac40.models import LegRole, OrderPurpose, PositionLeg, Side, WorkingOrder
+from chatbot.cac40.models import (
+    LegRole,
+    OrderPurpose,
+    PositionLeg,
+    Side,
+    WorkingOrder,
+    attached_deal_id,
+    parse_attached_deal_id,
+)
 from chatbot.cac40.risk_gate import GateResult, RiskGate
 
 logger = logging.getLogger(__name__)
@@ -532,7 +540,87 @@ class LiveScheduler:
         except Exception as exc:
             logger.exception("adopt working orders failed")
             out["warnings"].append(f"working_order_adopt:{exc}")
+
+        healed = self._drop_ghost_attached_tps(remote_ids=remote_ids)
+        if healed:
+            out["dropped"].extend(healed)
+            out["changed"] = True
         return out
+
+    def _drop_ghost_attached_tps(
+        self, *, remote_ids: set[str]
+    ) -> list[dict[str, Any]]:
+        """
+        Drop empty / orphan attached TP (or CLOSE) rows when a canonical
+        ``attached:{openPos}:tp`` already models the same protection.
+        """
+        dropped: list[dict[str, Any]] = []
+        open_pos_deals = {
+            (p.deal_id or "").strip()
+            for p in self.ig.ledger.positions.values()
+            if (p.deal_id or "").strip()
+        }
+        canonical_ids: set[str] = set()
+        for oid, order in self.ig.ledger.working_orders.items():
+            if order.purpose not in (OrderPurpose.TP, OrderPurpose.CLOSE):
+                continue
+            parsed = parse_attached_deal_id(order.deal_id or "")
+            if parsed is None:
+                continue
+            parent, _purpose = parsed
+            if parent in open_pos_deals:
+                canonical_ids.add(oid)
+
+        if not canonical_ids:
+            return dropped
+
+        for oid, order in list(self.ig.ledger.working_orders.items()):
+            if oid in canonical_ids:
+                continue
+            if order.purpose not in (OrderPurpose.TP, OrderPurpose.CLOSE):
+                continue
+            deal_id = (order.deal_id or "").strip()
+            parsed = parse_attached_deal_id(deal_id)
+            is_empty = not deal_id
+            is_orphan_attached = False
+            if parsed is not None:
+                parent, _purpose = parsed
+                is_orphan_attached = (
+                    parent not in open_pos_deals and parent not in remote_ids
+                )
+            if not is_empty and not is_orphan_attached:
+                continue
+
+            has_canonical = False
+            for can_oid in canonical_ids:
+                other = self.ig.ledger.working_orders.get(can_oid)
+                if other is None:
+                    continue
+                same_leg = bool(
+                    order.position_id
+                    and other.position_id
+                    and order.position_id == other.position_id
+                )
+                same_level = (
+                    other.side == order.side
+                    and abs(float(other.level) - float(order.level)) <= 1e-6
+                )
+                if same_leg or same_level:
+                    has_canonical = True
+                    break
+            if not has_canonical:
+                continue
+
+            self.ig.ledger.working_orders.pop(oid, None)
+            dropped.append(
+                {
+                    "order_id": oid,
+                    "deal_id": deal_id,
+                    "purpose": order.purpose.value if order.purpose else "",
+                    "reason": "ghost_attached_tp",
+                }
+            )
+        return dropped
 
     def _reconcile_positions_from_ig(self, *, force: bool = False) -> dict[str, Any]:
         """
@@ -720,6 +808,18 @@ class LiveScheduler:
             out["secondary"].append(row)
 
         self._link_dormant_brackets_to_legs()
+
+        # Heal empty / orphan attached TPs after positions are bound (WO sync
+        # may have run before adopt minted the canonical attached:{pos}:tp).
+        remote_wo_ids = {
+            str(row.get("dealId") or row.get("deal_id") or "").strip()
+            for row in ig_orders
+            if isinstance(row, dict)
+            and str(row.get("dealId") or row.get("deal_id") or "").strip()
+        }
+        healed = self._drop_ghost_attached_tps(remote_ids=remote_wo_ids)
+        if healed:
+            out.setdefault("dropped_ghost_tps", healed)
 
         if out.get("closed") or out.get("opened") or out.get("repaired"):
             self.ig.ledger.infer_phase()
@@ -1074,7 +1174,9 @@ class LiveScheduler:
                                 deal_for_attach,
                                 limit_level=float(order.level),
                             )
-                            sentinel = f"attached:{deal_for_attach}"
+                            sentinel = attached_deal_id(
+                                deal_for_attach, OrderPurpose.TP
+                            )
                             book[local_id] = sentinel
                             if conn is self.ig:
                                 order.deal_id = sentinel
@@ -1144,11 +1246,15 @@ class LiveScheduler:
                         }
                     )
                     if tp_child_id and tp_child_id not in book:
-                        book[tp_child_id] = f"attached:{deal_id}"
+                        sentinel = attached_deal_id(deal_id, OrderPurpose.TP)
+                        book[tp_child_id] = sentinel
+                        child = desired.get(tp_child_id)
+                        if child is not None and conn is self.ig:
+                            child.deal_id = sentinel
                         row["placed"].append(
                             {
                                 "order_id": tp_child_id,
-                                "deal_id": f"attached:{deal_id}",
+                                "deal_id": sentinel,
                                 "via": "entry_limitLevel",
                             }
                         )
