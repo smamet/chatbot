@@ -1362,6 +1362,85 @@ def _find_attached_protection_twin(
     return None
 
 
+def sync_open_book_from_ig(
+    ledger: HedgeLedger,
+    *,
+    positions: list[dict[str, Any]],
+    working_orders: list[Any],
+    epic: str = "",
+    exit_price_for_leg: Any | None = None,
+) -> dict[str, Any]:
+    """
+    Rebuild the open book from IG — same path for dashboard Apply and every live cycle.
+
+    1. Close local legs whose IG ``deal_id`` vanished (session PnL / ``ig_confirmed``).
+    2. ``replace_open`` adopt of positions + working orders (IG is sole open-book SoT).
+    """
+    ig_deal_ids = {
+        str(row.get("deal_id") or "").strip()
+        for row in positions
+        if isinstance(row, dict) and str(row.get("deal_id") or "").strip()
+    }
+    ig_net = 0.0
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        try:
+            size = float(row.get("size") or 0)
+        except (TypeError, ValueError):
+            continue
+        side = row.get("side")
+        side_s = side.value if hasattr(side, "value") else str(side or "").upper()
+        if side_s == "BUY":
+            ig_net += size
+        elif side_s == "SELL":
+            ig_net -= size
+
+    closed: list[dict[str, Any]] = []
+    for leg in list(ledger.positions.values()):
+        deal_id = (leg.deal_id or "").strip()
+        if not deal_id or deal_id in ig_deal_ids:
+            continue
+        if callable(exit_price_for_leg):
+            exit_px = float(exit_price_for_leg(leg))
+        else:
+            px = float(ledger.last_price or 0)
+            exit_px = px if px > 0 else float(leg.entry)
+        trade = ledger.close_position(leg.id, exit_px, ig_confirmed=True)
+        closed.append(
+            {
+                "id": leg.id,
+                "deal_id": deal_id,
+                "exit": exit_px,
+                "trade_id": trade.id if trade else None,
+            }
+        )
+
+    adopt = adopt_ig_snapshot_into_ledger(
+        ledger,
+        positions=positions,
+        working_orders=list(working_orders or []),
+        epic=epic,
+        mode="replace_open",
+    )
+    return {
+        **adopt,
+        "closed": closed,
+        "opened": list(adopt.get("imported_positions") or []),
+        "imported": list(adopt.get("imported_orders") or []),
+        "ig_net": ig_net,
+        "local_net": float(ledger.net_size()),
+        "desync": False,
+        "repaired": True,
+        "repair": {
+            "imported_positions": adopt.get("imported_positions"),
+            "imported_orders": adopt.get("imported_orders"),
+            "quarantined": adopt.get("quarantined"),
+            "mode": "replace_open",
+        },
+    }
+
+
 def adopt_ig_snapshot_into_ledger(
     ledger: HedgeLedger,
     *,
@@ -2026,10 +2105,12 @@ def adopt_ig_book(
     """
     Fetch IG positions + working orders into the local live ledger.
 
-    Default ``mode=replace_open`` rebuilds the open book from IG (primary SoT).
+    Always rebuilds via ``sync_open_book_from_ig`` (same path as every live
+    cycle). ``mode`` is accepted for API compatibility and ignored.
     Updates connector order books so the mirror neither cancels nor re-pushes
     imported rows.
     """
+    _ = mode
     snap = _fetch_ig_snapshot(session, settings, slug)
     if not snap.get("ok"):
         return snap
@@ -2044,36 +2125,26 @@ def adopt_ig_book(
         sched = _SCHEDULERS.get(slug)
         if sched is not None:
             ledger = sched.ig.ledger
-            persist_via_sched = True
         else:
             state = _read_json(live_state_path(settings, slug), default=None)
             ledger = HedgeLedger.from_state_dict(
                 cfg, state if isinstance(state, dict) else None
             )
-            persist_via_sched = False
 
-        result = adopt_ig_snapshot_into_ledger(
+        # Same rebuild path as every live cycle (ignore additive mode).
+        result = sync_open_book_from_ig(
             ledger,
             positions=positions,
             working_orders=raw_orders,
             epic=cfg.epic,
-            mode=mode,
         )
 
         books_dir = live_dir(settings, slug) / "order_books"
         books_dir.mkdir(parents=True, exist_ok=True)
         connector_ids = [cid for cid, _ in connectors] or [primary_id]
-        replace_books = str(result.get("mode") or mode).lower() == "replace_open"
         for cid in connector_ids:
             book_path = books_dir / f"orders_{cid}.json"
             book: dict[str, str] = {}
-            if not replace_books and book_path.exists():
-                try:
-                    raw_book = json.loads(book_path.read_text(encoding="utf-8"))
-                    if isinstance(raw_book, dict):
-                        book = {str(k): str(v) for k, v in raw_book.items() if k and v}
-                except Exception:
-                    book = {}
             for oid, deal_id in (result.get("order_book") or {}).items():
                 book[str(oid)] = str(deal_id)
             for oid, order in ledger.working_orders.items():
@@ -2083,22 +2154,17 @@ def adopt_ig_book(
             book_path.write_text(json.dumps(book, indent=2), encoding="utf-8")
 
         _write_json(live_state_path(settings, slug), ledger.to_state_dict())
-        if persist_via_sched and sched is not None:
-            sched.request_position_reconcile()
 
     n_pos = len(result.get("imported_positions") or [])
     n_ord = len(result.get("imported_orders") or [])
     n_q = len(result.get("quarantined") or [])
-    if result.get("replaced"):
-        msg = (
-            f"Open book rebuilt from IG: {n_pos} position(s), {n_ord} order(s)"
-            + (f", {n_q} phantom close(s) quarantined" if n_q else "")
-            + "."
-        )
-    else:
-        msg = f"Synced from IG: +{n_pos} position(s), +{n_ord} order(s)."
-        if n_pos == 0 and n_ord == 0:
-            msg = "Sync from IG: nothing new to import (already in sync or empty)."
+    n_closed = len(result.get("closed") or [])
+    msg = (
+        f"Open book rebuilt from IG: {n_pos} position(s), {n_ord} order(s)"
+        + (f", {n_closed} close(s) recorded" if n_closed else "")
+        + (f", {n_q} phantom close(s) quarantined" if n_q else "")
+        + "."
+    )
 
     append_sync_log(
         settings,
@@ -2110,11 +2176,11 @@ def adopt_ig_book(
             "dropped": [],
             "imported_orders": list(result.get("imported_orders") or []),
             "opened": list(result.get("imported_positions") or []),
-            "closed": [],
+            "closed": list(result.get("closed") or []),
             "quarantined": list(result.get("quarantined") or []),
-            "repair": {"mode": result.get("mode"), "replaced": result.get("replaced")},
+            "repair": {"mode": "replace_open", "replaced": True},
             "warnings": list(result.get("warnings") or []),
-            "desync": bool(n_pos or n_ord or n_q or result.get("replaced")),
+            "desync": False,
         },
     )
     return {

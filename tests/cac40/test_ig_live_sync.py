@@ -63,14 +63,15 @@ def test_live_process_bar_does_not_close_on_tp_touch(tmp_path: Path):
     assert ledger.legs_count() == 1
 
 
-def test_wo_vanish_does_not_close_without_positions(tmp_path: Path):
+def test_sync_drops_vanished_wo_keeps_open_position(tmp_path: Path):
+    """replace_open drops vanished WOs; open IG position is re-imported."""
     cfg = _cfg()
     sched = LiveScheduler(
         cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
     )
     sched.ig._cst = "cst"
     ledger = sched.ig.ledger
-    leg = ledger._open_leg(Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_OPEN")
+    ledger._open_leg(Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_OPEN")
     ledger.place_order(
         WorkingOrder(
             id="",
@@ -79,18 +80,29 @@ def test_wo_vanish_does_not_close_without_positions(tmp_path: Path):
             level=8420.0,
             size=1.0,
             purpose=OrderPurpose.TP,
-            position_id=leg.id,
             deal_id="WO_TP",
         )
     )
+    sched.ig.list_open_positions = MagicMock(
+        return_value=[
+            {
+                "deal_id": "DI_OPEN",
+                "epic": cfg.epic,
+                "side": Side.SELL,
+                "size": 1.0,
+                "level": 8455.0,
+            }
+        ]
+    )
     sched.ig.list_working_orders = MagicMock(return_value=[])  # TP vanished
-    out = sched._sync_working_orders_from_ig()
-    assert out["changed"] is True
-    assert out["dropped"]
-    assert leg.id in ledger.positions  # still open — positions reconcile decides
+    out = sched._sync_ledger_from_ig()
+    assert out["ran"] is True
+    assert out["repaired"] is True
+    assert any(p.deal_id == "DI_OPEN" for p in ledger.positions.values())
+    assert not any((o.deal_id or "") == "WO_TP" for o in ledger.working_orders.values())
 
 
-def test_reconcile_closes_when_ig_position_gone(tmp_path: Path):
+def test_sync_closes_when_ig_position_gone(tmp_path: Path):
     cfg = _cfg()
     sched = LiveScheduler(
         cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
@@ -101,14 +113,14 @@ def test_reconcile_closes_when_ig_position_gone(tmp_path: Path):
     ledger._open_leg(Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_GONE")
     sched.ig.list_open_positions = MagicMock(return_value=[])
     sched.ig.list_working_orders = MagicMock(return_value=[])
-    out = sched._reconcile_positions_from_ig(force=True)
+    out = sched._sync_ledger_from_ig()
     assert out["ran"] is True
     assert out["closed"]
     assert ledger.legs_count() == 0
     assert ledger.realized_session == 35.0  # 8455-8420
 
 
-def test_reconcile_repairs_local_flat_ig_short(tmp_path: Path):
+def test_sync_repairs_local_flat_ig_short(tmp_path: Path):
     from chatbot.cac40.models import ClosedTrade
 
     cfg = _cfg()
@@ -151,7 +163,7 @@ def test_reconcile_repairs_local_flat_ig_short(tmp_path: Path):
         ]
     )
     sched.ig.list_working_orders = MagicMock(return_value=[])
-    out = sched._reconcile_positions_from_ig(force=True)
+    out = sched._sync_ledger_from_ig()
     assert out["repaired"] or out["opened"]
     assert ledger.legs_count() == 1
     leg = next(iter(ledger.positions.values()))
@@ -491,12 +503,9 @@ def test_entry_fill_upgrades_bracket_tp_no_duplicate(tmp_path: Path):
         ]
     )
 
-    wo_out = sched._sync_working_orders_from_ig()
-    assert any(d.get("deal_id") == "WO_ENTRY_1" for d in wo_out.get("dropped") or [])
+    out = sched._sync_ledger_from_ig()
+    assert out.get("opened") or out.get("repaired")
     assert entry.id not in ledger.working_orders
-
-    rec = sched._reconcile_positions_from_ig(force=True)
-    assert rec.get("opened") or rec.get("repaired")
 
     tps = [
         o
@@ -504,14 +513,83 @@ def test_entry_fill_upgrades_bracket_tp_no_duplicate(tmp_path: Path):
         if o.purpose == OrderPurpose.TP
     ]
     assert len(tps) == 1, [(o.id, o.deal_id) for o in tps]
-    assert tps[0].id == tp.id
     assert tps[0].deal_id == "attached:DI_POS_1:tp"
     assert tps[0].position_id in ledger.positions
     assert not any(not (o.deal_id or "").strip() for o in tps)
+    hedges = [
+        o
+        for o in ledger.working_orders.values()
+        if o.purpose == OrderPurpose.HEDGE_COVER
+    ]
+    assert len(hedges) == 1
+    assert hedges[0].deal_id == "WO_HEDGE_1"
 
 
-def test_drop_ghost_empty_tp_when_canonical_attached_exists(tmp_path: Path):
-    """WO sync drops empty-deal_id TP when attached:{pos}:tp already present."""
+def test_sync_purges_ghost_exposure_orders(tmp_path: Path):
+    """replace_open rebuild drops empty-deal_id ghosts; keeps IG-bound WOs."""
+    cfg = _cfg()
+    sched = LiveScheduler(
+        cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
+    )
+    sched.ig._cst = "cst"
+    ledger = sched.ig.ledger
+    ghost_entry = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.SELL,
+            level=8375.0,
+            size=1.0,
+            purpose=OrderPurpose.ENTRY,
+            deal_id="",
+        )
+    )
+    ghost_hedge = ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=8400.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            deal_id="",
+        )
+    )
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.SELL,
+            level=8340.0,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            deal_id="DI_OK",
+        )
+    )
+    sched.ig.list_open_positions = MagicMock(return_value=[])
+    sched.ig.list_working_orders = MagicMock(
+        return_value=[
+            {
+                "dealId": "DI_OK",
+                "epic": cfg.epic,
+                "direction": "SELL",
+                "orderType": "STOP",
+                "orderLevel": 8340.0,
+                "orderSize": 1.0,
+            }
+        ]
+    )
+    out = sched._sync_ledger_from_ig()
+    assert out["repaired"] is True
+    assert ghost_entry.id not in ledger.working_orders
+    assert ghost_hedge.id not in ledger.working_orders
+    assert any((o.deal_id or "") == "DI_OK" for o in ledger.working_orders.values())
+    snap = ledger.get_snapshot()
+    assert all((o.deal_id or "").strip() for o in snap.working_orders)
+
+
+def test_sync_rebuilds_attached_tp_from_position(tmp_path: Path):
+    """Ghost empty TP is wiped; attached:{pos}:tp comes from IG limitLevel."""
     cfg = _cfg()
     sched = LiveScheduler(
         cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
@@ -531,20 +609,22 @@ def test_drop_ghost_empty_tp_when_canonical_attached_exists(tmp_path: Path):
             deal_id="",
         )
     )
-    canonical = ledger.place_order(
-        WorkingOrder(
-            id="",
-            type=OrderType.LIMIT,
-            side=Side.BUY,
-            level=8325.0,
-            size=1.0,
-            purpose=OrderPurpose.TP,
-            position_id=leg.id,
-            deal_id="attached:DI_POS:tp",
-        )
+    sched.ig.list_open_positions = MagicMock(
+        return_value=[
+            {
+                "deal_id": "DI_POS",
+                "epic": cfg.epic,
+                "side": Side.SELL,
+                "size": 1.0,
+                "level": 8350.0,
+                "limit_level": 8325.0,
+            }
+        ]
     )
     sched.ig.list_working_orders = MagicMock(return_value=[])
-    out = sched._sync_working_orders_from_ig()
+    out = sched._sync_ledger_from_ig()
+    assert out["repaired"] is True
     assert ghost.id not in ledger.working_orders
-    assert canonical.id in ledger.working_orders
-    assert any(d.get("reason") == "ghost_attached_tp" for d in out.get("dropped") or [])
+    tps = [o for o in ledger.working_orders.values() if o.purpose == OrderPurpose.TP]
+    assert len(tps) == 1
+    assert tps[0].deal_id == "attached:DI_POS:tp"

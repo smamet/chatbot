@@ -27,7 +27,6 @@ from chatbot.cac40.models import (
     Side,
     WorkingOrder,
     attached_deal_id,
-    parse_attached_deal_id,
 )
 from chatbot.cac40.risk_gate import GateResult, RiskGate
 
@@ -90,18 +89,15 @@ class LiveScheduler:
         self.last_mirror_results: list[dict[str, Any]] = []
         self.last_ohlc_feed: LiveOhlcFeed | None = None
         self.last_auto_flatten: dict[str, Any] | None = None
-        self._force_position_reconcile: bool = True  # arm / first cycle
         self._last_processed_bar_ts: str | None = None
-        self._last_positions_bar_ts: str | None = None
-        self._mirror_needs_positions: bool = False
         self.last_book_repair: dict[str, Any] | None = None
 
     def request_stop(self) -> None:
         self._stop = True
 
     def request_position_reconcile(self) -> None:
-        """Next cycle will GET /positions (arm / manual)."""
-        self._force_position_reconcile = True
+        """No-op: every live cycle already rebuilds the open book from IG."""
+        return
 
     def run_forever(self) -> None:
         self.ig.login()
@@ -180,20 +176,23 @@ class LiveScheduler:
             self.ig.ledger.mark_to_market(float(bar["close"]))
             self.ig.ledger.infer_phase()
 
-        wo_sync = self._sync_working_orders_from_ig()
-        if wo_sync.get("changed"):
-            self._force_position_reconcile = True
-
         flatten_meta = self._build_flatten_meta()
         flatten_active = bool(flatten_meta.get("flatten_now"))
-        # Live: always reconcile positions from IG (incl. Run cycle now). Paper skips.
-        reconcile = self._reconcile_positions_from_ig(force=not self.dry_run)
-        if reconcile.get("ran"):
-            self._force_position_reconcile = False
-            self._mirror_needs_positions = False
-            if bar_ts:
-                self._last_positions_bar_ts = bar_ts
+        # Live: same replace_open book sync as dashboard Apply — every cycle.
+        reconcile = self._sync_ledger_from_ig()
         self.last_book_repair = reconcile.get("repair")
+        wo_sync = {
+            "ran": bool(reconcile.get("ran")),
+            "dropped": [],
+            "imported": list(reconcile.get("imported") or []),
+            "changed": bool(
+                reconcile.get("closed")
+                or reconcile.get("opened")
+                or reconcile.get("imported")
+                or reconcile.get("repaired")
+            ),
+            "warnings": list(reconcile.get("warnings") or []),
+        }
 
         # Prefer IG net for flatten sizing when available.
         net_for_flatten = (
@@ -313,6 +312,7 @@ class LiveScheduler:
             )
 
             if images:
+                # Same ledger snapshot as journal / dashboard (cleaned by IG sync above).
                 decision = self.llm.decide(
                     images=images,
                     snapshot=snap,
@@ -330,11 +330,6 @@ class LiveScheduler:
                 if decision and bar is not None:
                     gate_result = gate.apply(decision)
                     self._mirror_orders_to_ig(gate_result)
-                    if any(
-                        (r.get("placed") or r.get("cancelled") or r.get("errors"))
-                        for r in self.last_mirror_results
-                    ):
-                        self._mirror_needs_positions = True
                     self._last_decision_summary = summarize_decision(decision)
                     self.trigger.on_success(
                         bar=bar,
@@ -464,172 +459,14 @@ class LiveScheduler:
             "net_exposure": float(self.ig.ledger.net_size()),
         }
 
-    def _sync_working_orders_from_ig(self) -> dict[str, Any]:
+    def _sync_ledger_from_ig(self) -> dict[str, Any]:
         """
-        Live: drop local WOs whose IG dealId vanished; adopt IG WOs missing locally.
+        Live: rebuild open book from IG every cycle (same as dashboard Apply).
 
-        Never open/close legs from WO disappearance alone — that requires
-        GET /positions (see ``_reconcile_positions_from_ig``). Attached
-        sentinels (``attached:…``) are ignored here.
+        Fetches positions + working orders once, records vanished-leg closes,
+        then ``replace_open`` so LLM / journal / RiskGate share one IG ledger.
         """
-        from chatbot.application.cac40_live_service import adopt_ig_snapshot_into_ledger
-
-        out: dict[str, Any] = {
-            "ran": False,
-            "dropped": [],
-            "imported": [],
-            "changed": False,
-            "warnings": [],
-        }
-        if self.dry_run or not self.ig._cst:
-            return out
-        try:
-            remote = self.ig.list_working_orders()
-        except Exception as exc:
-            logger.exception("list_working_orders failed")
-            out["warnings"].append(f"working_order_sync:{exc}")
-            return out
-        out["ran"] = True
-        remote_ids = {
-            str(row.get("dealId") or "").strip()
-            for row in remote
-            if isinstance(row, dict) and str(row.get("dealId") or "").strip()
-        }
-        for oid, order in list(self.ig.ledger.working_orders.items()):
-            deal_id = (order.deal_id or "").strip()
-            if not deal_id or deal_id.startswith("attached:"):
-                continue
-            if deal_id in remote_ids:
-                continue
-            # Vanished from IG — drop local WO only; positions reconcile decides fills.
-            self.ig.ledger.working_orders.pop(oid, None)
-            out["dropped"].append(
-                {
-                    "order_id": oid,
-                    "deal_id": deal_id,
-                    "purpose": order.purpose.value if order.purpose else "",
-                }
-            )
-            out["changed"] = True
-            out.setdefault("pending_position_check", True)
-
-        # Import IG working orders not yet in the local ledger (additive).
-        try:
-            adopt = adopt_ig_snapshot_into_ledger(
-                self.ig.ledger,
-                positions=[],
-                working_orders=list(remote),
-                epic=self.config.epic,
-                mode="additive",
-            )
-            imported = list(adopt.get("imported_orders") or [])
-            if imported:
-                out["imported"] = imported
-                out["changed"] = True
-                try:
-                    primary_id = self.order_connectors[0][0]
-                    book = self._load_order_book(primary_id)
-                    for row in imported:
-                        oid = str(row.get("id") or "")
-                        did = str(row.get("deal_id") or "")
-                        if oid and did:
-                            book[oid] = did
-                    self._save_order_book(primary_id, book)
-                except Exception:
-                    logger.exception("Failed to update order book after WO adopt")
-        except Exception as exc:
-            logger.exception("adopt working orders failed")
-            out["warnings"].append(f"working_order_adopt:{exc}")
-
-        healed = self._drop_ghost_attached_tps(remote_ids=remote_ids)
-        if healed:
-            out["dropped"].extend(healed)
-            out["changed"] = True
-        return out
-
-    def _drop_ghost_attached_tps(
-        self, *, remote_ids: set[str]
-    ) -> list[dict[str, Any]]:
-        """
-        Drop empty / orphan attached TP (or CLOSE) rows when a canonical
-        ``attached:{openPos}:tp`` already models the same protection.
-        """
-        dropped: list[dict[str, Any]] = []
-        open_pos_deals = {
-            (p.deal_id or "").strip()
-            for p in self.ig.ledger.positions.values()
-            if (p.deal_id or "").strip()
-        }
-        canonical_ids: set[str] = set()
-        for oid, order in self.ig.ledger.working_orders.items():
-            if order.purpose not in (OrderPurpose.TP, OrderPurpose.CLOSE):
-                continue
-            parsed = parse_attached_deal_id(order.deal_id or "")
-            if parsed is None:
-                continue
-            parent, _purpose = parsed
-            if parent in open_pos_deals:
-                canonical_ids.add(oid)
-
-        if not canonical_ids:
-            return dropped
-
-        for oid, order in list(self.ig.ledger.working_orders.items()):
-            if oid in canonical_ids:
-                continue
-            if order.purpose not in (OrderPurpose.TP, OrderPurpose.CLOSE):
-                continue
-            deal_id = (order.deal_id or "").strip()
-            parsed = parse_attached_deal_id(deal_id)
-            is_empty = not deal_id
-            is_orphan_attached = False
-            if parsed is not None:
-                parent, _purpose = parsed
-                is_orphan_attached = (
-                    parent not in open_pos_deals and parent not in remote_ids
-                )
-            if not is_empty and not is_orphan_attached:
-                continue
-
-            has_canonical = False
-            for can_oid in canonical_ids:
-                other = self.ig.ledger.working_orders.get(can_oid)
-                if other is None:
-                    continue
-                same_leg = bool(
-                    order.position_id
-                    and other.position_id
-                    and order.position_id == other.position_id
-                )
-                same_level = (
-                    other.side == order.side
-                    and abs(float(other.level) - float(order.level)) <= 1e-6
-                )
-                if same_leg or same_level:
-                    has_canonical = True
-                    break
-            if not has_canonical:
-                continue
-
-            self.ig.ledger.working_orders.pop(oid, None)
-            dropped.append(
-                {
-                    "order_id": oid,
-                    "deal_id": deal_id,
-                    "purpose": order.purpose.value if order.purpose else "",
-                    "reason": "ghost_attached_tp",
-                }
-            )
-        return dropped
-
-    def _reconcile_positions_from_ig(self, *, force: bool = False) -> dict[str, Any]:
-        """
-        Event-driven GET /positions — IG is SoT for open legs in live.
-
-        Diffs by dealId, closes only when IG position is gone, adopts missing
-        legs, and replace-rebuilds the open book on hard desync.
-        """
-        from chatbot.application.cac40_live_service import adopt_ig_snapshot_into_ledger
+        from chatbot.application.cac40_live_service import sync_open_book_from_ig
 
         local_net = float(self.ig.ledger.net_size())
         out: dict[str, Any] = {
@@ -641,11 +478,10 @@ class LiveScheduler:
             "warnings": [],
             "closed": [],
             "opened": [],
+            "imported": [],
             "repair": None,
             "secondary": [],
         }
-        if not force:
-            return out
         if self.dry_run or not self.ig._cst:
             out["ran"] = True
             out["ig_net"] = local_net
@@ -653,140 +489,57 @@ class LiveScheduler:
 
         try:
             ig_positions = self.ig.list_open_positions()
-            try:
-                ig_orders = self.ig.list_working_orders()
-            except Exception as exc:
-                logger.exception("list_working_orders during reconcile failed")
-                out["warnings"].append(f"working_order_sync:{exc}")
-                ig_orders = []
+            ig_orders = self.ig.list_working_orders()
         except Exception as exc:
-            logger.exception("GET /positions reconcile failed")
-            out["warnings"].append(f"positions_reconcile:{exc}")
+            logger.exception("IG book sync failed")
             out["ran"] = True
+            out["desync"] = True
+            out["warnings"].append(f"book_sync:{exc}")
             return out
 
         out["ran"] = True
-        ig_by_deal = {
-            str(row.get("deal_id") or "").strip(): row
-            for row in ig_positions
-            if str(row.get("deal_id") or "").strip()
-        }
-        ig_net = 0.0
-        for row in ig_positions:
-            size = float(row.get("size") or 0)
-            if row.get("side") == Side.BUY:
-                ig_net += size
-            else:
-                ig_net -= size
-        out["ig_net"] = ig_net
-
-        local_by_deal = {
-            (p.deal_id or "").strip(): p
-            for p in self.ig.ledger.positions.values()
-            if (p.deal_id or "").strip()
-        }
-        unbound = [
-            p for p in self.ig.ledger.positions.values() if not (p.deal_id or "").strip()
-        ]
-
-        # Close local legs whose IG dealId disappeared.
-        for deal_id, leg in list(local_by_deal.items()):
-            if deal_id in ig_by_deal:
-                # Refresh size from IG.
-                try:
-                    ig_size = float(ig_by_deal[deal_id].get("size") or leg.size)
-                    if ig_size > 0:
-                        leg.size = ig_size
-                except (TypeError, ValueError):
-                    pass
-                continue
-            exit_px = self._exit_price_for_leg(leg)
-            trade = self.ig.ledger.close_position(leg.id, exit_px, ig_confirmed=True)
-            out["closed"].append(
-                {
-                    "id": leg.id,
-                    "deal_id": deal_id,
-                    "exit": exit_px,
-                    "trade_id": trade.id if trade else None,
-                }
-            )
-
-        # Adopt IG positions missing locally (additive bind).
-        missing_rows = [
-            row
-            for did, row in ig_by_deal.items()
-            if did not in {
-                (p.deal_id or "").strip()
-                for p in self.ig.ledger.positions.values()
-                if (p.deal_id or "").strip()
+        sync = sync_open_book_from_ig(
+            self.ig.ledger,
+            positions=ig_positions,
+            working_orders=ig_orders,
+            epic=self.config.epic,
+            exit_price_for_leg=self._exit_price_for_leg,
+        )
+        out.update(
+            {
+                "ig_net": sync.get("ig_net"),
+                "local_net": sync.get("local_net"),
+                "desync": False,
+                "repaired": True,
+                "closed": list(sync.get("closed") or []),
+                "opened": list(sync.get("opened") or []),
+                "imported": list(sync.get("imported") or []),
+                "repair": sync.get("repair"),
+                "warnings": list(sync.get("warnings") or []),
+                "quarantined": list(sync.get("quarantined") or []),
             }
-        ]
-        if missing_rows:
-            q = self.ig.ledger.quarantine_phantom_closes(set(ig_by_deal.keys()))
-            if q:
-                out["warnings"].append(f"phantom_quarantined:{','.join(q)}")
-            adopt = adopt_ig_snapshot_into_ledger(
-                self.ig.ledger,
-                positions=missing_rows,
-                working_orders=[],
-                epic=self.config.epic,
-                mode="additive",
-            )
-            out["opened"].extend(adopt.get("imported_positions") or [])
-        elif unbound:
-            # Legs without dealId cannot be matched — force replace below.
-            out["desync"] = True
-            out["warnings"].append(f"unbound_legs:{[p.id for p in unbound]}")
+        )
 
-        local_net = float(self.ig.ledger.net_size())
-        out["local_net"] = local_net
-        still_unbound = [
-            p.id for p in self.ig.ledger.positions.values() if not (p.deal_id or "").strip()
-        ]
-        if abs(ig_net - local_net) > 1e-6 or still_unbound:
-            out["desync"] = True
-            out["warnings"].append(
-                f"book_desync: local_net={local_net:+.4g} ig_net={ig_net:+.4g} "
-                f"unbound={still_unbound or '—'}"
-            )
-            logger.warning(out["warnings"][-1])
-            repair = adopt_ig_snapshot_into_ledger(
-                self.ig.ledger,
-                positions=ig_positions,
-                working_orders=ig_orders,
-                epic=self.config.epic,
-                mode="replace_open",
-            )
-            out["repair"] = {
-                "imported_positions": repair.get("imported_positions"),
-                "imported_orders": repair.get("imported_orders"),
-                "quarantined": repair.get("quarantined"),
-                "mode": "replace_open",
+        try:
+            primary_id = self.order_connectors[0][0]
+            book = {
+                str(oid): str(did)
+                for oid, did in (sync.get("order_book") or {}).items()
             }
-            out["repaired"] = True
-            out["desync"] = False
-            out["local_net"] = float(self.ig.ledger.net_size())
-            out["opened"] = list(repair.get("imported_positions") or [])
-            # Rewrite primary order book from repair mapping.
-            try:
-                primary_id = self.order_connectors[0][0]
-                book = {
-                    str(oid): str(did)
-                    for oid, did in (repair.get("order_book") or {}).items()
-                }
-                for oid, order in self.ig.ledger.working_orders.items():
-                    did = (order.deal_id or "").strip()
-                    if did:
-                        book[str(oid)] = did
-                self._save_order_book(primary_id, book)
-            except Exception:
-                logger.exception("Failed to rewrite order book after repair")
+            for oid, order in self.ig.ledger.working_orders.items():
+                did = (order.deal_id or "").strip()
+                if did:
+                    book[str(oid)] = did
+            self._save_order_book(primary_id, book)
+        except Exception:
+            logger.exception("Failed to rewrite order book after IG sync")
+
+        if out["closed"] or out["opened"]:
             self.trigger.note_fills(
-                [{"type": "repair", "opened": out["opened"], "closed": out["closed"]}]
+                [{"type": "sync", "opened": out["opened"], "closed": out["closed"]}]
             )
-            self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
+        self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
 
-        # Secondary accounts: net check only (warn, no ledger rewrite).
         for connector_id, conn in self.order_connectors:
             if conn is self.ig:
                 continue
@@ -807,49 +560,7 @@ class LiveScheduler:
                 out["warnings"].append(f"secondary_reconcile:{connector_id}:{exc}")
             out["secondary"].append(row)
 
-        self._link_dormant_brackets_to_legs()
-
-        # Heal empty / orphan attached TPs after positions are bound (WO sync
-        # may have run before adopt minted the canonical attached:{pos}:tp).
-        remote_wo_ids = {
-            str(row.get("dealId") or row.get("deal_id") or "").strip()
-            for row in ig_orders
-            if isinstance(row, dict)
-            and str(row.get("dealId") or row.get("deal_id") or "").strip()
-        }
-        healed = self._drop_ghost_attached_tps(remote_ids=remote_wo_ids)
-        if healed:
-            out.setdefault("dropped_ghost_tps", healed)
-
-        if out.get("closed") or out.get("opened") or out.get("repaired"):
-            self.ig.ledger.infer_phase()
-            if self.ig.ledger.last_price:
-                self.ig.ledger.mark_to_market(self.ig.ledger.last_price)
         return out
-
-    def _link_dormant_brackets_to_legs(self) -> None:
-        """After IG entry fill, attach local TP/hedge children to open legs (live)."""
-        working = self.ig.ledger.working_orders
-        for order in working.values():
-            parent = order.parent_order_id
-            if not parent or parent in working:
-                continue
-            if order.position_id and order.position_id in self.ig.ledger.positions:
-                continue
-            if order.purpose not in (
-                OrderPurpose.TP,
-                OrderPurpose.CLOSE,
-                OrderPurpose.HEDGE_COVER,
-            ):
-                continue
-            for leg in self.ig.ledger.positions.values():
-                if order.purpose == OrderPurpose.HEDGE_COVER:
-                    # Stop is usually same-side protective or opposite buy-to-cover.
-                    order.position_id = leg.id
-                    break
-                if leg.side != order.side:
-                    order.position_id = leg.id
-                    break
 
     def _exit_price_for_leg(self, leg: PositionLeg) -> float:
         """Best-effort exit when IG position vanishes (linked TP level, else mid)."""
