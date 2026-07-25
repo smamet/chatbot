@@ -19,7 +19,7 @@ from chatbot.cac40.llm_decision import (
     summarize_decision,
 )
 from chatbot.cac40.llm_trigger import LlmTrigger
-from chatbot.cac40.market_calendar import flatten_check
+from chatbot.cac40.market_calendar import session_snapshot
 from chatbot.cac40.models import (
     LegRole,
     OrderPurpose,
@@ -135,7 +135,17 @@ class LiveScheduler:
 
         ``force_llm`` (manual Run cycle now): ignore Adaptive/Fixed schedule and
         call Gemini when OHLC is usable and the book is not in unresolved desync.
+
+        When the FR40 session is closed, returns an idle heartbeat without IG
+        login, OHLC, charts, or LLM — full path resumes on the next open poll.
         """
+        session = session_snapshot(
+            flatten_lead_minutes=int(self.config.flatten_lead_minutes or 30),
+            flatten_enabled=bool(self.config.flatten_before_close),
+        )
+        if not session.get("dealing_open"):
+            return self._idle_market_closed(session)
+
         self.ensure_logged_in()
         self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
         self.last_auto_flatten = None
@@ -176,7 +186,7 @@ class LiveScheduler:
             self.ig.ledger.mark_to_market(float(bar["close"]))
             self.ig.ledger.infer_phase()
 
-        flatten_meta = self._build_flatten_meta()
+        flatten_meta = self._build_flatten_meta(session)
         flatten_active = bool(flatten_meta.get("flatten_now"))
         # Live: same replace_open book sync as dashboard Apply — every cycle.
         reconcile = self._sync_ledger_from_ig()
@@ -432,31 +442,86 @@ class LiveScheduler:
         self._journal(payload)
         return payload
 
-    def _build_flatten_meta(self) -> dict[str, Any]:
-        if not bool(self.config.flatten_before_close):
-            return {
-                "flatten_now": False,
-                "enabled": False,
-                "now": datetime.now(timezone.utc).isoformat(),
-            }
-        check = flatten_check(
-            close_hhmm=str(self.config.market_close_paris or "22:00"),
-            lead_minutes=int(self.config.flatten_lead_minutes or 30),
-            tz=str(self.config.data_timezone or "Europe/Paris"),
+    def _build_flatten_meta(
+        self, session: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        snap = session or session_snapshot(
+            flatten_lead_minutes=int(self.config.flatten_lead_minutes or 30),
+            flatten_enabled=bool(self.config.flatten_before_close),
         )
         return {
-            "enabled": True,
-            "flatten_now": bool(check.get("active")),
-            "reason": check.get("reason") or "",
-            "reasons": list(check.get("reasons") or []),
-            "close_at": check.get("close_at"),
-            "window_start": check.get("window_start"),
-            "minutes_to_close": check.get("minutes_to_close"),
-            "next_open_day": check.get("next_open_day"),
-            "now": check.get("now"),
-            "weekday": check.get("weekday"),
-            "tz": check.get("tz"),
+            "enabled": bool(snap.get("flatten_enabled")),
+            "flatten_now": bool(snap.get("flatten_now")),
+            "reason": snap.get("flatten_reason") or "",
+            "reasons": list(snap.get("flatten_reasons") or []),
+            "close_at": snap.get("flatten_close_at"),
+            "window_start": snap.get("flatten_window_start"),
+            "minutes_to_close": snap.get("minutes_to_close"),
+            "next_open_day": snap.get("next_open_day"),
+            "next_open": snap.get("next_open"),
+            "next_close": snap.get("next_close"),
+            "dealing_open": bool(snap.get("dealing_open")),
+            "now": snap.get("now"),
+            "weekday": snap.get("weekday"),
+            "tz": snap.get("tz"),
+            "source": snap.get("source"),
             "net_exposure": float(self.ig.ledger.net_size()),
+        }
+
+    def _append_market_closed_heartbeat(self, session: dict[str, Any]) -> Path:
+        close_id = str(session.get("close_id") or "unknown")
+        safe = "".join(c for c in close_id if c.isalnum() or c in ("_", "-"))
+        path = self.journal_dir / "market_closed" / f"{safe}.jsonl"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        row = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "next_open": session.get("next_open"),
+            "skip_reason": "market_closed",
+            "close_id": close_id,
+            "weekday": session.get("weekday"),
+        }
+        with path.open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(row, default=str) + "\n")
+        return path
+
+    def _idle_market_closed(self, session: dict[str, Any]) -> dict[str, Any]:
+        """No OHLC / sync / charts / LLM — compact heartbeat for UI grouping."""
+        self.last_auto_flatten = None
+        self.last_ohlc_feed = None
+        self.last_mirror_results = []
+        self.last_book_repair = None
+        heartbeat_path = self._append_market_closed_heartbeat(session)
+        flatten_meta = self._build_flatten_meta(session)
+        ts = datetime.now(timezone.utc).isoformat()
+        logger.info(
+            "Market closed — idle (next_open=%s close_id=%s)",
+            session.get("next_open"),
+            session.get("close_id"),
+        )
+        return {
+            "ts": ts,
+            "skipped": True,
+            "skip_reason": "market_closed",
+            "session": session,
+            "market_clock": flatten_meta,
+            "mirror": [],
+            "executed": [],
+            "rejected": [],
+            "decision": None,
+            "llm_trigger": [],
+            "ohlc_feed": {},
+            "pnl": self.ig.ledger.pnl_payload(),
+            "auto_flatten": None,
+            "reconcile": {},
+            "book_repair": None,
+            "working_order_sync": {},
+            "fill_events": [],
+            "chart_files": [],
+            "charts_rel": "",
+            "cycle_dir": "",
+            "dry_run": self.dry_run,
+            "market_closed_heartbeat": str(heartbeat_path.name),
+            "error": None,
         }
 
     def _sync_ledger_from_ig(self) -> dict[str, Any]:

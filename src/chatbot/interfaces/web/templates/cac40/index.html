@@ -245,6 +245,16 @@
     Mode
     {% if live_mode == 'live' %}<span class="badge failed">LIVE</span>
     {% else %}<span class="badge off">OFF</span>{% endif %}
+    {% if market_session %}
+      {% if market_session.dealing_open %}
+      · <span class="badge done">Market open</span>
+      {% else %}
+      · <span class="badge off">Market closed</span>
+      {% if market_session.next_open %}
+      · opens <time class="js-local-datetime" datetime="{{ market_session.next_open }}">{{ market_session.next_open }}</time>
+      {% endif %}
+      {% endif %}
+    {% endif %}
     {% if live_status.last_cycle_at %}
       · last bot cycle <time class="js-local-datetime" datetime="{{ live_status.last_cycle_at }}">{{ live_status.last_cycle_at }}</time>
     {% endif %}
@@ -262,6 +272,18 @@
       · <a href="/dashboard/bots/{{ tenant.slug }}/cac40/live/book-sync#desync-log">Sync log ({{ sync_log_count }})</a>
     {% endif %}
   </p>
+  {% if market_session %}
+  <p class="field-hint" style="margin-top:0.25rem;">
+    Session: {{ market_session.weekly_open }} → {{ market_session.weekly_close }}
+    · {{ market_session.source }}
+    {% if market_session.flatten_enabled and market_session.dealing_open and market_session.flatten_now %}
+    · <span class="badge failed">Flatten window</span>
+    {% endif %}
+  </p>
+  {% endif %}
+  {% if market_session and not market_session.dealing_open and live_mode != 'off' %}
+  <div class="callout">Market closed — bot is idle (no OHLC, charts, or LLM). Resumes automatically at the next open.</div>
+  {% endif %}
   {% if live_stale and live_mode != 'off' %}
   <div class="callout callout--danger">Live worker heartbeat is stale — is <code>worker-cac40-live</code> running? Check <code>./sail logs worker-cac40-live</code>.</div>
   {% elif live_awaiting_first_cycle and live_mode != 'off' %}

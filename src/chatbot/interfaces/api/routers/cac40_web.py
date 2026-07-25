@@ -126,6 +126,12 @@ def cac40_index(
     live_worker = read_live_worker_status(settings)
     ohlc_sync = read_ohlc_sync_status(settings, slug)
     from chatbot.cac40.ig_allowance import pick_ig_price_allowance
+    from chatbot.cac40.market_calendar import session_snapshot
+
+    market_session = session_snapshot(
+        flatten_lead_minutes=int(live_strategy.get("flatten_lead_minutes") or 30),
+        flatten_enabled=bool(live_strategy.get("flatten_before_close", True)),
+    )
 
     ig_price_allowance = pick_ig_price_allowance(
         live_status.get("ig_price_allowance")
@@ -206,6 +212,7 @@ def cac40_index(
             "live_worker_status": live_worker,
             "live_stale": stale,
             "live_awaiting_first_cycle": awaiting_first_cycle,
+            "market_session": market_session,
             "ig_connectors": ig_connectors,
             "cac40_live_poll_seconds": settings.cac40_live_poll_seconds,
             "live_cycle_seconds": LIVE_CYCLE_SECONDS,
@@ -317,6 +324,8 @@ def cac40_start_run(
     llm_trigger_mode: str = Form("levels"),
     llm_level_band_points: float = Form(15.0),
     prevent_loss_exits: str = Form("0"),
+    flatten_before_close: str = Form("1"),
+    flatten_lead_minutes: int = Form(30),
     period: str = Form("1w"),
     lookback_15m: int = Form(96),
     lookback_1h: int = Form(72),
@@ -370,6 +379,9 @@ def cac40_start_run(
         llm_trigger_mode=trigger_mode,
         llm_level_band_points=band,
         prevent_loss_exits=str(prevent_loss_exits).strip().lower() in ("1", "true", "yes", "on"),
+        flatten_before_close=str(flatten_before_close).strip().lower()
+        in ("1", "true", "yes", "on"),
+        flatten_lead_minutes=max(1, min(180, int(flatten_lead_minutes or 30))),
         backtest_period=period_key,
         lookback_15m=max(1, lookback_15m),
         lookback_1h=max(1, lookback_1h),
@@ -561,6 +573,8 @@ def _strategy_from_form(
     llm_trigger_mode: str,
     llm_level_band_points: float,
     prevent_loss_exits: str,
+    flatten_before_close: str,
+    flatten_lead_minutes: int,
     lookback_15m: int,
     lookback_1h: int,
     lookback_1d: int,
@@ -586,6 +600,9 @@ def _strategy_from_form(
         "llm_trigger_mode": trigger_mode,
         "llm_level_band_points": max(0.1, float(llm_level_band_points or 15.0)),
         "prevent_loss_exits": str(prevent_loss_exits).strip().lower() in ("1", "true", "yes", "on"),
+        "flatten_before_close": str(flatten_before_close).strip().lower()
+        in ("1", "true", "yes", "on"),
+        "flatten_lead_minutes": max(1, min(180, int(flatten_lead_minutes or 30))),
         "lookback_15m": max(1, lookback_15m),
         "lookback_1h": max(1, lookback_1h),
         "lookback_1d": max(1, lookback_1d),
@@ -614,6 +631,8 @@ async def cac40_live_save_config(
     llm_trigger_mode: str = Form("levels"),
     llm_level_band_points: float = Form(15.0),
     prevent_loss_exits: str = Form("0"),
+    flatten_before_close: str = Form("1"),
+    flatten_lead_minutes: int = Form(30),
     lookback_15m: int = Form(96),
     lookback_1h: int = Form(72),
     lookback_1d: int = Form(60),
@@ -644,6 +663,8 @@ async def cac40_live_save_config(
         llm_trigger_mode=llm_trigger_mode,
         llm_level_band_points=llm_level_band_points,
         prevent_loss_exits=prevent_loss_exits,
+        flatten_before_close=flatten_before_close,
+        flatten_lead_minutes=flatten_lead_minutes,
         lookback_15m=lookback_15m,
         lookback_1h=lookback_1h,
         lookback_1d=lookback_1d,

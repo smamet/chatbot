@@ -131,6 +131,40 @@
   {% from "cac40/_cycle_ops_log.html" import cycle_ops_log %}
   <div class="cac40-decision-list">
     {% for d in run.decisions %}
+    {% if d.kind == 'market_closed_group' %}
+    <details class="cac40-decision cac40-decision--closed" id="cycle-{{ d.cycle_dir or loop.index }}">
+      <summary>
+        {% if d.from_ts %}
+        <time class="cac40-decision__ts js-local-datetime" datetime="{{ d.from_ts }}">{{ d.from_ts }}</time>
+        {% else %}
+        <span class="cac40-decision__ts">—</span>
+        {% endif %}
+        <span class="badge off">Market closed</span>
+        <span class="text-muted">{{ d.heartbeat_count or 0 }} heartbeat{% if (d.heartbeat_count or 0) != 1 %}s{% endif %}</span>
+        {% if d.from_ts and d.to_ts and d.from_ts != d.to_ts %}
+        <span class="text-muted">
+          <time class="js-local-datetime" datetime="{{ d.from_ts }}">{{ d.from_ts }}</time>
+          →
+          <time class="js-local-datetime" datetime="{{ d.to_ts }}">{{ d.to_ts }}</time>
+        </span>
+        {% endif %}
+        {% if d.next_open %}
+        <span class="text-muted">Opens <time class="js-local-datetime" datetime="{{ d.next_open }}">{{ d.next_open }}</time></span>
+        {% endif %}
+      </summary>
+      <div class="cac40-decision__body">
+        <p class="text-muted">Idle polls while the FR40 session was closed — no OHLC, charts, or LLM.</p>
+        <ul class="cac40-closed-heartbeats">
+          {% for h in d.heartbeats or [] %}
+          <li>
+            <time class="js-local-datetime" datetime="{{ h.ts }}">{{ h.ts }}</time>
+            <span class="text-muted">skipped — market closed</span>
+          </li>
+          {% endfor %}
+        </ul>
+      </div>
+    </details>
+    {% else %}
     <details class="cac40-decision" id="cycle-{{ d.cycle_dir or loop.index }}" {% if loop.first %}open{% endif %}>
       <summary>
         {% if d.ts %}
@@ -256,6 +290,7 @@
         </details>
       </div>
     </details>
+    {% endif %}
     {% endfor %}
   </div>
   {% else %}

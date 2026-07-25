@@ -29,6 +29,17 @@
   </select>
   <small class="field-hint">Hard gate: reject market closes and TP/close orders that would realize a loss after spread.</small>
 </label>
+<label>Flatten before market close
+  <select name="flatten_before_close">
+    <option value="1" {% if cfg.flatten_before_close %}selected{% endif %}>Yes (default)</option>
+    <option value="0" {% if not cfg.flatten_before_close %}selected{% endif %}>No</option>
+  </select>
+  <small class="field-hint">Directional hedge + cancel entries in the lead window before weekend / holiday close. Session hours are fixed (IG FR40 Cash: Sun 23:02 → Fri 22:00 London).</small>
+</label>
+<label>Flatten lead (minutes)
+  <input type="number" name="flatten_lead_minutes" value="{{ cfg.flatten_lead_minutes or 30 }}" min="1" max="180">
+  <small class="field-hint">How long before the 22:00 London close to force flatten (default 30).</small>
+</label>
 <label>LLM schedule
   <select name="llm_trigger_mode" id="{{ prefix }}llm-trigger-mode">
     <option value="levels" {% if cfg.llm_trigger_mode != 'interval' %}selected{% endif %}>

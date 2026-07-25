@@ -304,7 +304,9 @@ def test_prepare_feed_too_old_skips_llm(tmp_path: Path) -> None:
     assert feed.error
 
 
-def test_scheduler_uses_provider_not_full_ig_lookbacks(tmp_path: Path) -> None:
+def test_scheduler_uses_provider_not_full_ig_lookbacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     cfg = Cac40Config(
         lookback_15m=20,
         lookback_1h=10,
@@ -344,6 +346,29 @@ def test_scheduler_uses_provider_not_full_ig_lookbacks(tmp_path: Path) -> None:
     quiet.should_call = False
     quiet.reasons = ["quiet"]
     sched.trigger.evaluate = MagicMock(return_value=quiet)
+    monkeypatch.setattr(
+        "chatbot.cac40.scheduler.session_snapshot",
+        lambda *a, **k: {
+            "dealing_open": True,
+            "flatten_enabled": False,
+            "flatten_now": False,
+            "flatten_reason": "",
+            "flatten_reasons": [],
+            "flatten_close_at": None,
+            "flatten_window_start": None,
+            "minutes_to_close": None,
+            "next_open_day": None,
+            "next_open": None,
+            "next_close": None,
+            "close_id": None,
+            "now": "2024-06-03T12:00:00+01:00",
+            "weekday": "Monday",
+            "tz": "Europe/London",
+            "source": "test",
+            "weekly_open": "Sun 23:02 Europe/London",
+            "weekly_close": "Fri 22:00 Europe/London",
+        },
+    )
 
     payload = sched.run_once()
     assert payload["ohlc_feed"]["source"] == "local_csv"

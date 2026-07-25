@@ -33,7 +33,6 @@ _CONFIG_DISPLAY_ORDER = (
     "prevent_loss_exits",
     "flatten_before_close",
     "flatten_lead_minutes",
-    "market_close_paris",
     "lookback_15m",
     "lookback_1h",
     "lookback_1d",

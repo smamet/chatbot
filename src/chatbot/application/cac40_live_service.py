@@ -875,6 +875,75 @@ def list_live_cycles(
     return rows[: max(1, limit)]
 
 
+def _load_market_closed_groups(journal: Path) -> list[dict[str, Any]]:
+    """One UI row per closed stretch (jsonl heartbeats under journal/market_closed/)."""
+    root = journal / "market_closed"
+    if not root.is_dir():
+        return []
+    groups: list[dict[str, Any]] = []
+    for path in sorted(root.glob("*.jsonl")):
+        heartbeats: list[dict[str, Any]] = []
+        try:
+            for line in path.read_text(encoding="utf-8").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict) and row.get("ts"):
+                    heartbeats.append(row)
+        except OSError:
+            continue
+        if not heartbeats:
+            continue
+        heartbeats.sort(key=lambda h: str(h.get("ts") or ""))
+        first_ts = str(heartbeats[0].get("ts") or "")
+        last_ts = str(heartbeats[-1].get("ts") or "")
+        next_open = heartbeats[-1].get("next_open") or heartbeats[0].get("next_open")
+        close_id = path.stem
+        groups.append(
+            {
+                "kind": "market_closed_group",
+                "ts": last_ts or first_ts,
+                "from_ts": first_ts,
+                "to_ts": last_ts,
+                "next_open": next_open,
+                "close_id": close_id,
+                "heartbeat_count": len(heartbeats),
+                "heartbeats": heartbeats,
+                "cycle_dir": f"market_closed-{close_id}",
+                "skipped": True,
+                "skip_reason": "market_closed",
+                "bias": None,
+                "support": None,
+                "resistance": None,
+                "actions": [],
+                "executed": [],
+                "rejected": [],
+                "charts": [],
+                "chart_files": [],
+                "decision": None,
+                "book": {"positions": 0, "working_orders": 0},
+                "pnl": {},
+                "ops_log": [],
+                "ops_log_line_count": 0,
+            }
+        )
+    return groups
+
+
+def merge_decisions_with_market_closed(
+    decisions: list[dict[str, Any]],
+    closed_groups: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Interleave normal decision cards with market-closed groups (newest first)."""
+    merged = list(decisions) + list(closed_groups)
+    merged.sort(key=lambda e: str(e.get("ts") or ""), reverse=True)
+    return merged
+
+
 def _load_live_decision_entries(settings: Settings, slug: str) -> list[dict[str, Any]]:
     """Load from journal cycle.json; merge any older decisions_log rows not already covered."""
     journal = live_journal_dir(settings, slug)
@@ -907,7 +976,8 @@ def _load_live_decision_entries(settings: Settings, slug: str) -> list[dict[str,
         _decision_row_from_entry(e, slug=slug, journal_root=journal) for e in entries
     ]
     out.reverse()
-    return out
+    closed_groups = _load_market_closed_groups(journal)
+    return merge_decisions_with_market_closed(out, closed_groups)
 
 
 def _as_dict_list(raw: Any) -> list[dict[str, Any]]:
@@ -2348,7 +2418,10 @@ def run_live_cycle_now(
                     "trigger": "manual",
                 },
             )
-            if payload.get("skipped"):
+            if payload.get("skip_reason") == "market_closed":
+                nxt = (payload.get("session") or {}).get("next_open") or "—"
+                llm_bit = f"Market closed — idle until {nxt}"
+            elif payload.get("skipped"):
                 reasons = payload.get("llm_trigger") or []
                 ohlc = payload.get("ohlc_feed") or {}
                 if ohlc.get("skip_llm"):
