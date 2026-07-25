@@ -193,14 +193,9 @@ class LiveScheduler:
         self.last_book_repair = reconcile.get("repair")
         wo_sync = {
             "ran": bool(reconcile.get("ran")),
-            "dropped": [],
+            "dropped": list(reconcile.get("dropped_orders") or []),
             "imported": list(reconcile.get("imported") or []),
-            "changed": bool(
-                reconcile.get("closed")
-                or reconcile.get("opened")
-                or reconcile.get("imported")
-                or reconcile.get("repaired")
-            ),
+            "changed": bool(reconcile.get("changed")),
             "warnings": list(reconcile.get("warnings") or []),
         }
 
@@ -576,9 +571,11 @@ class LiveScheduler:
                 "local_net": sync.get("local_net"),
                 "desync": False,
                 "repaired": True,
+                "changed": bool(sync.get("changed")),
                 "closed": list(sync.get("closed") or []),
                 "opened": list(sync.get("opened") or []),
                 "imported": list(sync.get("imported") or []),
+                "dropped_orders": list(sync.get("dropped_orders") or []),
                 "repair": sync.get("repair"),
                 "warnings": list(sync.get("warnings") or []),
                 "quarantined": list(sync.get("quarantined") or []),

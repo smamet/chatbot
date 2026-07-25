@@ -676,6 +676,37 @@ def test_append_sync_log_from_payload_only_when_changed(settings: Settings) -> N
         is False
     )
     assert read_sync_log(settings, "demo-bot") == []
+    # Bare replace_open repair with no true deltas must not log.
+    assert (
+        append_sync_log_from_payload(
+            settings,
+            "demo-bot",
+            {
+                "ts": "2026-07-24T12:10:00+00:00",
+                "working_order_sync": {
+                    "imported": [],
+                    "dropped": [],
+                    "changed": False,
+                },
+                "reconcile": {
+                    "repaired": True,
+                    "changed": False,
+                    "opened": [],
+                    "imported": [],
+                    "closed": [],
+                    "dropped_orders": [],
+                    "quarantined": [],
+                    "repair": {
+                        "mode": "replace_open",
+                        "imported_positions": [{"deal_id": "DI1"}],
+                        "imported_orders": [{"deal_id": "WO1"}],
+                    },
+                },
+            },
+        )
+        is False
+    )
+    assert read_sync_log(settings, "demo-bot") == []
     assert (
         append_sync_log_from_payload(
             settings,
@@ -696,6 +727,33 @@ def test_append_sync_log_from_payload_only_when_changed(settings: Settings) -> N
     assert len(rows) == 1
     assert rows[0]["cycle_id"] == "20260724_121500"
     assert len(rows[0]["dropped"]) == 1
+
+
+def test_append_sync_log_from_payload_logs_true_opened_delta(settings: Settings) -> None:
+    assert (
+        append_sync_log_from_payload(
+            settings,
+            "demo-bot",
+            {
+                "ts": "2026-07-24T13:00:00+00:00",
+                "cycle_dir": "20260724_130000",
+                "working_order_sync": {"changed": True},
+                "reconcile": {
+                    "changed": True,
+                    "repaired": True,
+                    "opened": [{"deal_id": "DI_NEW", "side": "BUY", "size": 1.0}],
+                    "imported": [],
+                    "closed": [],
+                    "repair": {"mode": "replace_open", "changed": True},
+                },
+            },
+        )
+        is True
+    )
+    rows = read_sync_log(settings, "demo-bot")
+    assert len(rows) == 1
+    assert rows[0]["opened"][0]["deal_id"] == "DI_NEW"
+    assert rows[0]["desync"] is True
 
 
 def test_preview_ig_book_diff_statuses(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:

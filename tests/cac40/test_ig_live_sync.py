@@ -5,7 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock
 
-from chatbot.application.cac40_live_service import adopt_ig_snapshot_into_ledger
+from chatbot.application.cac40_live_service import (
+    adopt_ig_snapshot_into_ledger,
+    sync_open_book_from_ig,
+)
 from chatbot.cac40.config import Cac40Config
 from chatbot.cac40.hedge_ledger import HedgeLedger
 from chatbot.cac40.models import (
@@ -98,8 +101,94 @@ def test_sync_drops_vanished_wo_keeps_open_position(tmp_path: Path):
     out = sched._sync_ledger_from_ig()
     assert out["ran"] is True
     assert out["repaired"] is True
+    assert out["changed"] is True
+    assert any(d.get("deal_id") == "WO_TP" for d in out.get("dropped_orders") or [])
     assert any(p.deal_id == "DI_OPEN" for p in ledger.positions.values())
     assert not any((o.deal_id or "") == "WO_TP" for o in ledger.working_orders.values())
+
+
+def test_sync_open_book_unchanged_when_local_matches_ig():
+    cfg = _cfg()
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8455
+    ledger._open_leg(Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_OPEN")
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.LIMIT,
+            side=Side.BUY,
+            level=8420.0,
+            size=1.0,
+            purpose=OrderPurpose.TP,
+            deal_id="WO_TP",
+        )
+    )
+    out = sync_open_book_from_ig(
+        ledger,
+        positions=[
+            {
+                "deal_id": "DI_OPEN",
+                "epic": cfg.epic,
+                "side": Side.SELL,
+                "size": 1.0,
+                "level": 8455.0,
+            }
+        ],
+        working_orders=[
+            {
+                "deal_id": "WO_TP",
+                "epic": cfg.epic,
+                "side": Side.BUY,
+                "type": OrderType.LIMIT,
+                "level": 8420.0,
+                "size": 1.0,
+            }
+        ],
+        epic=cfg.epic,
+    )
+    assert out["repaired"] is True
+    assert out["changed"] is False
+    assert out["opened"] == []
+    assert out["imported"] == []
+    assert out["dropped_orders"] == []
+    assert out["closed"] == []
+    assert ledger.legs_count() == 1
+    assert any(o.deal_id == "WO_TP" for o in ledger.working_orders.values())
+
+
+def test_sync_open_book_detects_size_drift_and_new_order():
+    cfg = _cfg()
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8455
+    ledger._open_leg(Side.SELL, 1.0, 8455.0, LegRole.PRIMARY, deal_id="DI_OPEN")
+    out = sync_open_book_from_ig(
+        ledger,
+        positions=[
+            {
+                "deal_id": "DI_OPEN",
+                "epic": cfg.epic,
+                "side": Side.SELL,
+                "size": 2.0,
+                "level": 8455.0,
+            }
+        ],
+        working_orders=[
+            {
+                "deal_id": "WO_NEW",
+                "epic": cfg.epic,
+                "side": Side.BUY,
+                "type": OrderType.STOP,
+                "level": 8460.0,
+                "size": 2.0,
+            }
+        ],
+        epic=cfg.epic,
+    )
+    assert out["changed"] is True
+    assert any(r.get("deal_id") == "DI_OPEN" and r.get("size") == 2.0 for r in out["opened"])
+    assert any(r.get("deal_id") == "WO_NEW" for r in out["imported"])
+    leg = next(iter(ledger.positions.values()))
+    assert leg.size == 2.0
 
 
 def test_sync_closes_when_ig_position_gone(tmp_path: Path):
@@ -115,6 +204,7 @@ def test_sync_closes_when_ig_position_gone(tmp_path: Path):
     sched.ig.list_working_orders = MagicMock(return_value=[])
     out = sched._sync_ledger_from_ig()
     assert out["ran"] is True
+    assert out["changed"] is True
     assert out["closed"]
     assert ledger.legs_count() == 0
     assert ledger.realized_session == 35.0  # 8455-8420

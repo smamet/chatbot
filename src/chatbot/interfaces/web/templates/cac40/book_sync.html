@@ -100,29 +100,117 @@
     {% endif %}
   </div>
   <p class="field-hint">
-    Auto-sync still applies each live cycle without confirmation. Entries here mean the book
-    changed to match IG — treat as anomalies to investigate.
+    Auto-sync still applies each live cycle without confirmation. Entries appear only when the
+    open book actually drifted vs IG — click a row to see the diff (legs/orders added, dropped, closed).
   </p>
   {% if sync_log %}
   <ul class="cac40-sync-log__list">
     {% for e in sync_log %}
     <li class="cac40-sync-log__item">
-      <div class="cac40-sync-log__head">
-        {% if e.ts %}
-        <time class="js-local-datetime" datetime="{{ e.ts }}">{{ e.ts }}</time>
-        {% else %}—{% endif %}
-        <span class="badge failed">{{ e.source or 'cycle' }}</span>
-        {% if e.cycle_id %}<code>{{ e.cycle_id }}</code>{% endif %}
-      </div>
-      <div class="cac40-sync-log__meta text-muted">
-        {% if e.dropped %}dropped {{ e.dropped|length }} · {% endif %}
-        {% if e.imported_orders %}+orders {{ e.imported_orders|length }} · {% endif %}
-        {% if e.opened %}+legs {{ e.opened|length }} · {% endif %}
-        {% if e.closed %}closed {{ e.closed|length }} · {% endif %}
-        {% if e.quarantined %}quarantined {{ e.quarantined|length }} · {% endif %}
-        {% if e.repair %}repaired · {% endif %}
-        {% if e.warnings %}warnings {{ e.warnings|length }}{% endif %}
-      </div>
+      <details class="cac40-sync-log__details">
+        <summary class="cac40-sync-log__summary">
+          <div class="cac40-sync-log__head">
+            {% if e.ts %}
+            <time class="js-local-datetime" datetime="{{ e.ts }}">{{ e.ts }}</time>
+            {% else %}—{% endif %}
+            <span class="badge failed">{{ e.source or 'cycle' }}</span>
+            {% if e.cycle_id %}<code>{{ e.cycle_id }}</code>{% endif %}
+          </div>
+          <div class="cac40-sync-log__meta text-muted">
+            {% if e.dropped %}dropped {{ e.dropped|length }} · {% endif %}
+            {% if e.imported_orders %}+orders {{ e.imported_orders|length }} · {% endif %}
+            {% if e.opened %}+legs {{ e.opened|length }} · {% endif %}
+            {% if e.closed %}closed {{ e.closed|length }} · {% endif %}
+            {% if e.quarantined %}quarantined {{ e.quarantined|length }} · {% endif %}
+            {% if e.changed or e.desync %}delta · {% endif %}
+            {% if e.warnings %}warnings {{ e.warnings|length }}{% endif %}
+            <span class="cac40-sync-log__hint">details</span>
+          </div>
+        </summary>
+        <div class="cac40-sync-log__diff">
+          {% if e.opened %}
+          <p class="cac40-sync-log__diff-title">+ Legs (from IG)</p>
+          <ul>
+            {% for row in e.opened %}
+            <li>
+              {% if row is mapping %}
+              <code>{{ row.deal_id or row.id or '—' }}</code>
+              {{ row.side or '' }}
+              {% if row.size is not none %}×{{ row.size }}{% endif %}
+              {% if row.level is not none %}@{{ row.level }}{% endif %}
+              {% else %}<code>{{ row }}</code>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if e.imported_orders %}
+          <p class="cac40-sync-log__diff-title">+ Orders (from IG)</p>
+          <ul>
+            {% for row in e.imported_orders %}
+            <li>
+              {% if row is mapping %}
+              <code>{{ row.deal_id or row.id or '—' }}</code>
+              {{ row.side or '' }}
+              {% if row.type %}{{ row.type }}{% endif %}
+              {% if row.size is not none %}×{{ row.size }}{% endif %}
+              {% if row.level is not none %}@{{ row.level }}{% endif %}
+              {% if row.purpose %}<span class="text-muted">({{ row.purpose }})</span>{% endif %}
+              {% else %}<code>{{ row }}</code>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if e.dropped %}
+          <p class="cac40-sync-log__diff-title">Dropped local orders</p>
+          <ul>
+            {% for row in e.dropped %}
+            <li>
+              {% if row is mapping %}
+              <code>{{ row.deal_id or row.order_id or row.id or '—' }}</code>
+              {{ row.side or '' }}
+              {% if row.type %}{{ row.type }}{% endif %}
+              {% if row.size is not none %}×{{ row.size }}{% endif %}
+              {% if row.level is not none %}@{{ row.level }}{% endif %}
+              {% if row.purpose %}<span class="text-muted">({{ row.purpose }})</span>{% endif %}
+              {% else %}<code>{{ row }}</code>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if e.closed %}
+          <p class="cac40-sync-log__diff-title">Closed local legs (gone on IG)</p>
+          <ul>
+            {% for row in e.closed %}
+            <li>
+              {% if row is mapping %}
+              <code>{{ row.deal_id or row.id or '—' }}</code>
+              {% if row.exit is not none %}exit {{ row.exit }}{% endif %}
+              {% else %}<code>{{ row }}</code>{% endif %}
+            </li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if e.quarantined %}
+          <p class="cac40-sync-log__diff-title">Quarantined phantom closes</p>
+          <ul>
+            {% for row in e.quarantined %}
+            <li><code>{{ row }}</code></li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if e.warnings %}
+          <p class="cac40-sync-log__diff-title">Warnings</p>
+          <ul>
+            {% for w in e.warnings %}
+            <li>{{ w }}</li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+          {% if not e.opened and not e.imported_orders and not e.dropped and not e.closed and not e.quarantined and not e.warnings %}
+          <p class="text-muted">No structured diff stored for this entry.</p>
+          {% endif %}
+        </div>
+      </details>
     </li>
     {% endfor %}
   </ul>

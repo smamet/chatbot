@@ -200,23 +200,31 @@ def clear_sync_log(settings: Settings, slug: str) -> None:
 
 
 def _sync_changes_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None:
-    """Extract desync deltas from a cycle payload; None when nothing changed."""
+    """Extract desync deltas from a cycle payload; None when nothing changed.
+
+    Bare ``repair={mode: replace_open}`` after a matching wipe+rebuild is ignored —
+    only true open-book deltas / unresolved desync are logged.
+    """
     wo = payload.get("working_order_sync") if isinstance(payload, dict) else None
     rec = payload.get("reconcile") if isinstance(payload, dict) else None
     if not isinstance(wo, dict):
         wo = {}
     if not isinstance(rec, dict):
         rec = {}
-    dropped = list(wo.get("dropped") or [])
-    imported_orders = list(wo.get("imported") or [])
+    dropped = list(rec.get("dropped_orders") or wo.get("dropped") or [])
+    imported_orders = list(rec.get("imported") or wo.get("imported") or [])
     opened = list(rec.get("opened") or [])
     closed = list(rec.get("closed") or [])
+    quarantined = list(rec.get("quarantined") or [])
     repair = rec.get("repair") if isinstance(rec.get("repair"), dict) else None
-    quarantined: list[Any] = []
-    if repair:
+    if not quarantined and repair:
         quarantined = list(repair.get("quarantined") or [])
     warnings = list(wo.get("warnings") or []) + list(rec.get("warnings") or [])
-    if not (dropped or imported_orders or opened or closed or repair or quarantined):
+    unresolved = bool(rec.get("desync")) and not bool(rec.get("repaired"))
+    has_deltas = bool(
+        dropped or imported_orders or opened or closed or quarantined
+    )
+    if not has_deltas and not unresolved:
         return None
     return {
         "dropped": dropped,
@@ -226,7 +234,8 @@ def _sync_changes_from_payload(payload: dict[str, Any]) -> dict[str, Any] | None
         "quarantined": quarantined,
         "repair": repair,
         "warnings": warnings,
-        "desync": bool(rec.get("desync") or repair),
+        "desync": True,
+        "changed": True,
     }
 
 
@@ -1441,6 +1450,216 @@ def _find_attached_protection_twin(
     return None
 
 
+def _is_ig_book_deal_id(deal_id: str) -> bool:
+    """True for real IG deal ids (not empty / attached: sentinels)."""
+    did = (deal_id or "").strip()
+    return bool(did) and not did.startswith("attached:")
+
+
+def _side_token(side: Any) -> str:
+    if hasattr(side, "value"):
+        return str(side.value).upper()
+    return str(side or "").upper()
+
+
+def _type_token(otype: Any) -> str:
+    if hasattr(otype, "value"):
+        return str(otype.value).upper()
+    raw = str(otype or "LIMIT").upper()
+    return "STOP" if "STOP" in raw else "LIMIT"
+
+
+def _qty(value: Any) -> float | None:
+    try:
+        n = float(value or 0)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return round(n, 6)
+
+
+def _position_book_key(deal_id: str, side: Any, size: Any) -> tuple[str, str, float] | None:
+    if not _is_ig_book_deal_id(deal_id):
+        return None
+    side_s = _side_token(side)
+    if side_s not in ("BUY", "SELL"):
+        return None
+    qty = _qty(size)
+    if qty is None:
+        return None
+    return (deal_id.strip(), side_s, qty)
+
+
+def _order_book_key(
+    deal_id: str, side: Any, size: Any, level: Any, otype: Any
+) -> tuple[str, str, float, float, str] | None:
+    if not _is_ig_book_deal_id(deal_id):
+        return None
+    side_s = _side_token(side)
+    if side_s not in ("BUY", "SELL"):
+        return None
+    qty = _qty(size)
+    lvl = _qty(level)
+    if qty is None or lvl is None:
+        return None
+    return (deal_id.strip(), side_s, qty, lvl, _type_token(otype))
+
+
+def _local_position_keys(ledger: HedgeLedger) -> set[tuple[str, str, float]]:
+    keys: set[tuple[str, str, float]] = set()
+    for leg in ledger.positions.values():
+        key = _position_book_key(leg.deal_id or "", leg.side, leg.size)
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _local_order_keys(
+    ledger: HedgeLedger,
+) -> set[tuple[str, str, float, float, str]]:
+    keys: set[tuple[str, str, float, float, str]] = set()
+    for order in ledger.working_orders.values():
+        key = _order_book_key(
+            order.deal_id or "", order.side, order.size, order.level, order.type
+        )
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _ig_position_keys(
+    positions: list[dict[str, Any]],
+) -> set[tuple[str, str, float]]:
+    keys: set[tuple[str, str, float]] = set()
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        deal_id = str(row.get("deal_id") or row.get("dealId") or "").strip()
+        key = _position_book_key(deal_id, row.get("side") or row.get("direction"), row.get("size"))
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _ig_order_keys(
+    working_orders: list[Any], *, epic: str
+) -> set[tuple[str, str, float, float, str]]:
+    keys: set[tuple[str, str, float, float, str]] = set()
+    for raw in working_orders or []:
+        parsed: dict[str, Any] | None = None
+        if isinstance(raw, dict):
+            parsed = _parse_ig_working_order_row(raw, epic=epic)
+            if parsed is None and raw.get("deal_id"):
+                parsed = raw
+        if not isinstance(parsed, dict):
+            continue
+        deal_id = str(parsed.get("deal_id") or parsed.get("dealId") or "").strip()
+        key = _order_book_key(
+            deal_id,
+            parsed.get("side") or parsed.get("direction"),
+            parsed.get("size") or parsed.get("orderSize"),
+            parsed.get("level") or parsed.get("orderLevel"),
+            parsed.get("type") or parsed.get("orderType"),
+        )
+        if key:
+            keys.add(key)
+    return keys
+
+
+def _ig_position_delta_rows(
+    positions: list[dict[str, Any]],
+    *,
+    wanted: set[tuple[str, str, float]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, float]] = set()
+    for row in positions:
+        if not isinstance(row, dict):
+            continue
+        deal_id = str(row.get("deal_id") or row.get("dealId") or "").strip()
+        key = _position_book_key(deal_id, row.get("side") or row.get("direction"), row.get("size"))
+        if key is None or key not in wanted or key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "deal_id": key[0],
+                "side": key[1],
+                "size": key[2],
+                "level": row.get("level") or row.get("openLevel"),
+            }
+        )
+    return out
+
+
+def _ig_order_delta_rows(
+    working_orders: list[Any],
+    *,
+    epic: str,
+    wanted: set[tuple[str, str, float, float, str]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, float, float, str]] = set()
+    for raw in working_orders or []:
+        parsed: dict[str, Any] | None = None
+        if isinstance(raw, dict):
+            parsed = _parse_ig_working_order_row(raw, epic=epic)
+            if parsed is None and raw.get("deal_id"):
+                parsed = raw
+        if not isinstance(parsed, dict):
+            continue
+        deal_id = str(parsed.get("deal_id") or parsed.get("dealId") or "").strip()
+        key = _order_book_key(
+            deal_id,
+            parsed.get("side") or parsed.get("direction"),
+            parsed.get("size") or parsed.get("orderSize"),
+            parsed.get("level") or parsed.get("orderLevel"),
+            parsed.get("type") or parsed.get("orderType"),
+        )
+        if key is None or key not in wanted or key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "deal_id": key[0],
+                "side": key[1],
+                "size": key[2],
+                "level": key[3],
+                "type": key[4],
+            }
+        )
+    return out
+
+
+def _local_order_delta_rows(
+    ledger: HedgeLedger,
+    *,
+    wanted: set[tuple[str, str, float, float, str]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, float, float, str]] = set()
+    for order in ledger.working_orders.values():
+        key = _order_book_key(
+            order.deal_id or "", order.side, order.size, order.level, order.type
+        )
+        if key is None or key not in wanted or key in seen:
+            continue
+        seen.add(key)
+        out.append(
+            {
+                "order_id": order.id,
+                "deal_id": key[0],
+                "side": key[1],
+                "size": key[2],
+                "level": key[3],
+                "type": key[4],
+                "purpose": getattr(order.purpose, "value", str(order.purpose or "")),
+            }
+        )
+    return out
+
+
 def sync_open_book_from_ig(
     ledger: HedgeLedger,
     *,
@@ -1454,11 +1673,17 @@ def sync_open_book_from_ig(
 
     1. Close local legs whose IG ``deal_id`` vanished (session PnL / ``ig_confirmed``).
     2. ``replace_open`` adopt of positions + working orders (IG is sole open-book SoT).
+
+    Returns true open-book deltas in ``opened`` / ``imported`` / ``dropped_orders`` /
+    ``closed`` (pre-wipe vs IG). ``changed`` is True only when those deltas (or
+    quarantine) are non-empty — wipe+rebuild still always runs.
     """
+    want = (epic or "").strip()
     ig_deal_ids = {
-        str(row.get("deal_id") or "").strip()
+        str(row.get("deal_id") or row.get("dealId") or "").strip()
         for row in positions
-        if isinstance(row, dict) and str(row.get("deal_id") or "").strip()
+        if isinstance(row, dict)
+        and _is_ig_book_deal_id(str(row.get("deal_id") or row.get("dealId") or ""))
     }
     ig_net = 0.0
     for row in positions:
@@ -1468,12 +1693,24 @@ def sync_open_book_from_ig(
             size = float(row.get("size") or 0)
         except (TypeError, ValueError):
             continue
-        side = row.get("side")
-        side_s = side.value if hasattr(side, "value") else str(side or "").upper()
+        side_s = _side_token(row.get("side") or row.get("direction"))
         if side_s == "BUY":
             ig_net += size
         elif side_s == "SELL":
             ig_net -= size
+
+    local_pos_keys = _local_position_keys(ledger)
+    local_wo_keys = _local_order_keys(ledger)
+    ig_pos_keys = _ig_position_keys(positions)
+    ig_wo_keys = _ig_order_keys(working_orders, epic=want)
+    opened_keys = ig_pos_keys - local_pos_keys
+    imported_keys = ig_wo_keys - local_wo_keys
+    dropped_wo_keys = local_wo_keys - ig_wo_keys
+    opened_delta = _ig_position_delta_rows(positions, wanted=opened_keys)
+    imported_delta = _ig_order_delta_rows(
+        working_orders, epic=want, wanted=imported_keys
+    )
+    dropped_orders = _local_order_delta_rows(ledger, wanted=dropped_wo_keys)
 
     closed: list[dict[str, Any]] = []
     for leg in list(ledger.positions.values()):
@@ -1502,20 +1739,27 @@ def sync_open_book_from_ig(
         epic=epic,
         mode="replace_open",
     )
+    quarantined = list(adopt.get("quarantined") or [])
+    changed = bool(
+        closed or opened_delta or imported_delta or dropped_orders or quarantined
+    )
     return {
         **adopt,
         "closed": closed,
-        "opened": list(adopt.get("imported_positions") or []),
-        "imported": list(adopt.get("imported_orders") or []),
+        "opened": opened_delta,
+        "imported": imported_delta,
+        "dropped_orders": dropped_orders,
         "ig_net": ig_net,
         "local_net": float(ledger.net_size()),
         "desync": False,
+        "changed": changed,
         "repaired": True,
         "repair": {
             "imported_positions": adopt.get("imported_positions"),
             "imported_orders": adopt.get("imported_orders"),
-            "quarantined": adopt.get("quarantined"),
+            "quarantined": quarantined,
             "mode": "replace_open",
+            "changed": changed,
         },
     }
 
@@ -2238,30 +2482,40 @@ def adopt_ig_book(
     n_ord = len(result.get("imported_orders") or [])
     n_q = len(result.get("quarantined") or [])
     n_closed = len(result.get("closed") or [])
-    msg = (
-        f"Open book rebuilt from IG: {n_pos} position(s), {n_ord} order(s)"
-        + (f", {n_closed} close(s) recorded" if n_closed else "")
-        + (f", {n_q} phantom close(s) quarantined" if n_q else "")
-        + "."
-    )
+    n_opened = len(result.get("opened") or [])
+    n_imported = len(result.get("imported") or [])
+    n_dropped = len(result.get("dropped_orders") or [])
+    changed = bool(result.get("changed"))
+    msg = f"Open book rebuilt from IG: {n_pos} position(s), {n_ord} order(s)"
+    if n_closed:
+        msg += f", {n_closed} close(s) recorded"
+    if n_q:
+        msg += f", {n_q} phantom close(s) quarantined"
+    if changed:
+        msg += f" · delta +legs {n_opened} +orders {n_imported}"
+        if n_dropped:
+            msg += f" dropped {n_dropped}"
+    msg += "."
 
-    append_sync_log(
-        settings,
-        slug,
-        {
-            "ts": datetime.now(timezone.utc).isoformat(),
-            "source": "manual_sync",
-            "cycle_id": None,
-            "dropped": [],
-            "imported_orders": list(result.get("imported_orders") or []),
-            "opened": list(result.get("imported_positions") or []),
-            "closed": list(result.get("closed") or []),
-            "quarantined": list(result.get("quarantined") or []),
-            "repair": {"mode": "replace_open", "replaced": True},
-            "warnings": list(result.get("warnings") or []),
-            "desync": False,
-        },
-    )
+    if changed:
+        append_sync_log(
+            settings,
+            slug,
+            {
+                "ts": datetime.now(timezone.utc).isoformat(),
+                "source": "manual_sync",
+                "cycle_id": None,
+                "dropped": list(result.get("dropped_orders") or []),
+                "imported_orders": list(result.get("imported") or []),
+                "opened": list(result.get("opened") or []),
+                "closed": list(result.get("closed") or []),
+                "quarantined": list(result.get("quarantined") or []),
+                "repair": result.get("repair"),
+                "warnings": list(result.get("warnings") or []),
+                "desync": True,
+                "changed": True,
+            },
+        )
     return {
         "ok": True,
         "message": msg,
