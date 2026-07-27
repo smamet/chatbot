@@ -267,17 +267,23 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         snapshot = (market.get("snapshot") or {}) if isinstance(market, dict) else {}
         market_status = str(snapshot.get("marketStatus") or "—")
         size = max(size, min_size)
-        offset = max(80.0, float(ig.snap_level(mid * 0.01)))
-        tp_offset = max(40.0, float(ig.snap_level(offset * 0.5)))
-        # LIMIT entries may carry attached take-profit (IG limitLevel).
-        # IG requires attached TP on the correct side of the *live* quote
-        # (BUY TP above offer; SELL TP below bid) — not only vs entry.
+        rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
+        instrument = (market.get("instrument") or {}) if isinstance(market, dict) else {}
+        min_dist = ig.resolve_min_stop_or_limit_distance()
+        max_dist = ig.resolve_max_stop_or_limit_distance()
+        # Prefer a mid-band offset inside IG min/max when known.
+        if max_dist > 0 and min_dist > 0:
+            offset = float(ig.snap_level(min(max_dist * 0.5, max(min_dist * 2.0, 20.0))))
+        elif max_dist > 0:
+            offset = float(ig.snap_level(min(max_dist * 0.5, 40.0)))
+        else:
+            offset = max(20.0, float(ig.snap_level(mid * 0.005)))
+        tp_offset = max(12.0, float(ig.snap_level(offset * 0.5)))
         buy_entry = ig.snap_level(mid - offset)
         sell_entry = ig.snap_level(mid + offset)
         buy_tp = ig.snap_level(max(buy_entry + tp_offset, mid + tp_offset))
         sell_tp = ig.snap_level(min(sell_entry - tp_offset, mid - tp_offset))
         specs: list[tuple[OrderType, Side, float, str, float | None]] = [
-            # Bare LIMIT first — isolates attach vs level errors.
             (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below (no TP)", None),
             (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above", None),
             (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below + TP", buy_tp),
@@ -307,6 +313,13 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
             f"allowed_currencies={','.join(allowed_ccy) or '—'}\n"
             f"currency_tried={','.join(currency_candidates)}\n"
             f"size={size} (minDealSize={min_size})\n"
+            f"minNormalStopOrLimitDistance={min_dist}\n"
+            f"maxStopOrLimitDistance={max_dist}\n"
+            f"dealingRules={rules}\n"
+            f"instrument_name={instrument.get('name') or '—'}\n"
+            f"stopsLimitsAllowed={instrument.get('stopsLimitsAllowed')}\n"
+            f"forceOpenAllowed={instrument.get('forceOpenAllowed')}\n"
+            f"controlledRiskAllowed={instrument.get('controlledRiskAllowed')}\n"
             f"hold_seconds={hold_seconds}"
         )
         lines.append(f"IG DEMO working-order test · {epic}")
@@ -316,51 +329,83 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
             f"Account={account_type} {account_ccy} · Mid≈{mid:.2f} · offset={offset:.1f} · "
             f"size={size} · expiry={expiry} · market={market_status}"
         )
+        lines.append(
+            f"dealingRules minDist={min_dist} maxDist={max_dist} · "
+            f"stopsLimitsAllowed={instrument.get('stopsLimitsAllowed')} · "
+            f"forceOpenAllowed={instrument.get('forceOpenAllowed')}"
+        )
         lines.append(f"Currencies allowed by market: {', '.join(allowed_ccy) or '—'}")
         lines.append("")
 
+        # If the mid-band probe fails, walk several offsets (too far / too close).
         working_currency = currency_candidates[0]
-        probe_type, probe_side, probe_level, probe_label, probe_tp = specs[0]
         probe_ok = False
-        for ccy in currency_candidates:
-            try:
-                order = ig.place_order(
-                    WorkingOrder(
-                        id="",
-                        type=probe_type,
-                        side=probe_side,
-                        level=float(probe_level),
-                        size=size,
-                        purpose=OrderPurpose.ENTRY,
-                    ),
-                    currency=ccy,
-                    limit_level=probe_tp,
-                )
-                placed.append(order)
-                working_currency = ccy
-                probe_ok = True
-                tp_bit = f" · TP@{probe_tp:.2f}" if probe_tp is not None else ""
-                lines.append(
-                    f"ACCEPTED {probe_label} @ {order.level:.2f}{tp_bit} · currency={ccy} "
-                    f"· dealId={order.deal_id or '—'} · ref={order.client_ref or '—'}"
-                )
+        probe_offsets = [offset]
+        for extra in (15.0, 25.0, 40.0, 60.0, 80.0):
+            if all(abs(extra - o) > 0.5 for o in probe_offsets):
+                probe_offsets.append(extra)
+        last_exc: Exception | None = None
+        for off in probe_offsets:
+            level = float(ig.snap_level(mid - off))
+            for ccy in currency_candidates:
+                try:
+                    order = ig.place_order(
+                        WorkingOrder(
+                            id="",
+                            type=OrderType.LIMIT,
+                            side=Side.BUY,
+                            level=level,
+                            size=size,
+                            purpose=OrderPurpose.ENTRY,
+                        ),
+                        currency=ccy,
+                        limit_level=None,
+                    )
+                    placed.append(order)
+                    working_currency = ccy
+                    probe_ok = True
+                    lines.append(
+                        f"ACCEPTED BUY LIMIT below (no TP) @ {order.level:.2f} "
+                        f"(offset≈{off:.1f}) · currency={ccy} "
+                        f"· dealId={order.deal_id or '—'} · ref={order.client_ref or '—'}"
+                    )
+                    # Rebuild remaining specs around the offset that worked.
+                    offset = off
+                    buy_entry = ig.snap_level(mid - offset)
+                    sell_entry = ig.snap_level(mid + offset)
+                    buy_tp = ig.snap_level(max(buy_entry + tp_offset, mid + tp_offset))
+                    sell_tp = ig.snap_level(min(sell_entry - tp_offset, mid - tp_offset))
+                    specs = [
+                        (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above", None),
+                        (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below + TP", buy_tp),
+                        (OrderType.LIMIT, Side.SELL, sell_entry, "SELL LIMIT above + TP", sell_tp),
+                        (OrderType.STOP, Side.SELL, ig.snap_level(mid - offset), "SELL STOP below", None),
+                    ]
+                    break
+                except IgAuthError as exc:
+                    last_exc = exc
+                    lines.append(
+                        f"REJECTED BUY LIMIT below (no TP) offset≈{off:.1f} "
+                        f"level={level} currency={ccy}: {exc}"
+                    )
+            if probe_ok:
                 break
-            except IgAuthError as exc:
-                lines.append(f"REJECTED {probe_label} with currency={ccy}: {exc}")
         if not probe_ok:
             lines.append("")
             lines.append(
-                "Could not place a working order. If account is CFD, set Epic to the "
-                "France 40 CFD instrument (not …DAILY.IP). Save the connector, then retry."
+                "Could not place a bare BUY LIMIT at any tried offset. "
+                "Check dealingRules / epic / forceOpenAllowed below — this is not an attached-TP issue."
             )
+            if last_exc is not None:
+                lines.append(f"Last error: {last_exc}")
             lines.append("")
             lines.append(context)
             return ConnectorTestResult(ok=False, message="\n".join(lines), error=context)
 
         accepted = 1
         rejected = 0
-        attached_tp_expected = 1 if probe_tp is not None else 0
-        for otype, side, level, label, tp_level in specs[1:]:
+        attached_tp_expected = 0
+        for otype, side, level, label, tp_level in specs:
             try:
                 order = ig.place_order(
                     WorkingOrder(

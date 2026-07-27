@@ -27,10 +27,12 @@ _IG_HOSTS = {
     "LIVE": "https://api.ig.com/gateway/deal",
 }
 
-# DEMO working-order probe uses max(80, 1% mid). Live STOP hedges at ~28–47 pts
-# were rejected with ATTACHED_ORDER_LEVEL_ERROR while farther LIMIT TPs succeeded.
-_DEFAULT_STOP_CLEARANCE_POINTS = 80.0
-_DEFAULT_LIMIT_CLEARANCE_POINTS = 25.0
+# Live STOP/LIMIT rejects used ATTACHED_ORDER_LEVEL_ERROR both when too close and
+# when DEMO probes sat ~84pts away (possible maxStopOrLimitDistance). Clearance
+# clamps into [min, max] from dealingRules; floors are only lower bounds.
+_DEFAULT_STOP_CLEARANCE_POINTS = 12.0
+_DEFAULT_LIMIT_CLEARANCE_POINTS = 12.0
+_DEFAULT_MAX_CLEARANCE_POINTS = 100.0
 
 
 class IgApiError(RuntimeError):
@@ -432,12 +434,21 @@ class IgConnector:
 
     def resolve_min_stop_or_limit_distance(self, *, epic: str | None = None) -> float:
         """minNormalStopOrLimitDistance in price points (0 if unknown/cold)."""
+        return self._dealing_distance_points(
+            "minNormalStopOrLimitDistance", epic=epic
+        )
+
+    def resolve_max_stop_or_limit_distance(self, *, epic: str | None = None) -> float:
+        """maxStopOrLimitDistance in price points (0 if unknown)."""
+        return self._dealing_distance_points("maxStopOrLimitDistance", epic=epic)
+
+    def _dealing_distance_points(self, key: str, *, epic: str | None = None) -> float:
         market = self.get_market(epic) if self._cst else {}
         if not market:
             ep = (epic or self.config.epic or "").strip()
             market = self._market_cache.get(ep) or {}
         rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
-        row = rules.get("minNormalStopOrLimitDistance") or {}
+        row = rules.get(key) or {}
         if not isinstance(row, dict) or row.get("value") is None:
             return 0.0
         try:
@@ -452,15 +463,20 @@ class IgConnector:
             return (mid * value / 100.0) if mid > 0 else 0.0
         return value
 
-    def working_order_clearance_points(self, order_type: OrderType) -> float:
-        """Minimum distance from dealable quote for a resting WO level."""
+    def working_order_clearance_points(self, order_type: OrderType) -> tuple[float, float]:
+        """Return (min_clearance, max_clearance) in price points vs dealable quote."""
         rules_min = self.resolve_min_stop_or_limit_distance()
+        rules_max = self.resolve_max_stop_or_limit_distance()
         floor = (
             _DEFAULT_STOP_CLEARANCE_POINTS
             if order_type == OrderType.STOP
             else _DEFAULT_LIMIT_CLEARANCE_POINTS
         )
-        return max(rules_min, floor)
+        min_c = max(rules_min, floor)
+        max_c = rules_max if rules_max > 0 else _DEFAULT_MAX_CLEARANCE_POINTS
+        if max_c < min_c:
+            max_c = min_c
+        return min_c, max_c
 
     def apply_working_order_clearance(
         self,
@@ -468,36 +484,50 @@ class IgConnector:
         *,
         limit_level: float | None = None,
     ) -> tuple[float, float | None, list[str]]:
-        """Push level / attached TP far enough from bid/offer for IG acceptance.
+        """Clamp level / attached TP into IG min–max distance from bid/offer.
 
-        Returns (level, limit_level, notes). Mutates ``order.level`` when widened.
+        Returns (level, limit_level, notes). Mutates ``order.level`` when adjusted.
         """
         notes: list[str] = []
         bid, offer = self.dealable_quote()
         if bid <= 0 or offer <= 0:
             return float(order.level), limit_level, notes
-        clearance = self.working_order_clearance_points(order.type)
+        min_c, max_c = self.working_order_clearance_points(order.type)
         level = float(order.level)
+
+        def _clamp_below(anchor: float, raw: float, label: str) -> float:
+            """Resting level must sit in [anchor-max_c, anchor-min_c]."""
+            lo, hi = anchor - max_c, anchor - min_c
+            out = raw
+            if out > hi:
+                notes.append(f"{label} {raw}->{hi:.1f} (too close to {anchor:.1f})")
+                out = hi
+            elif out < lo:
+                notes.append(f"{label} {raw}->{lo:.1f} (beyond max {max_c:.1f})")
+                out = lo
+            return out
+
+        def _clamp_above(anchor: float, raw: float, label: str) -> float:
+            """Resting level must sit in [anchor+min_c, anchor+max_c]."""
+            lo, hi = anchor + min_c, anchor + max_c
+            out = raw
+            if out < lo:
+                notes.append(f"{label} {raw}->{lo:.1f} (too close to {anchor:.1f})")
+                out = lo
+            elif out > hi:
+                notes.append(f"{label} {raw}->{hi:.1f} (beyond max {max_c:.1f})")
+                out = hi
+            return out
+
         if order.type == OrderType.STOP and order.side == Side.BUY:
-            need = offer + clearance
-            if level < need:
-                notes.append(f"widen BUY STOP {level}->{need:.1f} (offer={offer:.1f}+{clearance:.1f})")
-                level = need
+            level = _clamp_above(offer, level, "BUY STOP")
         elif order.type == OrderType.STOP and order.side == Side.SELL:
-            need = bid - clearance
-            if level > need:
-                notes.append(f"widen SELL STOP {level}->{need:.1f} (bid={bid:.1f}-{clearance:.1f})")
-                level = need
+            level = _clamp_below(bid, level, "SELL STOP")
         elif order.type == OrderType.LIMIT and order.side == Side.BUY:
-            need = bid - clearance
-            if level > need:
-                notes.append(f"widen BUY LIMIT {level}->{need:.1f} (bid={bid:.1f}-{clearance:.1f})")
-                level = need
+            level = _clamp_below(bid, level, "BUY LIMIT")
         elif order.type == OrderType.LIMIT and order.side == Side.SELL:
-            need = offer + clearance
-            if level < need:
-                notes.append(f"widen SELL LIMIT {level}->{need:.1f} (offer={offer:.1f}+{clearance:.1f})")
-                level = need
+            level = _clamp_above(offer, level, "SELL LIMIT")
+
         level = self.snap_level(level)
         order.level = level
         if order.id and order.id in self.ledger.working_orders:
@@ -506,31 +536,35 @@ class IgConnector:
         out_tp = limit_level
         if out_tp is not None:
             tp = float(out_tp)
-            tp_clearance = max(
-                self.resolve_min_stop_or_limit_distance(),
-                _DEFAULT_LIMIT_CLEARANCE_POINTS,
-            )
+            tp_min, tp_max = self.working_order_clearance_points(OrderType.LIMIT)
             # IG validates attached limitLevel against the *live* quote, not only
-            # entry. A mean-reversion BUY below market with TP still below offer
-            # returns ATTACHED_ORDER_LEVEL_ERROR — omit attach; place entry alone
-            # and attach TP after fill via position_attach_tp.
+            # entry. Mean-reversion TP still through the market → omit attach.
             if order.side == Side.BUY:
-                need = max(level + tp_clearance, offer + tp_clearance)
+                need = max(level + tp_min, offer + tp_min)
                 if tp < need:
                     notes.append(
                         f"omit_tp_attach {tp} (need>={need:.1f} offer={offer:.1f})"
                     )
                     out_tp = None
                 else:
+                    # Also keep TP within max distance of offer when attached now.
+                    hi = offer + tp_max
+                    if tp > hi:
+                        notes.append(f"clamp TP {tp}->{hi:.1f} (max vs offer)")
+                        tp = hi
                     out_tp = self.snap_level(tp)
             else:
-                need = min(level - tp_clearance, bid - tp_clearance)
+                need = min(level - tp_min, bid - tp_min)
                 if tp > need:
                     notes.append(
                         f"omit_tp_attach {tp} (need<={need:.1f} bid={bid:.1f})"
                     )
                     out_tp = None
                 else:
+                    lo = bid - tp_max
+                    if tp < lo:
+                        notes.append(f"clamp TP {tp}->{lo:.1f} (max vs bid)")
+                        tp = lo
                     out_tp = self.snap_level(tp)
         return level, out_tp, notes
 

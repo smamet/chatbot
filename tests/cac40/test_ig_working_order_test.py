@@ -67,7 +67,24 @@ def test_ig_working_order_test_places_limit_with_attached_tp() -> None:
             return ["EUR"]
 
         def get_market(self):
-            return {"snapshot": {"marketStatus": "TRADEABLE"}}
+            return {
+                "snapshot": {"marketStatus": "TRADEABLE"},
+                "dealingRules": {
+                    "minNormalStopOrLimitDistance": {"unit": "POINTS", "value": 8.0},
+                    "maxStopOrLimitDistance": {"unit": "POINTS", "value": 100.0},
+                },
+                "instrument": {
+                    "name": "France 40",
+                    "stopsLimitsAllowed": True,
+                    "forceOpenAllowed": True,
+                },
+            }
+
+        def resolve_min_stop_or_limit_distance(self, epic=None):
+            return 8.0
+
+        def resolve_max_stop_or_limit_distance(self, epic=None):
+            return 100.0
 
         def snap_level(self, level):
             return float(level)
@@ -128,10 +145,10 @@ def test_ig_working_order_test_places_limit_with_attached_tp() -> None:
 
     assert result.ok is True, result.message
     limit_places = [p for p in placed_kwargs if p["type"] == OrderType.LIMIT]
-    assert len(limit_places) == 3  # bare BUY, BUY+TP, SELL+TP
+    # bare BUY + BUY+TP + SELL+TP
+    assert len(limit_places) == 3
     with_tp = [p for p in limit_places if p["limit_level"] is not None]
     assert len(with_tp) == 2
-    # BUY entry below mid → TP above entry (and above mid); SELL → TP below
     buy = next(p for p in with_tp if p["side"] == Side.BUY)
     sell = next(p for p in with_tp if p["side"] == Side.SELL)
     assert buy["limit_level"] > buy["level"]

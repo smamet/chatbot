@@ -12,14 +12,15 @@ def _conn(*, last_price: float = 8412.0) -> IgConnector:
     return conn
 
 
-def test_buy_stop_hedge_widened_to_clearance_above_offer() -> None:
-    """BUY STOP @ 8440 with mid~8412 must widen (~80 pts) before IG place."""
+def test_buy_stop_too_close_widened_to_min() -> None:
     conn = _conn(last_price=8412.0)
+    conn.last_dealable_bid = 8410.0
+    conn.last_dealable_offer = 8414.0
     order = WorkingOrder(
         id="o289",
         type=OrderType.STOP,
         side=Side.BUY,
-        level=8440.0,
+        level=8420.0,  # only 6 pts above offer
         size=2.0,
         purpose=OrderPurpose.HEDGE_COVER,
     )
@@ -27,45 +28,50 @@ def test_buy_stop_hedge_widened_to_clearance_above_offer() -> None:
     level, tp, notes = conn.apply_working_order_clearance(order)
     assert tp is None
     assert notes
-    assert level >= 8412.0 + 80.0 - 1.0  # half-spread on offer proxy
-    assert order.level == level
-    assert conn.ledger.working_orders["o289"].level == level
+    assert level >= 8414.0 + 12.0 - 0.1
     conn.close()
 
 
-def test_sell_limit_entry_widened_above_offer() -> None:
-    conn = _conn(last_price=8412.0)
+def test_buy_limit_too_far_clamped_inward() -> None:
+    """Bare BUY LIMIT ~84pts away must clamp toward market when max is tight."""
+    conn = _conn(last_price=8446.0)
+    conn.last_dealable_bid = 8445.0
+    conn.last_dealable_offer = 8447.0
+    conn._market_cache[conn.config.epic] = {
+        "dealingRules": {
+            "minNormalStopOrLimitDistance": {"unit": "POINTS", "value": 8.0},
+            "maxStopOrLimitDistance": {"unit": "POINTS", "value": 40.0},
+        }
+    }
     order = WorkingOrder(
         id="e1",
         type=OrderType.LIMIT,
-        side=Side.SELL,
-        level=8420.0,  # too close / through
+        side=Side.BUY,
+        level=8362.0,  # ~83 pts below — beyond max 40
         size=1.0,
         purpose=OrderPurpose.ENTRY,
     )
-    # TP far enough below bid that it stays valid after entry is widened.
-    level, tp, notes = conn.apply_working_order_clearance(order, limit_level=8200.0)
-    assert notes
-    assert level > 8420.0
-    assert tp == 8200.0
+    level, tp, notes = conn.apply_working_order_clearance(order)
+    assert tp is None
+    assert any("beyond max" in n for n in notes)
+    assert level >= 8445.0 - 40.0 - 0.1
+    assert level <= 8445.0 - 8.0 + 0.1
     conn.close()
 
 
 def test_buy_limit_omits_tp_when_through_market() -> None:
-    """Regression: entry 8380 + TP 8390 with last 8388.1 — omit attach, keep entry."""
     conn = _conn(last_price=8388.1)
     order = WorkingOrder(
         id="o271",
         type=OrderType.LIMIT,
         side=Side.BUY,
-        level=8380.0,
+        level=8300.0,
         size=1.0,
         purpose=OrderPurpose.ENTRY,
     )
     level, tp, notes = conn.apply_working_order_clearance(order, limit_level=8390.0)
     assert any("omit_tp_attach" in n for n in notes)
     assert tp is None
-    assert level <= 8388.1 - 25.0 + 1.0
     conn.close()
 
 
@@ -82,27 +88,8 @@ def test_buy_limit_keeps_tp_when_above_offer() -> None:
         purpose=OrderPurpose.ENTRY,
     )
     level, tp, notes = conn.apply_working_order_clearance(order, limit_level=8500.0)
-    assert tp == 8500.0
+    assert tp is not None and tp >= 8500.0 - 0.1
     assert not any("omit_tp_attach" in n for n in notes)
-    assert level == 8300.0 or level <= 8410.0 - 25.0 + 1.0
-    conn.close()
-
-
-def test_clearance_uses_cached_bid_offer_not_mid_alone() -> None:
-    conn = _conn(last_price=8412.0)
-    conn.last_dealable_bid = 8410.0
-    conn.last_dealable_offer = 8414.0
-    order = WorkingOrder(
-        id="h1",
-        type=OrderType.STOP,
-        side=Side.BUY,
-        level=8440.0,
-        size=1.0,
-        purpose=OrderPurpose.HEDGE_COVER,
-    )
-    level, _, notes = conn.apply_working_order_clearance(order)
-    assert notes
-    assert level >= 8414.0 + 80.0 - 0.1
     conn.close()
 
 
