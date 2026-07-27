@@ -178,11 +178,33 @@ def _diagnose_ig_working_order_rejects(
     lines.append(
         f"DIAG quote bid={bid} offer={offer} mid={mid:.2f} probe_offset={off:.1f}"
     )
-    # Rule out interference from existing book state on this demo account.
+    # Existing positions with attached stop/limit are the prime suspect: IG
+    # rejects new resting orders on the instrument with ATTACHED_ORDER_LEVEL_ERROR
+    # while opposing exposure carries attached orders.
+    attached_on_positions = 0
     try:
-        n_pos = len(ig.list_open_positions())
+        positions = ig.list_open_positions(epic="")
         n_wo = len(ig.list_working_orders())
-        lines.append(f"DIAG account book: open_positions={n_pos} open_working_orders={n_wo}")
+        lines.append(
+            f"DIAG account book: open_positions={len(positions)} open_working_orders={n_wo}"
+        )
+        for pos in positions:
+            has_attach = pos.get("stop_level") is not None or pos.get("limit_level") is not None
+            if has_attach:
+                attached_on_positions += 1
+            lines.append(
+                f"  · pos {pos.get('side').value if hasattr(pos.get('side'), 'value') else pos.get('side')} "
+                f"size={pos.get('size')} @ {pos.get('level')} "
+                f"stop={pos.get('stop_level')} limit={pos.get('limit_level')} "
+                f"epic={pos.get('epic')} dealId={pos.get('deal_id')}"
+            )
+        if attached_on_positions:
+            lines.append(
+                f"  ⚠ {attached_on_positions} position(s) carry attached stop/limit — "
+                "IG can reject ALL new working orders on this instrument with "
+                "ATTACHED_ORDER_LEVEL_ERROR while these exist. Close the positions "
+                "(or remove their attached orders) and re-run this test."
+            )
     except Exception as exc:
         lines.append(f"DIAG account book: unavailable ({exc})")
 
@@ -474,11 +496,18 @@ def _diagnose_ig_working_order_rejects(
         )
     else:
         lines.append("")
-        lines.append(
-            "DIAG: nothing ACCEPTED. If the guaranteed-stop probes above were also "
-            "rejected, this demo account likely cannot place France 40 working orders "
-            "at all (entitlement) — try a fresh IG demo account or contact IG support."
-        )
+        if attached_on_positions:
+            lines.append(
+                "DIAG: nothing ACCEPTED, and open position(s) carry attached "
+                "stop/limit orders — most likely cause. Close those positions "
+                "(or strip their stops/limits) and re-run this test."
+            )
+        else:
+            lines.append(
+                "DIAG: nothing ACCEPTED with a flat book. Likely account "
+                "entitlement / DEMO restriction on France 40 working orders — "
+                "try a fresh IG demo account or contact IG support."
+            )
     return {"accepted_deal_id": accepted_deal_id}
 
 
