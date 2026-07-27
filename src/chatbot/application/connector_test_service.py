@@ -178,6 +178,30 @@ def _diagnose_ig_working_order_rejects(
     lines.append(
         f"DIAG quote bid={bid} offer={offer} mid={mid:.2f} probe_offset={off:.1f}"
     )
+    # Rule out interference from existing book state on this demo account.
+    try:
+        n_pos = len(ig.list_open_positions())
+        n_wo = len(ig.list_working_orders())
+        lines.append(f"DIAG account book: open_positions={n_pos} open_working_orders={n_wo}")
+    except Exception as exc:
+        lines.append(f"DIAG account book: unavailable ({exc})")
+
+    def _submit(label: str, body: dict[str, Any], *, version: str = "2") -> str:
+        """Submit one probe, log the outcome, return dealId when ACCEPTED."""
+        try:
+            conf = ig.submit_working_order_raw(body, version=version)
+            status = str(conf.get("dealStatus") or "").upper()
+            reason = str(conf.get("reason") or "")
+            did = str(conf.get("dealId") or "")
+            if status == "ACCEPTED":
+                lines.append(f"  ACCEPTED {label} dealId={did or '—'}")
+                return did
+            lines.append(f"  REJECTED {label} reason={reason or '—'} dealStatus={status or '—'}")
+        except IgApiError as exc:
+            lines.append(f"  ERROR {label}: {exc}")
+        except Exception as exc:
+            lines.append(f"  ERROR {label}: {type(exc).__name__}: {exc}")
+        return ""
 
     def _base(*, direction: str, level: float, otype: str, ep: str = epic) -> dict[str, Any]:
         return {
@@ -193,6 +217,62 @@ def _diagnose_ig_working_order_rejects(
             "forceOpen": True,
         }
 
+    accepted_deal_id = ""
+
+    def _keep_first_accepted(did: str) -> None:
+        nonlocal accepted_deal_id
+        if not did:
+            return
+        if not accepted_deal_id:
+            accepted_deal_id = did
+        elif did != accepted_deal_id:
+            try:
+                ig.cancel_working_order(did)
+            except Exception:
+                pass
+
+    # Limited-risk accounts (e.g. IG France) require a guaranteed stop on every
+    # opening order; a missing/invalid one can surface as ATTACHED_ORDER_LEVEL_ERROR.
+    cr_points = 0.0
+    try:
+        mkt = ig.get_market()
+        rules = (mkt.get("dealingRules") or {}) if isinstance(mkt, dict) else {}
+        row = rules.get("minControlledRiskStopDistance") or {}
+        val = float(row.get("value") or 0)
+        unit = str(row.get("unit") or "POINTS").strip().upper()
+        cr_points = mid * val / 100.0 if unit == "PERCENTAGE" else val
+        spacing = float((rules.get("controlledRiskSpacing") or {}).get("value") or 0)
+        cr_points += spacing + 5.0
+    except Exception:
+        pass
+    if cr_points <= 0:
+        cr_points = max(mid * 0.025, 50.0)
+    cr_points = float(ig.snap_level(cr_points))
+    buy_level = float(ig.snap_level(mid - off))
+
+    lines.append("DIAG guaranteed-stop probes (limited-risk account?):")
+    gs_full = _base(direction="BUY", level=buy_level, otype="LIMIT")
+    gs_full["guaranteedStop"] = True
+    gs_full["stopDistance"] = cr_points
+    _keep_first_accepted(
+        _submit(f"BUY LIMIT guaranteedStop=true stopDistance={cr_points}", gs_full)
+    )
+    gs_small = _base(direction="BUY", level=buy_level, otype="LIMIT")
+    gs_small["guaranteedStop"] = True
+    gs_small["stopDistance"] = max(float(min_dist), 15.0)
+    _keep_first_accepted(
+        _submit(
+            f"BUY LIMIT guaranteedStop=true stopDistance={gs_small['stopDistance']}",
+            gs_small,
+        )
+    )
+    gs_lvl = _base(direction="BUY", level=buy_level, otype="LIMIT")
+    gs_lvl["guaranteedStop"] = True
+    gs_lvl["stopLevel"] = float(ig.snap_level(buy_level - cr_points))
+    _keep_first_accepted(
+        _submit(f"BUY LIMIT guaranteedStop=true stopLevel={gs_lvl['stopLevel']}", gs_lvl)
+    )
+
     shapes: list[tuple[str, dict[str, Any]]] = [
         ("BUY LIMIT below", _base(direction="BUY", level=float(ig.snap_level(mid - off)), otype="LIMIT")),
         ("SELL LIMIT above", _base(direction="SELL", level=float(ig.snap_level(mid + off)), otype="LIMIT")),
@@ -200,7 +280,6 @@ def _diagnose_ig_working_order_rejects(
         ("SELL STOP below", _base(direction="SELL", level=float(ig.snap_level(mid - off)), otype="STOP")),
     ]
 
-    accepted_deal_id = ""
     lines.append("DIAG shapes (current payload):")
     for label, body in shapes:
         try:
@@ -231,7 +310,6 @@ def _diagnose_ig_working_order_rejects(
 
     # Payload variants on BUY LIMIT — string booleans (trading-ig style), omit
     # fields, stopDistance attach, API v1, int size.
-    buy_level = float(ig.snap_level(mid - off))
     stop_d = max(float(min_dist), 12.0)
     limit_d = max(float(min_dist), 12.0)
     variants: list[tuple[str, dict[str, Any], str]] = []
@@ -397,8 +475,9 @@ def _diagnose_ig_working_order_rejects(
     else:
         lines.append("")
         lines.append(
-            "DIAG: nothing ACCEPTED. Likely account entitlement / DEMO restriction "
-            "on France 40 working orders, not clearance math."
+            "DIAG: nothing ACCEPTED. If the guaranteed-stop probes above were also "
+            "rejected, this demo account likely cannot place France 40 working orders "
+            "at all (entitlement) — try a fresh IG demo account or contact IG support."
         )
     return {"accepted_deal_id": accepted_deal_id}
 
