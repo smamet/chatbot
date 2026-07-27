@@ -151,6 +151,258 @@ def _test_ig(config: dict) -> ConnectorTestResult:
         ig.close()
 
 
+def _diagnose_ig_working_order_rejects(
+    ig: Any,
+    *,
+    mid: float,
+    size: float,
+    currency: str,
+    expiry: str,
+    epic: str,
+    min_dist: float,
+    lines: list[str],
+) -> dict[str, Any]:
+    """When bare BUY LIMIT fails at every offset, probe shape/payload/epic.
+
+    Returns ``{"accepted_deal_id": ...}`` if any probe was ACCEPTED (caller cancels).
+    """
+    from chatbot.cac40.ig_connector import IgApiError
+
+    off = max(float(min_dist) * 2.0, 25.0)
+    bid, offer = (0.0, 0.0)
+    try:
+        bid, offer = ig.dealable_quote()
+    except Exception:
+        pass
+    lines.append("")
+    lines.append(
+        f"DIAG quote bid={bid} offer={offer} mid={mid:.2f} probe_offset={off:.1f}"
+    )
+
+    def _base(*, direction: str, level: float, otype: str, ep: str = epic) -> dict[str, Any]:
+        return {
+            "epic": ep,
+            "expiry": expiry,
+            "direction": direction,
+            "size": float(size),
+            "level": float(level),
+            "type": otype,
+            "currencyCode": currency,
+            "timeInForce": "GOOD_TILL_CANCELLED",
+            "guaranteedStop": False,
+            "forceOpen": True,
+        }
+
+    shapes: list[tuple[str, dict[str, Any]]] = [
+        ("BUY LIMIT below", _base(direction="BUY", level=float(ig.snap_level(mid - off)), otype="LIMIT")),
+        ("SELL LIMIT above", _base(direction="SELL", level=float(ig.snap_level(mid + off)), otype="LIMIT")),
+        ("BUY STOP above", _base(direction="BUY", level=float(ig.snap_level(mid + off)), otype="STOP")),
+        ("SELL STOP below", _base(direction="SELL", level=float(ig.snap_level(mid - off)), otype="STOP")),
+    ]
+
+    accepted_deal_id = ""
+    lines.append("DIAG shapes (current payload):")
+    for label, body in shapes:
+        try:
+            conf = ig.submit_working_order_raw(body)
+            status = str(conf.get("dealStatus") or "").upper()
+            reason = str(conf.get("reason") or "")
+            did = str(conf.get("dealId") or "")
+            if status == "ACCEPTED":
+                lines.append(
+                    f"  ACCEPTED {label} @ {body['level']} dealId={did or '—'}"
+                )
+                if not accepted_deal_id and did:
+                    accepted_deal_id = did
+                elif did and did != accepted_deal_id:
+                    try:
+                        ig.cancel_working_order(did)
+                    except Exception:
+                        pass
+            else:
+                lines.append(
+                    f"  REJECTED {label} @ {body['level']} "
+                    f"reason={reason or '—'} dealStatus={status or '—'}"
+                )
+        except IgApiError as exc:
+            lines.append(f"  ERROR {label}: {exc}")
+        except Exception as exc:
+            lines.append(f"  ERROR {label}: {type(exc).__name__}: {exc}")
+
+    # Payload variants on BUY LIMIT — string booleans (trading-ig style), omit
+    # fields, stopDistance attach, API v1, int size.
+    buy_level = float(ig.snap_level(mid - off))
+    stop_d = max(float(min_dist), 12.0)
+    limit_d = max(float(min_dist), 12.0)
+    variants: list[tuple[str, dict[str, Any], str]] = []
+    base_buy = _base(direction="BUY", level=buy_level, otype="LIMIT")
+
+    v_str = dict(base_buy)
+    v_str["forceOpen"] = "true"
+    v_str["guaranteedStop"] = "false"
+    variants.append(("string_bools", v_str, "2"))
+
+    v_omit_gs = dict(base_buy)
+    v_omit_gs.pop("guaranteedStop", None)
+    variants.append(("omit_guaranteedStop", v_omit_gs, "2"))
+
+    v_omit_fo = dict(base_buy)
+    v_omit_fo.pop("forceOpen", None)
+    variants.append(("omit_forceOpen", v_omit_fo, "2"))
+
+    v_stop_d = dict(base_buy)
+    v_stop_d["stopDistance"] = stop_d
+    variants.append((f"stopDistance={stop_d}", v_stop_d, "2"))
+
+    v_lim_d = dict(base_buy)
+    v_lim_d["limitDistance"] = limit_d
+    variants.append((f"limitDistance={limit_d}", v_lim_d, "2"))
+
+    v_both_d = dict(base_buy)
+    v_both_d["stopDistance"] = stop_d
+    v_both_d["limitDistance"] = limit_d
+    variants.append((f"stop+limitDistance={stop_d}/{limit_d}", v_both_d, "2"))
+
+    v_int = dict(base_buy)
+    v_int["size"] = int(size) if float(size) == int(size) else size
+    v_int["level"] = int(buy_level) if float(buy_level) == int(buy_level) else buy_level
+    variants.append(("int_size_level", v_int, "2"))
+
+    v_v1 = dict(base_buy)
+    variants.append(("api_v1", v_v1, "1"))
+
+    lines.append("DIAG payload variants (BUY LIMIT):")
+    for label, body, ver in variants:
+        try:
+            conf = ig.submit_working_order_raw(body, version=ver)
+            status = str(conf.get("dealStatus") or "").upper()
+            reason = str(conf.get("reason") or "")
+            did = str(conf.get("dealId") or "")
+            if status == "ACCEPTED":
+                lines.append(f"  ACCEPTED {label} dealId={did or '—'}")
+                if not accepted_deal_id and did:
+                    accepted_deal_id = did
+                elif did and did != accepted_deal_id:
+                    try:
+                        ig.cancel_working_order(did)
+                    except Exception:
+                        pass
+            else:
+                lines.append(
+                    f"  REJECTED {label} reason={reason or '—'} dealStatus={status or '—'}"
+                )
+        except IgApiError as exc:
+            lines.append(f"  ERROR {label}: {exc}")
+        except Exception as exc:
+            lines.append(f"  ERROR {label}: {type(exc).__name__}: {exc}")
+
+    # Alternate France 40 epics (one BUY LIMIT each).
+    lines.append("DIAG alternate France 40 epics (BUY LIMIT):")
+    epic_candidates: list[str] = []
+    try:
+        _chosen, seen = ig.find_compatible_epic(account_type=ig.resolve_account_type())
+        for ep in seen:
+            if ep and ep not in epic_candidates:
+                epic_candidates.append(ep)
+    except Exception as exc:
+        lines.append(f"  epic search failed: {exc}")
+    for hint in (
+        "IX.D.CAC.IFD.IP",
+        "IX.D.CAC.IFS.IP",
+        "IX.D.CAC.CFS.IP",
+        "IX.D.CAC.DAILY.IP",
+        "IX.D.CAC.IMF.IP",
+    ):
+        if hint not in epic_candidates:
+            epic_candidates.append(hint)
+    # Prefer configured epic first (already failed) then others — skip duplicate work.
+    tried = {epic}
+    for alt in epic_candidates:
+        if alt in tried:
+            continue
+        tried.add(alt)
+        if len(tried) > 8:
+            break
+        try:
+            # Refresh market for alternate epic so expiry/currency match.
+            prev = ig.config.epic
+            ig.config.epic = alt
+            if hasattr(ig, "_market_cache"):
+                ig._market_cache.pop(alt, None)
+            mkt = ig.get_market(alt)
+            snap = (mkt.get("snapshot") or {}) if isinstance(mkt, dict) else {}
+            inst = (mkt.get("instrument") or {}) if isinstance(mkt, dict) else {}
+            alt_expiry = str(inst.get("expiry") or expiry or "-").strip() or "-"
+            alt_mid = mid
+            try:
+                bid_a = float(snap.get("bid") or 0)
+                offer_a = float(snap.get("offer") or snap.get("ask") or 0)
+                if bid_a > 0 and offer_a > 0:
+                    alt_mid = (bid_a + offer_a) / 2.0
+            except (TypeError, ValueError):
+                pass
+            codes = []
+            for row in inst.get("currencies") or []:
+                if isinstance(row, dict) and row.get("code"):
+                    codes.append(str(row["code"]).strip().upper())
+            alt_ccy = currency if currency in codes or not codes else codes[0]
+            body = {
+                "epic": alt,
+                "expiry": alt_expiry,
+                "direction": "BUY",
+                "size": float(size),
+                "level": float(ig.snap_level(alt_mid - off)),
+                "type": "LIMIT",
+                "currencyCode": alt_ccy,
+                "timeInForce": "GOOD_TILL_CANCELLED",
+                "guaranteedStop": False,
+                "forceOpen": True,
+            }
+            conf = ig.submit_working_order_raw(body)
+            status = str(conf.get("dealStatus") or "").upper()
+            reason = str(conf.get("reason") or "")
+            did = str(conf.get("dealId") or "")
+            name = inst.get("name") or "—"
+            if status == "ACCEPTED":
+                lines.append(
+                    f"  ACCEPTED epic={alt} ({name}) @ {body['level']} "
+                    f"ccy={alt_ccy} dealId={did or '—'}"
+                )
+                if not accepted_deal_id and did:
+                    accepted_deal_id = did
+                elif did and did != accepted_deal_id:
+                    try:
+                        ig.cancel_working_order(did)
+                    except Exception:
+                        pass
+            else:
+                lines.append(
+                    f"  REJECTED epic={alt} ({name}) reason={reason or '—'} "
+                    f"status={snap.get('marketStatus') or '—'} ccy={alt_ccy}"
+                )
+            ig.config.epic = prev
+        except Exception as exc:
+            try:
+                ig.config.epic = epic
+            except Exception:
+                pass
+            lines.append(f"  ERROR epic={alt}: {type(exc).__name__}: {exc}")
+
+    if accepted_deal_id:
+        lines.append("")
+        lines.append(
+            f"DIAG FOUND working payload/epic — first ACCEPTED dealId={accepted_deal_id}. "
+            "Save that epic / payload shape on the connector."
+        )
+    else:
+        lines.append("")
+        lines.append(
+            "DIAG: nothing ACCEPTED. Likely account entitlement / DEMO restriction "
+            "on France 40 working orders, not clearance math."
+        )
+    return {"accepted_deal_id": accepted_deal_id}
+
+
 def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> ConnectorTestResult:
     """
     DEMO-only smoke test: place far working orders, wait, cancel them.
@@ -394,10 +646,27 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
             lines.append("")
             lines.append(
                 "Could not place a bare BUY LIMIT at any tried offset. "
-                "Check dealingRules / epic / forceOpenAllowed below — this is not an attached-TP issue."
+                "Running payload / shape / epic diagnostics…"
             )
             if last_exc is not None:
                 lines.append(f"Last error: {last_exc}")
+            diag = _diagnose_ig_working_order_rejects(
+                ig,
+                mid=mid,
+                size=size,
+                currency=working_currency,
+                expiry=expiry,
+                epic=epic,
+                min_dist=float(min_dist or 12.0),
+                lines=lines,
+            )
+            if diag.get("accepted_deal_id"):
+                placed_deal = str(diag["accepted_deal_id"])
+                try:
+                    ig.cancel_working_order(placed_deal)
+                    lines.append(f"Cancelled diagnostic dealId={placed_deal}")
+                except Exception as exc:
+                    lines.append(f"Cancel FAILED diagnostic dealId={placed_deal}: {exc}")
             lines.append("")
             lines.append(context)
             return ConnectorTestResult(ok=False, message="\n".join(lines), error=context)

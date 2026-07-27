@@ -1475,6 +1475,45 @@ class IgConnector:
             exit_px,
         )
 
+    def submit_working_order_raw(
+        self,
+        body: dict[str, Any],
+        *,
+        version: str = "2",
+    ) -> dict[str, Any]:
+        """POST /workingorders/otc with an explicit body; return confirm + meta.
+
+        Used by DEMO diagnostics (and tests). Does not touch the ledger.
+        """
+        if self.dry_run or not self._cst:
+            return {
+                "dealStatus": "DRY_RUN",
+                "reason": "",
+                "dealId": "",
+                "dealReference": "",
+                "body": body,
+                "version": version,
+            }
+        resp = self._client.post(
+            f"{self.base_url}/workingorders/otc",
+            headers=self._headers(version=version),
+            json=body,
+        )
+        if resp.is_error:
+            raise IgApiError(
+                format_ig_http_error(resp, action="place_working_order", url=str(resp.request.url))
+            )
+        deal = resp.json() if resp.content else {}
+        deal_ref = str((deal or {}).get("dealReference") or "").strip()
+        confirmed: dict[str, Any] = {}
+        if deal_ref:
+            confirmed = self.confirm_deal(deal_ref)
+        out = dict(confirmed) if isinstance(confirmed, dict) else {}
+        out.setdefault("dealReference", deal_ref)
+        out["body"] = body
+        out["version"] = version
+        return out
+
     def _ig_working_order_body(
         self,
         order: WorkingOrder,
