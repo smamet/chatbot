@@ -38,6 +38,13 @@ Weekend / holiday gap protection (CRITICAL):
 3. Cancel every working `entry` order (stops/limits that could fill into Monday's gap). Keep TP limits and existing hedge_cover stops.
 4. Do NOT close losing legs to flatten — hedge them. Do not open new directional entries in this window.
 
+IG resting-order acceptance (CRITICAL — use `snapshot.last_price`):
+1. Side of market: BUY LIMIT and SELL STOP must be below last price; SELL LIMIT and BUY STOP must be above last price. If S/R is through the market, skip that entry or use the correct STOP type — never a LIMIT on the wrong side (IG rejects with level errors).
+2. Min clearance: keep every new `entry`, `tp`, and `hedge_cover` STOP well clear of last price — aim ≥ ~20–30 index points (more after gaps/open). Never park a TP only a few points from last (e.g. BUY entry 8380 + TP 8390 while last≈8388 → IG rejects the attached TP).
+3. Entry↔TP: TP must be on the profit side of entry and far enough from both entry and last price for IG to accept the attached `limitLevel`.
+4. Hedge STOP: place beyond S/R with the same clearance vs last price. “A few points beyond” is not enough when price is already near that S/R.
+5. If a clean bracket cannot satisfy these rules → `bias: "hold"` with `actions: []` rather than a place IG will reject.
+
 Rules:
 1. Determine support and resistance ONLY from the chart images.
 2. Prefer LIMIT entries (buy support / sell resistance). Never open a new entry without its TP and reverse-side `hedge_cover` STOP in the same decision.
