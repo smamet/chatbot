@@ -128,11 +128,12 @@ def test_ig_working_order_test_places_limit_with_attached_tp() -> None:
 
     assert result.ok is True, result.message
     limit_places = [p for p in placed_kwargs if p["type"] == OrderType.LIMIT]
-    assert len(limit_places) == 2
-    assert all(p["limit_level"] is not None for p in limit_places)
-    # BUY entry below mid → TP above entry; SELL → TP below
-    buy = next(p for p in limit_places if p["side"] == Side.BUY)
-    sell = next(p for p in limit_places if p["side"] == Side.SELL)
+    assert len(limit_places) == 3  # bare BUY, BUY+TP, SELL+TP
+    with_tp = [p for p in limit_places if p["limit_level"] is not None]
+    assert len(with_tp) == 2
+    # BUY entry below mid → TP above entry (and above mid); SELL → TP below
+    buy = next(p for p in with_tp if p["side"] == Side.BUY)
+    sell = next(p for p in with_tp if p["side"] == Side.SELL)
     assert buy["limit_level"] > buy["level"]
     assert sell["limit_level"] < sell["level"]
     assert "TP@" in result.message

@@ -269,16 +269,19 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         size = max(size, min_size)
         offset = max(80.0, float(ig.snap_level(mid * 0.01)))
         tp_offset = max(40.0, float(ig.snap_level(offset * 0.5)))
-        # LIMIT entries carry attached take-profit (IG limitLevel).
-        # BUY entry below mid → TP above entry; SELL entry above mid → TP below.
+        # LIMIT entries may carry attached take-profit (IG limitLevel).
+        # IG requires attached TP on the correct side of the *live* quote
+        # (BUY TP above offer; SELL TP below bid) — not only vs entry.
         buy_entry = ig.snap_level(mid - offset)
         sell_entry = ig.snap_level(mid + offset)
-        buy_tp = ig.snap_level(buy_entry + tp_offset)
-        sell_tp = ig.snap_level(sell_entry - tp_offset)
+        buy_tp = ig.snap_level(max(buy_entry + tp_offset, mid + tp_offset))
+        sell_tp = ig.snap_level(min(sell_entry - tp_offset, mid - tp_offset))
         specs: list[tuple[OrderType, Side, float, str, float | None]] = [
+            # Bare LIMIT first — isolates attach vs level errors.
+            (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below (no TP)", None),
+            (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above", None),
             (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below + TP", buy_tp),
             (OrderType.LIMIT, Side.SELL, sell_entry, "SELL LIMIT above + TP", sell_tp),
-            (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above", None),
             (OrderType.STOP, Side.SELL, ig.snap_level(mid - offset), "SELL STOP below", None),
         ]
         # Only probe currencies the market actually lists (plus resolved pick).

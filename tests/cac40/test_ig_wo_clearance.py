@@ -43,15 +43,16 @@ def test_sell_limit_entry_widened_above_offer() -> None:
         size=1.0,
         purpose=OrderPurpose.ENTRY,
     )
-    level, tp, notes = conn.apply_working_order_clearance(order, limit_level=8390.0)
+    # TP far enough below bid that it stays valid after entry is widened.
+    level, tp, notes = conn.apply_working_order_clearance(order, limit_level=8200.0)
     assert notes
     assert level > 8420.0
-    assert tp is not None and tp < level
+    assert tp == 8200.0
     conn.close()
 
 
-def test_buy_limit_with_attached_tp_widened_from_tight_bracket() -> None:
-    """Regression: entry 8380 + TP 8390 with last 8388.1."""
+def test_buy_limit_omits_tp_when_through_market() -> None:
+    """Regression: entry 8380 + TP 8390 with last 8388.1 — omit attach, keep entry."""
     conn = _conn(last_price=8388.1)
     order = WorkingOrder(
         id="o271",
@@ -62,9 +63,28 @@ def test_buy_limit_with_attached_tp_widened_from_tight_bracket() -> None:
         purpose=OrderPurpose.ENTRY,
     )
     level, tp, notes = conn.apply_working_order_clearance(order, limit_level=8390.0)
-    assert notes
+    assert any("omit_tp_attach" in n for n in notes)
+    assert tp is None
     assert level <= 8388.1 - 25.0 + 1.0
-    assert tp is not None and tp >= level + 25.0 - 1.0
+    conn.close()
+
+
+def test_buy_limit_keeps_tp_when_above_offer() -> None:
+    conn = _conn(last_price=8412.0)
+    conn.last_dealable_bid = 8410.0
+    conn.last_dealable_offer = 8414.0
+    order = WorkingOrder(
+        id="e1",
+        type=OrderType.LIMIT,
+        side=Side.BUY,
+        level=8300.0,
+        size=1.0,
+        purpose=OrderPurpose.ENTRY,
+    )
+    level, tp, notes = conn.apply_working_order_clearance(order, limit_level=8500.0)
+    assert tp == 8500.0
+    assert not any("omit_tp_attach" in n for n in notes)
+    assert level == 8300.0 or level <= 8410.0 - 25.0 + 1.0
     conn.close()
 
 

@@ -402,10 +402,15 @@ def test_mirror_entry_with_tp_child_sends_limit_level(tmp_path: Path):
         if order.id == entry.id:
             assert limit_level == 8425.0
             order.deal_id = "WO_ENTRY_1"
+            sched.ig.last_ig_result = {
+                "deal_status": "ACCEPTED",
+                "limit_level": limit_level,
+            }
         elif order.id == hedge.id:
             assert order.purpose == OrderPurpose.HEDGE_COVER
             assert limit_level is None
             order.deal_id = "WO_HEDGE_1"
+            sched.ig.last_ig_result = {"deal_status": "ACCEPTED"}
         else:
             raise AssertionError(f"unexpected push for {order.id}")
         return order
@@ -555,8 +560,13 @@ def test_entry_fill_upgrades_bracket_tp_no_duplicate(tmp_path: Path):
     def _push(order, *, currency=None, limit_level=None, stop_level=None):
         if order.id == entry.id:
             order.deal_id = "WO_ENTRY_1"
+            sched.ig.last_ig_result = {
+                "deal_status": "ACCEPTED",
+                "limit_level": limit_level,
+            }
         elif order.id == hedge.id:
             order.deal_id = "WO_HEDGE_1"
+            sched.ig.last_ig_result = {"deal_status": "ACCEPTED"}
         else:
             raise AssertionError(f"unexpected push for {order.id}")
         return order

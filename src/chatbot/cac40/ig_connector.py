@@ -510,17 +510,28 @@ class IgConnector:
                 self.resolve_min_stop_or_limit_distance(),
                 _DEFAULT_LIMIT_CLEARANCE_POINTS,
             )
+            # IG validates attached limitLevel against the *live* quote, not only
+            # entry. A mean-reversion BUY below market with TP still below offer
+            # returns ATTACHED_ORDER_LEVEL_ERROR — omit attach; place entry alone
+            # and attach TP after fill via position_attach_tp.
             if order.side == Side.BUY:
-                need_tp = max(level + tp_clearance, offer + tp_clearance)
-                if tp < need_tp:
-                    notes.append(f"widen TP {tp}->{need_tp:.1f}")
-                    tp = need_tp
+                need = max(level + tp_clearance, offer + tp_clearance)
+                if tp < need:
+                    notes.append(
+                        f"omit_tp_attach {tp} (need>={need:.1f} offer={offer:.1f})"
+                    )
+                    out_tp = None
+                else:
+                    out_tp = self.snap_level(tp)
             else:
-                need_tp = min(level - tp_clearance, bid - tp_clearance)
-                if tp > need_tp:
-                    notes.append(f"widen TP {tp}->{need_tp:.1f}")
-                    tp = need_tp
-            out_tp = self.snap_level(tp)
+                need = min(level - tp_clearance, bid - tp_clearance)
+                if tp > need:
+                    notes.append(
+                        f"omit_tp_attach {tp} (need<={need:.1f} bid={bid:.1f})"
+                    )
+                    out_tp = None
+                else:
+                    out_tp = self.snap_level(tp)
         return level, out_tp, notes
 
     def search_markets(self, search_term: str) -> list[dict[str, Any]]:

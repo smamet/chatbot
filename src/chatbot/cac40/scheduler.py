@@ -1147,18 +1147,29 @@ class LiveScheduler:
                         }
                     )
                     if tp_child_id and tp_child_id not in book:
-                        sentinel = attached_deal_id(deal_id, OrderPurpose.TP)
-                        book[tp_child_id] = sentinel
-                        child = desired.get(tp_child_id)
-                        if child is not None and conn is self.ig:
-                            child.deal_id = sentinel
-                        row["placed"].append(
-                            {
-                                "order_id": tp_child_id,
-                                "deal_id": sentinel,
-                                "via": "entry_limitLevel",
-                            }
-                        )
+                        # Only mark TP attached when IG actually received limitLevel.
+                        attached_lvl = (conn.last_ig_result or {}).get("limit_level")
+                        if attached_lvl is not None:
+                            sentinel = attached_deal_id(deal_id, OrderPurpose.TP)
+                            book[tp_child_id] = sentinel
+                            child = desired.get(tp_child_id)
+                            if child is not None and conn is self.ig:
+                                child.deal_id = sentinel
+                            row["placed"].append(
+                                {
+                                    "order_id": tp_child_id,
+                                    "deal_id": sentinel,
+                                    "via": "entry_limitLevel",
+                                }
+                            )
+                        else:
+                            row["deferred"].append(
+                                {
+                                    "order_id": tp_child_id,
+                                    "via": "tp_attach_deferred",
+                                    "reason": "limitLevel_through_market",
+                                }
+                            )
                 except Exception as exc:
                     row["errors"].append(
                         self._mirror_error_line("place", local_id, exc)
