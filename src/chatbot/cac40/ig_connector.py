@@ -27,6 +27,11 @@ _IG_HOSTS = {
     "LIVE": "https://api.ig.com/gateway/deal",
 }
 
+# DEMO working-order probe uses max(80, 1% mid). Live STOP hedges at ~28–47 pts
+# were rejected with ATTACHED_ORDER_LEVEL_ERROR while farther LIMIT TPs succeeded.
+_DEFAULT_STOP_CLEARANCE_POINTS = 80.0
+_DEFAULT_LIMIT_CLEARANCE_POINTS = 25.0
+
 
 class IgApiError(RuntimeError):
     """IG HTTP failure with a human-readable message."""
@@ -131,6 +136,10 @@ class IgConnector:
         self.last_price_allowance: dict[str, Any] | None = None
         # Compact last deal/confirm snapshot for mirror / cycle ops log (not raw HTTP).
         self.last_ig_result: dict[str, Any] = {}
+        # Dealable quote from already-fetched positions/markets (no extra HTTP).
+        self.last_dealable_bid: float | None = None
+        self.last_dealable_offer: float | None = None
+        self._market_cache: dict[str, dict[str, Any]] = {}
 
     def _note_ig_result(self, **fields: Any) -> dict[str, Any]:
         self.last_ig_result = {
@@ -380,15 +389,14 @@ class IgConnector:
 
     def get_market(self, epic: str | None = None) -> dict[str, Any]:
         """GET /markets/{epic} — instrument currencies, min size, etc."""
-        if not self._cst:
-            return {}
         ep = (epic or self.config.epic or "").strip()
         if not ep:
             return {}
-        if not hasattr(self, "_market_cache"):
-            self._market_cache: dict[str, dict[str, Any]] = {}
         if ep in self._market_cache:
+            self._remember_dealable_from_market(self._market_cache[ep])
             return self._market_cache[ep]
+        if not self._cst:
+            return {}
         url = f"{self.base_url}/markets/{ep}"
         resp = self._client.get(url, headers=self._headers(version="3"))
         if resp.is_error:
@@ -396,7 +404,124 @@ class IgConnector:
         payload = resp.json() if resp.content else {}
         market = payload if isinstance(payload, dict) else {}
         self._market_cache[ep] = market
+        self._remember_dealable_from_market(market)
         return market
+
+    def _remember_dealable_from_market(self, market: dict[str, Any]) -> None:
+        snap = market.get("snapshot") if isinstance(market, dict) else None
+        if not isinstance(snap, dict):
+            return
+        bid = _float_or_none(snap.get("bid"))
+        offer = _float_or_none(snap.get("offer") if snap.get("offer") is not None else snap.get("ask"))
+        if bid is not None and bid > 0:
+            self.last_dealable_bid = bid
+        if offer is not None and offer > 0:
+            self.last_dealable_offer = offer
+
+    def dealable_quote(self) -> tuple[float, float]:
+        """Bid/offer from cached fetches, else last_price ± half spread."""
+        bid = self.last_dealable_bid
+        offer = self.last_dealable_offer
+        if bid is not None and offer is not None and bid > 0 and offer > 0:
+            return float(bid), float(offer)
+        mid = float(self.ledger.last_price or 0)
+        half = max(0.0, float(self.config.spread_points or 0) / 2.0)
+        if mid <= 0:
+            return 0.0, 0.0
+        return mid - half, mid + half
+
+    def resolve_min_stop_or_limit_distance(self, *, epic: str | None = None) -> float:
+        """minNormalStopOrLimitDistance in price points (0 if unknown/cold)."""
+        market = self.get_market(epic) if self._cst else {}
+        if not market:
+            ep = (epic or self.config.epic or "").strip()
+            market = self._market_cache.get(ep) or {}
+        rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
+        row = rules.get("minNormalStopOrLimitDistance") or {}
+        if not isinstance(row, dict) or row.get("value") is None:
+            return 0.0
+        try:
+            value = float(row["value"])
+        except (TypeError, ValueError):
+            return 0.0
+        if value <= 0:
+            return 0.0
+        unit = str(row.get("unit") or "POINTS").strip().upper()
+        if unit == "PERCENTAGE":
+            mid = float(self.ledger.last_price or 0)
+            return (mid * value / 100.0) if mid > 0 else 0.0
+        return value
+
+    def working_order_clearance_points(self, order_type: OrderType) -> float:
+        """Minimum distance from dealable quote for a resting WO level."""
+        rules_min = self.resolve_min_stop_or_limit_distance()
+        floor = (
+            _DEFAULT_STOP_CLEARANCE_POINTS
+            if order_type == OrderType.STOP
+            else _DEFAULT_LIMIT_CLEARANCE_POINTS
+        )
+        return max(rules_min, floor)
+
+    def apply_working_order_clearance(
+        self,
+        order: WorkingOrder,
+        *,
+        limit_level: float | None = None,
+    ) -> tuple[float, float | None, list[str]]:
+        """Push level / attached TP far enough from bid/offer for IG acceptance.
+
+        Returns (level, limit_level, notes). Mutates ``order.level`` when widened.
+        """
+        notes: list[str] = []
+        bid, offer = self.dealable_quote()
+        if bid <= 0 or offer <= 0:
+            return float(order.level), limit_level, notes
+        clearance = self.working_order_clearance_points(order.type)
+        level = float(order.level)
+        if order.type == OrderType.STOP and order.side == Side.BUY:
+            need = offer + clearance
+            if level < need:
+                notes.append(f"widen BUY STOP {level}->{need:.1f} (offer={offer:.1f}+{clearance:.1f})")
+                level = need
+        elif order.type == OrderType.STOP and order.side == Side.SELL:
+            need = bid - clearance
+            if level > need:
+                notes.append(f"widen SELL STOP {level}->{need:.1f} (bid={bid:.1f}-{clearance:.1f})")
+                level = need
+        elif order.type == OrderType.LIMIT and order.side == Side.BUY:
+            need = bid - clearance
+            if level > need:
+                notes.append(f"widen BUY LIMIT {level}->{need:.1f} (bid={bid:.1f}-{clearance:.1f})")
+                level = need
+        elif order.type == OrderType.LIMIT and order.side == Side.SELL:
+            need = offer + clearance
+            if level < need:
+                notes.append(f"widen SELL LIMIT {level}->{need:.1f} (offer={offer:.1f}+{clearance:.1f})")
+                level = need
+        level = self.snap_level(level)
+        order.level = level
+        if order.id and order.id in self.ledger.working_orders:
+            self.ledger.working_orders[order.id].level = level
+
+        out_tp = limit_level
+        if out_tp is not None:
+            tp = float(out_tp)
+            tp_clearance = max(
+                self.resolve_min_stop_or_limit_distance(),
+                _DEFAULT_LIMIT_CLEARANCE_POINTS,
+            )
+            if order.side == Side.BUY:
+                need_tp = max(level + tp_clearance, offer + tp_clearance)
+                if tp < need_tp:
+                    notes.append(f"widen TP {tp}->{need_tp:.1f}")
+                    tp = need_tp
+            else:
+                need_tp = min(level - tp_clearance, bid - tp_clearance)
+                if tp > need_tp:
+                    notes.append(f"widen TP {tp}->{need_tp:.1f}")
+                    tp = need_tp
+            out_tp = self.snap_level(tp)
+        return level, out_tp, notes
 
     def search_markets(self, search_term: str) -> list[dict[str, Any]]:
         """GET /markets?searchTerm= — light market rows (epic, instrumentName, …)."""
@@ -575,15 +700,16 @@ class IgConnector:
         """Minimum price increment from dealingRules (fallback 0.1 for indices)."""
         market = self.get_market(epic)
         rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
-        for key in ("minStepDistance", "minDealDistance", "minNormalStopOrLimitDistance"):
-            row = rules.get(key) or {}
-            if isinstance(row, dict) and row.get("value") is not None:
-                try:
-                    step = float(row["value"])
-                    if step > 0:
-                        return step
-                except (TypeError, ValueError):
-                    pass
+        # Only minStepDistance — never minNormalStopOrLimitDistance (that is a
+        # stop/limit clearance, not a tick size).
+        row = rules.get("minStepDistance") or {}
+        if isinstance(row, dict) and row.get("value") is not None:
+            try:
+                step = float(row["value"])
+                if step > 0:
+                    return step
+            except (TypeError, ValueError):
+                pass
         return 0.1
 
     def snap_level(self, level: float, *, epic: str | None = None) -> float:
@@ -632,17 +758,28 @@ class IgConnector:
         stop_level: float | None = None,
     ) -> WorkingOrder:
         """Submit an already-ledgered working order to IG (no second ledger place)."""
+        level, limit_level, clearance_notes = self.apply_working_order_clearance(
+            order, limit_level=limit_level
+        )
+        if clearance_notes:
+            logger.info(
+                "IG WO clearance order=%s %s",
+                order.id or "—",
+                "; ".join(clearance_notes),
+            )
         if self.dry_run or not self._cst:
             logger.info(
-                "IG dry-run push %s limit_level=%s stop_level=%s",
+                "IG dry-run push %s limit_level=%s stop_level=%s clearance=%s",
                 order.to_dict(),
                 limit_level,
                 stop_level,
+                clearance_notes,
             )
             self._note_ig_result(
                 action="place_working_order",
                 deal_status="DRY_RUN",
                 deal_id=order.deal_id or "",
+                level=level,
             )
             return order
         body = self._ig_working_order_body(
@@ -651,6 +788,8 @@ class IgConnector:
             limit_level=limit_level,
             stop_level=stop_level,
         )
+        # Keep snapped/widened level on the order object used for logging.
+        order.level = float(body.get("level") or level)
         resp = self._client.post(
             f"{self.base_url}/workingorders/otc",
             headers=self._headers(version="2"),
@@ -672,20 +811,34 @@ class IgConnector:
             if order.id in self.ledger.working_orders:
                 self.ledger.working_orders[order.id].client_ref = order.client_ref
                 self.ledger.working_orders[order.id].deal_id = order.deal_id
+                self.ledger.working_orders[order.id].level = order.level
+            bid, offer = self.dealable_quote()
             self._note_ig_result(
                 action="place_working_order",
                 deal_reference=order.client_ref,
                 deal_id=order.deal_id,
                 deal_status=deal_status or "UNKNOWN",
                 reason=reason,
+                level=order.level,
+                limit_level=body.get("limitLevel"),
+                bid=bid,
+                offer=offer,
+                clearance="; ".join(clearance_notes) if clearance_notes else None,
             )
             if deal_status and deal_status != "ACCEPTED":
+                # Do not leave phantom dealIds — they show up as "Dropped local orders".
+                rejected_deal = order.deal_id
+                order.deal_id = ""
+                if order.id in self.ledger.working_orders:
+                    self.ledger.working_orders[order.id].deal_id = ""
                 raise IgApiError(
                     "IG working order rejected: "
                     f"dealStatus={deal_status or '—'} reason={reason or '—'} "
-                    f"dealId={order.deal_id or '—'} "
+                    f"dealId={rejected_deal or '—'} "
                     f"currency={body.get('currencyCode')} expiry={body.get('expiry')} "
                     f"forceOpen={body.get('forceOpen')} "
+                    f"limitLevel={body.get('limitLevel')} "
+                    f"bid={bid} offer={offer} "
                     f"({order.side.value} {order.type.value} @ {order.level}) "
                     f"confirm={confirmed}"
                 )
@@ -767,6 +920,14 @@ class IgConnector:
             row_epic = str(market.get("epic") or pos.get("epic") or "").strip()
             if want and row_epic and row_epic != want:
                 continue
+            bid = _float_or_none(market.get("bid"))
+            offer = _float_or_none(
+                market.get("offer") if market.get("offer") is not None else market.get("ask")
+            )
+            if bid is not None and bid > 0:
+                self.last_dealable_bid = bid
+            if offer is not None and offer > 0:
+                self.last_dealable_offer = offer
             direction = str(pos.get("direction") or "").upper()
             side = Side.BUY if direction == "BUY" else Side.SELL
             try:
@@ -1110,12 +1271,44 @@ class IgConnector:
             logger.info("IG dry-run position protection dealId=%s %s", did, body)
             return {"dealId": did, "dry_run": True, **body}
         url = f"{self.base_url}/positions/otc/{did}"
+        # Avoid stamping a prior WO reject onto this attach via last_ig_result.
+        self.last_ig_result = {}
         last_exc: IgApiError | None = None
         for version in ("2", "1"):
             resp = self._client.put(url, headers=self._headers(version=version), json=body)
             if not resp.is_error:
                 payload = resp.json() if resp.content else {}
-                return payload if isinstance(payload, dict) else {"raw": payload}
+                if not isinstance(payload, dict):
+                    payload = {"raw": payload}
+                deal_ref = str(payload.get("dealReference") or "").strip()
+                if deal_ref:
+                    confirmed = self.confirm_deal(deal_ref)
+                    deal_status = str(confirmed.get("dealStatus") or "").upper()
+                    reason = str(confirmed.get("reason") or "").strip()
+                    self._note_ig_result(
+                        action="update_position_protection",
+                        deal_reference=deal_ref,
+                        deal_id=did,
+                        deal_status=deal_status or "UNKNOWN",
+                        reason=reason,
+                        limit_level=body.get("limitLevel"),
+                        stop_level=body.get("stopLevel"),
+                    )
+                    if deal_status and deal_status != "ACCEPTED":
+                        raise IgApiError(
+                            "IG position protection rejected: "
+                            f"dealStatus={deal_status or '—'} reason={reason or '—'} "
+                            f"dealId={did} confirm={confirmed}"
+                        )
+                else:
+                    self._note_ig_result(
+                        action="update_position_protection",
+                        deal_id=did,
+                        deal_status="NO_REF",
+                        limit_level=body.get("limitLevel"),
+                        stop_level=body.get("stopLevel"),
+                    )
+                return payload
             last_exc = IgApiError(
                 format_ig_http_error(resp, action="update_position_protection", url=url)
             )
@@ -1351,6 +1544,15 @@ def _prices_payload_to_df(prices: list[dict[str, Any]]) -> pd.DataFrame:
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
     return df
+
+
+def _float_or_none(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _mid(price_obj: dict | None) -> float | None:
