@@ -29,6 +29,7 @@ _CONFIG_DISPLAY_ORDER = (
     "order_size",
     "spread_points",
     "slippage_points",
+    "hedge_beyond_entry_points",
     "allow_market_orders",
     "prevent_loss_exits",
     "flatten_before_close",
@@ -67,7 +68,7 @@ def public_config_snapshot(data: dict[str, Any] | None) -> dict[str, Any]:
 
 
 @dataclass
-class Cac40Config:
+class TraderConfig:
     """Shared live / backtest configuration."""
 
     symbol: str = "CAC40"
@@ -92,6 +93,10 @@ class Cac40Config:
     llm_level_band_points: float = 15.0
     spread_points: float = 1.5
     slippage_points: float = 0.0
+    # Min distance (IG POINTS) for hedge_cover beyond entry/fill. Scaled by
+    # price (FX 0.0001, indices 1.0). Default 2 (= IG min stop). Same-level
+    # hedges are nudged, not rejected.
+    hedge_beyond_entry_points: float = 2.0
     overnight_funding_rate: float = 0.0001  # per night on notional
     point_value: float = 1.0  # EUR per index point per lot
     timeframe: str = "15m"
@@ -117,13 +122,17 @@ class Cac40Config:
     strategy_name: str = "cac40_mean_reversion"
     gemini_model: str = "gemini-2.5-flash"
     prompt_version: str = "v1"
+    # Tenant Config prompt (trading system prompt). Empty → profile default file.
+    system_prompt: str = ""
+    market_profile: str = "cac40"
+    calendar_id: str = ""  # empty → derive from market_profile
     intrabar_pessimistic: bool = True
     data_timezone: str = "Europe/Paris"
     # Backtest window relative to last bar: 1w|2w|1m|3m|6m|1y|all
     backtest_period: str = "1w"
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> Cac40Config:
+    def from_dict(cls, data: dict[str, Any] | None) -> TraderConfig:
         if not data:
             return cls()
         known = {f.name for f in cls.__dataclass_fields__.values()}  # type: ignore[attr-defined]

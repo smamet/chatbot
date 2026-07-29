@@ -12,8 +12,8 @@ from sqlalchemy.orm import Session
 from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.application.usage_recorder_service import UsageRecorderService
-from chatbot.cac40.llm_decision import GeminiDecisionClient
-from chatbot.cac40.models import MarketSnapshot
+from chatbot.trader.llm_decision import GeminiDecisionClient
+from chatbot.trader.models import MarketSnapshot
 from chatbot.config.settings import reset_settings_cache_for_tests
 
 
@@ -107,7 +107,7 @@ def test_decide_records_cac40_usage(usage_factory, monkeypatch: pytest.MonkeyPat
         recorder = UsageRecorderService(SqlAlchemyApiUsageRepository(session))
         daily = recorder.tenant_daily_since(42, date(2000, 1, 1))
         assert len(daily) == 1
-        assert daily[0].operation == "cac40"
+        assert daily[0].operation == "trader"
         assert daily[0].model == "gemini-2.5-flash"
         assert daily[0].prompt_tokens == 100
         assert daily[0].output_tokens == 20

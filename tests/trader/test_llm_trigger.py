@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.cac40.llm_trigger import (
+from chatbot.trader.llm_trigger import (
     TRIGGER_BOOK_CHANGE,
     TRIGGER_BOOTSTRAP,
     TRIGGER_INTERVAL,

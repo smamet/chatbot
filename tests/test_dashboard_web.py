@@ -1347,7 +1347,7 @@ def test_create_bot_persists_allowed_connectors(dashboard_env) -> None:
             "slug": "allowlist-bot",
             "prompt": "You are helpful.",
             "allowed_connector": ["whatsapp:in", "email:out"],
-            "allowed_integration": ["erpnext", "cac40_backtest"],
+            "allowed_integration": ["erpnext"],
         },
         follow_redirects=False,
     )
@@ -1357,7 +1357,7 @@ def test_create_bot_persists_allowed_connectors(dashboard_env) -> None:
         saved = SqlAlchemyTenantRepository(session).find_by_slug("allowlist-bot")
         assert saved is not None
         assert saved.config.allowed_connectors == ("email:out", "whatsapp:in")
-        assert saved.config.allowed_integrations == ("cac40_backtest", "erpnext")
+        assert saved.config.allowed_integrations == ("erpnext",)
 
 
 def test_save_connector_forbidden_when_not_allowed(dashboard_env) -> None:
@@ -1428,49 +1428,39 @@ def test_connector_policy_deactivates_denied_connectors(dashboard_env) -> None:
     assert "Not allowed" in r.text
 
 
-def test_cac40_tab_only_when_integration_active(dashboard_env) -> None:
+def test_trading_tab_only_for_trader_bots(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
 
     r = client.get(f"/dashboard/bots/{slug}?tab=config")
     assert r.status_code == 200
-    assert "Permissions" in r.text
-    assert f'/dashboard/bots/{slug}/cac40"' not in r.text
-
-    r = client.post(
-        f"/dashboard/bots/{slug}/integrations",
-        data={
-            "integration_type": "cac40_backtest",
-            "active": "on",
-            "fundmanager_url": "https://fundmanager.example.com",
-            "fundmanager_token": "token",
-            "max_open_positions": "4",
-            "epic": "IX.D.CAC.DAILY.IP",
-        },
-        follow_redirects=False,
-    )
-    assert r.status_code == 303
+    assert "tab=trading" not in r.text or 'href="?tab=trading' not in r.text
 
     with factory() as session:
-        svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
-        integration = svc.find(tenant_id, type=IntegrationType.CAC40_BACKTEST)
-        assert integration is not None
-        assert integration.config.get("bot_id") == slug
-
-    r = client.get(f"/dashboard/bots/{slug}?tab=integrations")
-    assert r.status_code == 200
-    assert f'/dashboard/bots/{slug}/cac40"' in r.text
-    assert "Bot id" not in r.text
-
-    with factory() as session:
-        svc = IntegrationService(SqlAlchemyIntegrationRepository(session))
-        integration = svc.find(tenant_id, type=IntegrationType.CAC40_BACKTEST)
-        assert integration is not None
-        svc.set_active(integration.id, False)
+        TenantService(SqlAlchemyTenantRepository(session)).update_tenant(
+            tenant_id,
+            bot_type="trader",
+        )
         session.commit()
 
-    r = client.get(f"/dashboard/bots/{slug}?tab=integrations")
-    assert f'/dashboard/bots/{slug}/cac40"' not in r.text
+    r = client.get(f"/dashboard/bots/{slug}")
+    assert r.status_code in (200, 303)
+    if r.status_code == 303:
+        assert "tab=trading" in r.headers.get("location", "")
+        r = client.get(r.headers["location"])
+    assert r.status_code == 200
+    assert "Trading" in r.text
+    assert 'href="?tab=trading' in r.text or "ttab=live" in r.text
+
+    with factory() as session:
+        TenantService(SqlAlchemyTenantRepository(session)).update_tenant(
+            tenant_id,
+            bot_type="assistant",
+        )
+        session.commit()
+
+    r = client.get(f"/dashboard/bots/{slug}?tab=config")
+    assert 'href="?tab=trading' not in r.text
 
 
 def test_save_integration_forbidden_when_not_allowed(dashboard_env) -> None:

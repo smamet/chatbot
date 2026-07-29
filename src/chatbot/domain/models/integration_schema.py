@@ -34,13 +34,6 @@ INTEGRATION_META: dict[str, IntegrationMeta] = {
         label="QuickBooks Online",
         description="Connect via Intuit OAuth and enrich replies with invoices and estimates.",
     ),
-    IntegrationType.CAC40_BACKTEST.value: IntegrationMeta(
-        label="CAC40 Backtest",
-        description=(
-            "Mean-reversion hedge-mode backtest (OHLC, LLM, Fund Manager). "
-            "One bot = one symbol; use a separate bot for another market."
-        ),
-    ),
 }
 
 INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
@@ -249,43 +242,6 @@ INTEGRATION_SCHEMAS: dict[str, list[IntegrationField]] = {
             label="Token expiry",
             help="Set automatically after OAuth connect.",
             oauth_managed=True,
-        ),
-    ],
-    IntegrationType.CAC40_BACKTEST.value: [
-        IntegrationField(
-            key="symbol",
-            label="Symbol",
-            help="One symbol per bot (e.g. CAC40, DAX). OHLC for this bot is stored under its own data folder.",
-            default="CAC40",
-            required=True,
-        ),
-        IntegrationField(
-            key="epic",
-            label="IG epic",
-            help="IG market epic for this bot's symbol (must match the IG connector epic used for sync).",
-            default="IX.D.CAC.BMU.IP",
-            required=True,
-        ),
-        IntegrationField(
-            key="fundmanager_url",
-            label="Fund Manager base URL",
-            help="e.g. https://fm.example.com — heartbeat posts to /jessebot/notify-up",
-            placeholder="https://fundmanager.example.com",
-        ),
-        IntegrationField(
-            key="fundmanager_token",
-            label="Notify token",
-            help="Matches JESSEBOT_NOTIFY_TOKEN on Fund Manager (header X-Notify-Token).",
-            input_type="password",
-            secret=True,
-        ),
-        # bot_id is always the tenant slug — set server-side, not shown in UI.
-        IntegrationField(
-            key="max_open_positions",
-            label="Max open legs",
-            help="Hedge-mode leg cap (not net position).",
-            input_type="number",
-            default="4",
         ),
     ],
 }

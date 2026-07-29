@@ -1,12 +1,12 @@
 """Working-order clearance vs dealable quote (IG ATTACHED_ORDER_LEVEL_ERROR)."""
 
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.ig_connector import IgConnector
-from chatbot.cac40.models import OrderPurpose, OrderType, Side, WorkingOrder
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.ig_connector import IgConnector
+from chatbot.trader.models import OrderPurpose, OrderType, Side, WorkingOrder
 
 
 def _conn(*, last_price: float = 8412.0) -> IgConnector:
-    cfg = Cac40Config(epic="IX.D.CAC.BMU.IP", spread_points=1.5)
+    cfg = TraderConfig(epic="IX.D.CAC.BMU.IP", spread_points=1.5)
     conn = IgConnector(cfg, dry_run=True)
     conn.ledger.last_price = last_price
     return conn
@@ -112,7 +112,7 @@ def test_resolve_price_step_ignores_min_stop_distance() -> None:
 
 
 def test_rejected_confirm_clears_phantom_deal_id() -> None:
-    cfg = Cac40Config(epic="IX.D.CAC.BMU.IP")
+    cfg = TraderConfig(epic="IX.D.CAC.BMU.IP")
     conn = IgConnector(cfg, dry_run=False)
     conn._cst = "cst"
     conn._security = "sec"

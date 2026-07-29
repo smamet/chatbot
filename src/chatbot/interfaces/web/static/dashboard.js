@@ -757,12 +757,19 @@
     if (panel) panel.open = true;
     const slug = connectorOrdersBtn.dataset.slug;
     const fd = new FormData(form);
+    const allowMarket = document.getElementById("ig-order-test-allow-market");
+    if (allowMarket?.checked) {
+      fd.set("allow_market_orders", "1");
+    } else {
+      fd.delete("allow_market_orders");
+    }
     connectorOrdersBtn.disabled = true;
     if (igOrderConfirm) igOrderConfirm.disabled = true;
     resultEl.hidden = false;
     resultEl.className = "connector-test-result integration-test-result";
-    resultEl.textContent =
-      "Placing working orders on IG DEMO… watch Working Orders for ~15s, then they cancel.";
+    resultEl.textContent = allowMarket?.checked
+      ? "Placing DEMO working orders + market open/close…"
+      : "Placing working orders on IG DEMO… watch Working Orders for ~15s, then they cancel.";
     resultEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
     try {
       const res = await fetch(`/dashboard/bots/${slug}/connectors/test-orders`, {

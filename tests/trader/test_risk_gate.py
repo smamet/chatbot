@@ -1,7 +1,7 @@
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.models import LlmAction, LlmAnalysis, LlmDecision, Side
-from chatbot.cac40.risk_gate import RiskGate
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.hedge_ledger import HedgeLedger
+from chatbot.trader.models import LlmAction, LlmAnalysis, LlmDecision, Side
+from chatbot.trader.risk_gate import RiskGate
 
 
 def _decision(*actions: LlmAction) -> LlmDecision:
@@ -12,7 +12,7 @@ def _decision(*actions: LlmAction) -> LlmDecision:
 
 
 def test_rejects_market_when_disabled():
-    cfg = Cac40Config(allow_market_orders=False)
+    cfg = TraderConfig(allow_market_orders=False)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     gate = RiskGate(cfg, ledger)
@@ -22,9 +22,9 @@ def test_rejects_market_when_disabled():
 
 def test_allows_profitable_market_close_when_market_orders_disabled():
     """Hedge→new S/R: lock a winning hedge even when allow_market_orders is off."""
-    from chatbot.cac40.models import LegRole
+    from chatbot.trader.models import LegRole
 
-    cfg = Cac40Config(allow_market_orders=False, spread_points=0, prevent_loss_exits=True)
+    cfg = TraderConfig(allow_market_orders=False, spread_points=0, prevent_loss_exits=True)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     primary = ledger._open_leg(Side.BUY, 1.0, 100.0, LegRole.PRIMARY)
@@ -43,7 +43,7 @@ def test_allows_profitable_market_close_when_market_orders_disabled():
 
 
 def test_max_open_positions_counts_legs():
-    cfg = Cac40Config(max_open_positions=1, allow_market_orders=True, spread_points=0)
+    cfg = TraderConfig(max_open_positions=1, allow_market_orders=True, spread_points=0)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     ledger.market_open(Side.BUY, 1)
@@ -55,7 +55,7 @@ def test_max_open_positions_counts_legs():
 
 
 def test_rejects_duplicate_entry_working_order():
-    cfg = Cac40Config(order_size=1.0, spread_points=0)
+    cfg = TraderConfig(order_size=1.0, spread_points=0)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     gate = RiskGate(cfg, ledger)
@@ -71,7 +71,7 @@ def test_rejects_duplicate_entry_working_order():
 
 
 def test_rejects_hedge_cover_without_primary():
-    cfg = Cac40Config(order_size=1.0, spread_points=0)
+    cfg = TraderConfig(order_size=1.0, spread_points=0)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     gate = RiskGate(cfg, ledger)
@@ -85,7 +85,7 @@ def test_rejects_hedge_cover_without_primary():
 
 
 def test_auto_links_tp_when_single_leg():
-    cfg = Cac40Config(order_size=1.0, allow_market_orders=True, spread_points=0)
+    cfg = TraderConfig(order_size=1.0, allow_market_orders=True, spread_points=0)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     pid = ledger.market_open(Side.SELL, 1)
@@ -100,7 +100,7 @@ def test_auto_links_tp_when_single_leg():
 
 
 def test_rejects_tp_without_position_when_multiple_legs():
-    cfg = Cac40Config(order_size=1.0, allow_market_orders=True, spread_points=0, max_open_positions=4)
+    cfg = TraderConfig(order_size=1.0, allow_market_orders=True, spread_points=0, max_open_positions=4)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     ledger.market_open(Side.BUY, 1)
@@ -113,7 +113,7 @@ def test_rejects_tp_without_position_when_multiple_legs():
 
 
 def test_rejects_duplicate_hedge_for_same_position():
-    cfg = Cac40Config(order_size=1.0, allow_market_orders=True, spread_points=0)
+    cfg = TraderConfig(order_size=1.0, allow_market_orders=True, spread_points=0)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     pid = ledger.market_open(Side.SELL, 1)
@@ -147,7 +147,7 @@ def test_rejects_duplicate_hedge_for_same_position():
 
 
 def test_loss_exit_flag_off_allows_losing_market_close():
-    cfg = Cac40Config(allow_market_orders=True, spread_points=0, prevent_loss_exits=False)
+    cfg = TraderConfig(allow_market_orders=True, spread_points=0, prevent_loss_exits=False)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     pid = ledger.market_open(Side.BUY, 1)
@@ -159,7 +159,7 @@ def test_loss_exit_flag_off_allows_losing_market_close():
 
 
 def test_loss_exit_flag_on_blocks_losing_market_close_allows_profit():
-    cfg = Cac40Config(allow_market_orders=True, spread_points=0, prevent_loss_exits=True)
+    cfg = TraderConfig(allow_market_orders=True, spread_points=0, prevent_loss_exits=True)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     pid = ledger.market_open(Side.BUY, 1)
@@ -176,7 +176,7 @@ def test_loss_exit_flag_on_blocks_losing_market_close_allows_profit():
 
 
 def test_loss_exit_flag_on_blocks_losing_tp_allows_profit_tp():
-    cfg = Cac40Config(allow_market_orders=True, spread_points=0, prevent_loss_exits=True)
+    cfg = TraderConfig(allow_market_orders=True, spread_points=0, prevent_loss_exits=True)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     pid = ledger.market_open(Side.BUY, 1)
@@ -196,9 +196,9 @@ def test_loss_exit_flag_on_blocks_losing_tp_allows_profit_tp():
 
 
 def test_loss_exit_flag_on_rejects_losing_close_fill():
-    from chatbot.cac40.models import OrderPurpose, OrderType, WorkingOrder
+    from chatbot.trader.models import OrderPurpose, OrderType, WorkingOrder
 
-    cfg = Cac40Config(spread_points=0, prevent_loss_exits=True)
+    cfg = TraderConfig(spread_points=0, prevent_loss_exits=True)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     pid = ledger.market_open(Side.BUY, 1)
@@ -221,9 +221,9 @@ def test_loss_exit_flag_on_rejects_losing_close_fill():
 
 
 def test_rejects_same_level_same_side_entry():
-    from chatbot.cac40.models import LegRole
+    from chatbot.trader.models import LegRole
 
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -245,9 +245,9 @@ def test_rejects_same_level_same_side_entry():
 
 def test_rejects_opposite_side_entry_while_longs_unhedged():
     """Naked BUY legs must be hedged before a new SELL entry is allowed."""
-    from chatbot.cac40.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+    from chatbot.trader.models import LegRole, OrderPurpose, OrderType, WorkingOrder
 
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -292,9 +292,9 @@ def test_rejects_opposite_side_entry_while_longs_unhedged():
 
 def test_allows_opposite_side_short_entry_when_longs_hedged():
     """Open BUY with working SELL hedge → SELL entry (short) is allowed."""
-    from chatbot.cac40.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+    from chatbot.trader.models import LegRole, OrderPurpose, OrderType, WorkingOrder
 
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -335,9 +335,9 @@ def test_allows_opposite_side_short_entry_when_longs_hedged():
 
 
 def test_same_level_entry_allowed_after_primary_closed():
-    from chatbot.cac40.models import LegRole
+    from chatbot.trader.models import LegRole
 
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -360,7 +360,7 @@ def test_same_level_entry_allowed_after_primary_closed():
 
 def test_hedge_cover_sizes_to_full_long_exposure():
     """Two BUY legs → SELL hedge_cover must be size 2, not order_size."""
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -391,9 +391,9 @@ def test_hedge_cover_sizes_to_full_long_exposure():
 
 def test_hedge_cover_includes_working_entry_with_open_leg():
     """Open BUY + new BUY entry at a different level → SELL hedge covers both (size 2)."""
-    from chatbot.cac40.models import LegRole
+    from chatbot.trader.models import LegRole
 
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -431,7 +431,7 @@ def test_hedge_cover_includes_working_entry_with_open_leg():
 
 def test_hedge_cover_residual_after_filled_opposing_hedge():
     """+2 BUY and −1 SELL filled → further SELL hedge covers residual 1 only."""
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -461,9 +461,9 @@ def test_hedge_cover_residual_after_filled_opposing_hedge():
 
 def test_hedge_cover_residual_after_working_hedge():
     """+2 BUY with a resting 1-lot SELL hedge → next SELL hedge is residual 1."""
-    from chatbot.cac40.models import OrderPurpose, OrderType, WorkingOrder
+    from chatbot.trader.models import OrderPurpose, OrderType, WorkingOrder
 
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -504,49 +504,51 @@ def test_hedge_cover_residual_after_working_hedge():
     assert sorted(h.size for h in hedges) == [1.0, 1.0]
 
 
-def test_bracket_entry_tp_hedge_accepted():
-    """Screenshot decision: SELL entry + BUY TP + BUY stop hedge in one batch."""
-    cfg = Cac40Config(order_size=1.0, spread_points=0, prevent_loss_exits=True)
+def test_bracket_ignores_llm_placeholder_position_id():
+    """LLM sometimes invents position_id like SELL_1.1386_entry — still bracket."""
+    cfg = TraderConfig(order_size=1.0, spread_points=0, prevent_loss_exits=True)
     ledger = HedgeLedger(config=cfg)
-    ledger.last_price = 8447.0
+    ledger.last_price = 1.1367
     gate = RiskGate(cfg, ledger)
     result = gate.apply(
         _decision(
             LlmAction(
                 op="place_limit",
                 side="SELL",
-                level=8455.0,
+                level=1.1386,
                 size=1.0,
                 purpose="entry",
             ),
             LlmAction(
                 op="place_limit",
                 side="BUY",
-                level=8425.0,
+                level=1.137,
                 size=1.0,
                 purpose="tp",
+                position_id="SELL_1.1386_entry",
             ),
             LlmAction(
                 op="place_stop",
                 side="BUY",
-                level=8465.0,
+                level=1.1394,
                 size=1.0,
                 purpose="hedge_cover",
+                position_id="SELL_1.1386_entry",
             ),
         )
     )
-    assert len(result.executed) == 3
+    assert len(result.executed) == 3, result
     assert not result.rejected
     by_purpose = {o.purpose.value: o for o in ledger.working_orders.values()}
-    assert "entry" in by_purpose and "tp" in by_purpose and "hedge_cover" in by_purpose
     entry = by_purpose["entry"]
     assert by_purpose["tp"].parent_order_id == entry.id
     assert by_purpose["hedge_cover"].parent_order_id == entry.id
     assert by_purpose["tp"].position_id is None
+    assert by_purpose["hedge_cover"].position_id is None
 
 
 def test_bracket_hedge_not_beyond_entry_rejected():
-    cfg = Cac40Config(order_size=1.0, spread_points=0)
+    cfg = TraderConfig(order_size=1.0, spread_points=0)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     gate = RiskGate(cfg, ledger)
@@ -567,9 +569,122 @@ def test_bracket_hedge_not_beyond_entry_rejected():
     assert not any(o.purpose.value == "hedge_cover" for o in ledger.working_orders.values())
 
 
+def test_bracket_same_level_hedge_is_nudged_not_rejected():
+    """EURUSD: same-level hedge → nudge 2 IG points (0.0002) beyond."""
+    cfg = TraderConfig(
+        order_size=1.0,
+        spread_points=0,
+        hedge_beyond_entry_points=2.0,
+        symbol="EURUSD",
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.1390
+    gate = RiskGate(cfg, ledger)
+    hedge_action = LlmAction(
+        op="place_stop",
+        side="SELL",
+        level=1.1375,  # same as entry — must nudge, not reject
+        size=1,
+        purpose="hedge_cover",
+    )
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=1.1375, size=1, purpose="entry"),
+            hedge_action,
+        )
+    )
+    assert not any("hedge_not_beyond_entry" in r for r in result.rejected)
+    hedge = next(
+        o for o in ledger.working_orders.values() if o.purpose.value == "hedge_cover"
+    )
+    assert abs(hedge.level - 1.1373) < 1e-9
+    assert any(n.startswith("hedge_nudged:") for n in result.notes)
+    assert hedge_action.level == 1.1375
+
+
+def test_hedge_nudge_respects_broker_price_step():
+    """If broker reports a coarse step, still land on a grid level beyond entry."""
+    cfg = TraderConfig(
+        order_size=1.0, spread_points=0, hedge_beyond_entry_points=2.0
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.1390
+
+    class _Broker:
+        def resolve_price_step(self):
+            return 0.0005
+
+        def resolve_min_stop_or_limit_distance(self):
+            return 0.0002
+
+    gate = RiskGate(cfg, ledger, broker=_Broker())
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=1.1375, size=1, purpose="entry"),
+            LlmAction(
+                op="place_stop", side="SELL", level=1.1375, size=1, purpose="hedge_cover"
+            ),
+        )
+    )
+    hedge = next(
+        o for o in ledger.working_orders.values() if o.purpose.value == "hedge_cover"
+    )
+    # ceil(0.0002/0.0005)=1 → one coarse tick beyond
+    assert abs(hedge.level - 1.1370) < 1e-9
+    assert any(n.startswith("hedge_nudged:") for n in result.notes)
+
+
+def test_bracket_hedge_already_beyond_is_unchanged():
+    cfg = TraderConfig(
+        order_size=1.0, spread_points=0, hedge_beyond_entry_points=2.0
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.1390
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=1.1380, size=1, purpose="entry"),
+            LlmAction(
+                op="place_stop",
+                side="SELL",
+                level=1.1350,  # already beyond 2 pts — keep
+                size=1,
+                purpose="hedge_cover",
+            ),
+        )
+    )
+    hedge = next(
+        o for o in ledger.working_orders.values() if o.purpose.value == "hedge_cover"
+    )
+    assert abs(hedge.level - 1.1350) < 1e-9
+    assert not any(n.startswith("hedge_nudged:") for n in result.notes)
+
+
+def test_cac40_hedge_nudge_uses_index_points():
+    cfg = TraderConfig(
+        order_size=1.0, spread_points=0, hedge_beyond_entry_points=20.0
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8200.0
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=8100, size=1, purpose="entry"),
+            LlmAction(
+                op="place_stop", side="SELL", level=8100, size=1, purpose="hedge_cover"
+            ),
+        )
+    )
+    hedge = next(
+        o for o in ledger.working_orders.values() if o.purpose.value == "hedge_cover"
+    )
+    assert abs(hedge.level - 8080.0) < 1e-9
+    assert any("hedge_nudged:" in n for n in result.notes)
+
+
 def test_bracket_prefers_working_entry_over_existing_leg():
     """With one open leg, a new entry+TP+hedge must bracket the entry, not the old leg."""
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         spread_points=0,
         prevent_loss_exits=True,
@@ -608,10 +723,10 @@ def test_bracket_prefers_working_entry_over_existing_leg():
 
 
 def test_ig_working_order_body_includes_limit_level():
-    from chatbot.cac40.ig_connector import IgConnector
-    from chatbot.cac40.models import OrderPurpose, OrderType, WorkingOrder
+    from chatbot.trader.ig_connector import IgConnector
+    from chatbot.trader.models import OrderPurpose, OrderType, WorkingOrder
 
-    cfg = Cac40Config(epic="IX.D.CAC.IFD.IP")
+    cfg = TraderConfig(epic="IX.D.CAC.IFD.IP")
     conn = IgConnector(cfg, dry_run=True)
     order = WorkingOrder(
         id="o1",
@@ -632,9 +747,9 @@ def test_ig_working_order_body_includes_limit_level():
 
 def test_amend_hedge_cover_grows_to_full_cover_excluding_self():
     """Short + working entry + size-1 hedge → amend sizes hedge to 2."""
-    from chatbot.cac40.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+    from chatbot.trader.models import LegRole, OrderPurpose, OrderType, WorkingOrder
 
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -684,9 +799,9 @@ def test_amend_hedge_cover_grows_to_full_cover_excluding_self():
 
 def test_amend_hedge_cover_with_second_hedge_uses_residual():
     """Two hedges: amending one targets residual, not full book."""
-    from chatbot.cac40.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+    from chatbot.trader.models import LegRole, OrderPurpose, OrderType, WorkingOrder
 
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         order_size=1.0,
         allow_market_orders=True,
         spread_points=0,
@@ -738,9 +853,9 @@ def test_amend_hedge_cover_with_second_hedge_uses_residual():
 
 
 def test_amend_entry_clamps_size_to_order_size():
-    from chatbot.cac40.models import OrderPurpose, OrderType, WorkingOrder
+    from chatbot.trader.models import OrderPurpose, OrderType, WorkingOrder
 
-    cfg = Cac40Config(order_size=1.0, spread_points=0, max_open_positions=4)
+    cfg = TraderConfig(order_size=1.0, spread_points=0, max_open_positions=4)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 8360
     entry = ledger.place_order(

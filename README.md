@@ -84,7 +84,7 @@ python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().d
 
 **Automation worker** processes `hook_events` (orders, etc.). Compose starts `worker-automation` automatically; locally: `python -m chatbot.interfaces.worker_automation`.
 
-**Mail worker** polls IMAP inboxes (`worker-mail`). **Catalog worker** syncs ERPNext item snapshots into RAG when enabled per bot (`worker-catalog`) and records **daily disk usage snapshots** (per tenant + host) once per UTC day. **CAC40 OHLC worker** tops up 15m bars from active IG connectors (`worker-cac40-ohlc`, every `CAC40_OHLC_POLL_SECONDS`, default 900). Locally: `python -m chatbot.interfaces.worker_mail` / `python -m chatbot.interfaces.worker_catalog --once` / `python -m chatbot.interfaces.worker_cac40_ohlc --once`.
+**Mail worker** polls IMAP inboxes (`worker-mail`). **Catalog worker** syncs ERPNext item snapshots into RAG when enabled per bot (`worker-catalog`) and records **daily disk usage snapshots** (per tenant + host) once per UTC day. **Trader OHLC / live workers** top up bars and run live cycles (`worker-trader-ohlc`, `worker-trader-live`; poll env `TRADER_*_POLL_SECONDS`). Locally: `python -m chatbot.interfaces.worker_mail` / `python -m chatbot.interfaces.worker_catalog --once` / `python -m chatbot.interfaces.worker_trader_ohlc --once`. See [docs/trader.md](docs/trader.md).
 
 **Email testing (dev)** — GreenMail (inbound IMAP) + Mailpit (outbound SMTP UI):
 
@@ -123,7 +123,7 @@ uvicorn chatbot.interfaces.api.main:app --reload
 ```
 
 - Dashboard: http://127.0.0.1:8000/auth/login — `chatbot user-create admin@example.com`
-- Workers (separate terminals): `python -m chatbot.interfaces.worker_automation`, `worker_mail`, `worker_catalog`, `worker_cac40_ohlc`
+- Workers (separate terminals): `python -m chatbot.interfaces.worker_automation`, `worker_mail`, `worker_catalog`, `worker_trader_ohlc`
 - Migrations (MySQL only): `alembic upgrade head` — tests use SQLite `create_all`, no Alembic
 
 **`.env` hot reload:** most vars reload when `.env` is saved (mtime). **`DATABASE_URL`** still needs an API restart.

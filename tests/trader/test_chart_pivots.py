@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from chatbot.cac40.chart_renderer import (
+from chatbot.trader.chart_renderer import (
     daily_pivot_map,
     normalize_pivot_period,
     pivot_map,
@@ -86,7 +86,7 @@ def test_render_multi_skips_pivots_on_daily(tmp_path: Path) -> None:
         open=("open", "first"), high=("high", "max"), low=("low", "min"), close=("close", "last")
     ).dropna()
 
-    with patch("chatbot.cac40.chart_renderer.render_ohlc_chart", return_value=b"\x89PNG") as mock_render:
+    with patch("chatbot.trader.chart_renderer.render_ohlc_chart", return_value=b"\x89PNG") as mock_render:
         render_multi_timeframe(
             {"15m": df15, "1D": df1d},
             out_dir=tmp_path,

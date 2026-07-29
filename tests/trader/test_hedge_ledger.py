@@ -1,10 +1,10 @@
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.models import OrderPurpose, OrderType, Side, WorkingOrder
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.hedge_ledger import HedgeLedger
+from chatbot.trader.models import OrderPurpose, OrderType, Side, WorkingOrder
 
 
 def test_hedge_mode_keeps_long_and_short():
-    cfg = Cac40Config(spread_points=0.0, slippage_points=0.0, max_open_positions=4)
+    cfg = TraderConfig(spread_points=0.0, slippage_points=0.0, max_open_positions=4)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     ledger.place_order(
@@ -43,7 +43,7 @@ def test_hedge_mode_keeps_long_and_short():
 
 
 def test_close_by_position_id_only():
-    cfg = Cac40Config(spread_points=0.0)
+    cfg = TraderConfig(spread_points=0.0)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     long_id = ledger.market_open(Side.BUY, 1)
@@ -56,7 +56,7 @@ def test_close_by_position_id_only():
 
 
 def test_tp_without_position_id_never_opens_leg():
-    cfg = Cac40Config(spread_points=0.0, max_open_positions=4)
+    cfg = TraderConfig(spread_points=0.0, max_open_positions=4)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     ledger.place_order(
@@ -76,7 +76,7 @@ def test_tp_without_position_id_never_opens_leg():
 
 
 def test_hedge_fill_without_primary_rejected():
-    cfg = Cac40Config(spread_points=0.0, slippage_points=0.0, max_open_positions=4)
+    cfg = TraderConfig(spread_points=0.0, slippage_points=0.0, max_open_positions=4)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     ledger.place_order(
@@ -96,7 +96,7 @@ def test_hedge_fill_without_primary_rejected():
 
 
 def test_fill_refused_at_max_open_positions():
-    cfg = Cac40Config(spread_points=0.0, max_open_positions=1, allow_market_orders=True)
+    cfg = TraderConfig(spread_points=0.0, max_open_positions=1, allow_market_orders=True)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     ledger.market_open(Side.BUY, 1)
@@ -117,7 +117,7 @@ def test_fill_refused_at_max_open_positions():
 
 
 def test_dormant_bracket_children_arm_on_entry_fill():
-    cfg = Cac40Config(spread_points=0.0, slippage_points=0.0, max_open_positions=4)
+    cfg = TraderConfig(spread_points=0.0, slippage_points=0.0, max_open_positions=4)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     entry = ledger.place_order(
@@ -170,7 +170,7 @@ def test_dormant_bracket_children_arm_on_entry_fill():
 
 
 def test_cancel_entry_cascades_bracket_children():
-    cfg = Cac40Config(spread_points=0.0)
+    cfg = TraderConfig(spread_points=0.0)
     ledger = HedgeLedger(config=cfg)
     entry = ledger.place_order(
         WorkingOrder(
@@ -224,7 +224,7 @@ def test_working_order_parent_roundtrip():
 
 
 def test_amend_order_updates_level_and_optional_size():
-    cfg = Cac40Config(spread_points=0.0)
+    cfg = TraderConfig(spread_points=0.0)
     ledger = HedgeLedger(config=cfg)
     order = ledger.place_order(
         WorkingOrder(

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 
-from chatbot.cac40.config import Cac40Config, LastLevels
-from chatbot.cac40.hedge_ledger import HedgeLedger, exit_would_lose
-from chatbot.cac40.models import (
+from chatbot.trader.config import TraderConfig, LastLevels
+from chatbot.trader.hedge_ledger import HedgeLedger, exit_would_lose
+from chatbot.trader.models import (
     LegRole,
     LlmAction,
     LlmDecision,
@@ -15,14 +16,23 @@ from chatbot.cac40.models import (
     Side,
     WorkingOrder,
 )
+from chatbot.trader.point_size import infer_point_size
 
 logger = logging.getLogger(__name__)
+
+
+def _hedge_nudge_note(before: float, after: float, point_size: float) -> str:
+    """Format nudge note with enough decimals for the instrument."""
+    decimals = 5 if point_size < 0.001 else (2 if point_size < 1 else 1)
+    fmt = f"{{:.{decimals}f}}"
+    return f"hedge_nudged:{fmt.format(before)}->{fmt.format(after)}"
 
 
 @dataclass
 class GateResult:
     executed: list[str] = field(default_factory=list)
     rejected: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
 
 
 class RiskGate:
@@ -30,7 +40,7 @@ class RiskGate:
 
     def __init__(
         self,
-        config: Cac40Config,
+        config: TraderConfig,
         ledger: HedgeLedger,
         *,
         flatten_active: bool = False,
@@ -197,6 +207,13 @@ class RiskGate:
                 return True
         return False
 
+    def _known_leg_id(self, position_id: str | None) -> str | None:
+        """Return position_id only if it names an open leg (ignore LLM placeholders)."""
+        pid = str(position_id or "").strip()
+        if not pid:
+            return None
+        return pid if pid in self.ledger.positions else None
+
     def _has_hedge_for_parent(self, parent_order_id: str | None) -> bool:
         if not parent_order_id:
             return False
@@ -209,8 +226,9 @@ class RiskGate:
         return False
 
     def _resolve_position_id(self, action: LlmAction) -> str | None:
-        if action.position_id:
-            return action.position_id
+        known = self._known_leg_id(action.position_id)
+        if known:
+            return known
         if len(self.ledger.positions) == 1:
             return next(iter(self.ledger.positions))
         return None
@@ -221,11 +239,109 @@ class RiskGate:
         return exit_would_lose(leg, exit_price, self.config.point_value)
 
     @staticmethod
+    def _hedge_wrong_side(hedge_side: Side, hedge_level: float, anchor: float) -> bool:
+        """True when the stop would fire without price first crossing the entry/fill."""
+        if hedge_side == Side.BUY:
+            return float(hedge_level) < float(anchor)
+        return float(hedge_level) > float(anchor)
+
+    @staticmethod
     def _hedge_beyond_entry(hedge_side: Side, hedge_level: float, entry: WorkingOrder) -> bool:
         """BUY stop must sit at/above entry; SELL stop at/below — price crosses entry first."""
+        return not RiskGate._hedge_wrong_side(hedge_side, hedge_level, float(entry.level))
+
+    def _hedge_step_and_min_dist(self, anchor: float) -> tuple[float, float, float]:
+        """Return ``(step, min_dist, pip)`` in price units for hedge clearance."""
+        points = max(0.0, float(self.config.hedge_beyond_entry_points or 0.0))
+        pip = infer_point_size(float(self.ledger.last_price or anchor or 0.0))
+        min_dist = points * pip
+        step = 0.0
+        broker = self.broker
+        if broker is not None:
+            try:
+                resolve_step = getattr(broker, "resolve_price_step", None)
+                if callable(resolve_step):
+                    step = float(resolve_step() or 0.0)
+            except Exception:
+                step = 0.0
+            try:
+                resolve_min = getattr(broker, "resolve_min_stop_or_limit_distance", None)
+                if callable(resolve_min):
+                    rules_min = float(resolve_min() or 0.0)
+                    if rules_min > 0:
+                        min_dist = max(min_dist, rules_min)
+            except Exception:
+                pass
+        # FX without broker: pipette grid (matches IgConnector.resolve_price_step).
+        if step <= 0 and pip > 0 and pip <= 0.0001 + 1e-15:
+            step = pip / 10.0
+        return step, min_dist, pip
+
+    @staticmethod
+    def _hedge_target_beyond(
+        hedge_side: Side, anchor: float, *, min_dist: float, step: float
+    ) -> float:
+        anchor_f = float(anchor)
+        raw = anchor_f + float(min_dist) if hedge_side == Side.BUY else anchor_f - float(min_dist)
+        if step <= 0:
+            return raw
+        # Snap onto the price grid *away* from the entry (never back onto it).
+        n = max(1, int(math.ceil((float(min_dist) - 1e-15) / step)))
+        delta = n * step
         if hedge_side == Side.BUY:
-            return float(hedge_level) >= float(entry.level)
-        return float(hedge_level) <= float(entry.level)
+            return anchor_f + delta
+        return anchor_f - delta
+
+    def _ensure_hedge_clearance(
+        self, hedge_side: Side, hedge_level: float, anchor: float
+    ) -> tuple[float | None, str | None]:
+        """
+        Keep hedge on the correct side of ``anchor`` by at least
+        ``hedge_beyond_entry_points`` (and IG min stop when known).
+
+        Returns ``(level, note)``. ``level`` is None when the hedge is on the
+        wrong side (caller should reject). Same-level / too-close levels are
+        nudged outward — never rejected for distance alone.
+        """
+        if self._hedge_wrong_side(hedge_side, hedge_level, anchor):
+            return None, None
+        points = max(0.0, float(self.config.hedge_beyond_entry_points or 0.0))
+        lvl = float(hedge_level)
+        anchor_f = float(anchor)
+        if points <= 0:
+            return lvl, None
+        step, min_dist, pip = self._hedge_step_and_min_dist(anchor_f)
+        target = self._hedge_target_beyond(
+            hedge_side, anchor_f, min_dist=min_dist, step=step
+        )
+        if hedge_side == Side.BUY:
+            if lvl + 1e-12 < target:
+                return target, _hedge_nudge_note(lvl, target, pip)
+            return lvl, None
+        if lvl > target + 1e-12:
+            return target, _hedge_nudge_note(lvl, target, pip)
+        return lvl, None
+
+    def _apply_hedge_clearance(
+        self,
+        *,
+        side: Side,
+        level: float,
+        anchor: float,
+        result: GateResult,
+        reject_prefix: str,
+    ) -> float | None:
+        """Return level to place (possibly nudged). None = wrong-side reject.
+
+        Does **not** mutate the LLM action — journal must keep the model output.
+        """
+        nudged, note = self._ensure_hedge_clearance(side, float(level), anchor)
+        if nudged is None:
+            result.rejected.append(f"{reject_prefix}:hedge_not_beyond_entry")
+            return None
+        if note:
+            result.notes.append(note)
+        return float(nudged)
 
     def _apply_one(self, action: LlmAction, result: GateResult) -> None:
         op = action.op
@@ -263,6 +379,7 @@ class RiskGate:
                 return
             side = Side(action.side)
             parent_order_id: str | None = None
+            order_level = float(action.level)
             if purpose == "entry":
                 if self.ledger.legs_count() >= self.config.max_open_positions:
                     result.rejected.append("place_limit:max_positions")
@@ -278,11 +395,14 @@ class RiskGate:
                     result.rejected.append("place_limit:unhedged_open_book")
                     return
             if purpose in ("tp", "close"):
-                # Prefer explicit position_id; else bracket a working entry; else auto-link
-                # a single open leg. Do NOT auto-link a leg when a new entry is waiting —
-                # that would steal the TP from the bracket.
-                if action.position_id:
-                    pid = action.position_id
+                # Prefer explicit *real* position_id; else bracket a working entry;
+                # else auto-link a single open leg. Ignore LLM placeholders like
+                # "SELL_1.1386_entry" (not in ledger.positions) so TP still gets
+                # parent_order_id → IG limitDistance attach.
+                # Do NOT auto-link a leg when a new entry is waiting — that would
+                # steal the TP from the bracket.
+                pid = self._known_leg_id(action.position_id)
+                if pid:
                     action.position_id = pid
                     leg = self.ledger.positions.get(pid)
                     if leg is not None:
@@ -293,6 +413,7 @@ class RiskGate:
                             result.rejected.append("place_limit:loss_exit_blocked")
                             return
                 else:
+                    action.position_id = None
                     entry = self._find_working_entry(opposite_of=side)
                     if entry is not None:
                         synth = PositionLeg(
@@ -324,18 +445,38 @@ class RiskGate:
                                 result.rejected.append("place_limit:loss_exit_blocked")
                                 return
             if purpose == "hedge_cover":
-                if action.position_id:
-                    pid = action.position_id
+                pid = self._known_leg_id(action.position_id)
+                if pid:
                     if self._has_hedge_for(pid):
                         result.rejected.append("place_limit:duplicate_hedge")
                         return
                     action.position_id = pid
+                    leg = self.ledger.positions.get(pid)
+                    if leg is not None:
+                        cleared = self._apply_hedge_clearance(
+                            side=side,
+                            level=order_level,
+                            anchor=float(leg.entry),
+                            result=result,
+                            reject_prefix="place_limit",
+                        )
+                        if cleared is None:
+                            return
+                        order_level = cleared
                 else:
+                    action.position_id = None
                     entry = self._find_working_entry(opposite_of=side)
                     if entry is not None:
-                        if not self._hedge_beyond_entry(side, float(action.level), entry):
-                            result.rejected.append("place_limit:hedge_not_beyond_entry")
+                        cleared = self._apply_hedge_clearance(
+                            side=side,
+                            level=order_level,
+                            anchor=float(entry.level),
+                            result=result,
+                            reject_prefix="place_limit",
+                        )
+                        if cleared is None:
                             return
+                        order_level = cleared
                         if self._has_hedge_for_parent(entry.id):
                             result.rejected.append("place_limit:duplicate_hedge")
                             return
@@ -350,11 +491,23 @@ class RiskGate:
                             return
                         if pid:
                             action.position_id = pid
+                            leg = self.ledger.positions.get(pid)
+                            if leg is not None:
+                                cleared = self._apply_hedge_clearance(
+                                    side=side,
+                                    level=order_level,
+                                    anchor=float(leg.entry),
+                                    result=result,
+                                    reject_prefix="place_limit",
+                                )
+                                if cleared is None:
+                                    return
+                                order_level = cleared
             order = WorkingOrder(
                 id="",
                 type=OrderType.LIMIT,
                 side=side,
-                level=float(action.level),
+                level=order_level,
                 size=self._size_for_place(action, side=side, purpose=purpose or "entry"),
                 purpose=OrderPurpose(purpose or "entry"),
                 position_id=action.position_id,
@@ -370,6 +523,7 @@ class RiskGate:
                 return
             side = Side(action.side)
             parent_order_id = None
+            order_level = float(action.level)
             if purpose == "entry":
                 if self.ledger.legs_count() >= self.config.max_open_positions:
                     result.rejected.append("place_stop:max_positions")
@@ -384,8 +538,8 @@ class RiskGate:
                     result.rejected.append("place_stop:unhedged_open_book")
                     return
             if purpose in ("tp", "close"):
-                if action.position_id:
-                    pid = action.position_id
+                pid = self._known_leg_id(action.position_id)
+                if pid:
                     action.position_id = pid
                     leg = self.ledger.positions.get(pid)
                     if leg is not None:
@@ -396,6 +550,7 @@ class RiskGate:
                             result.rejected.append("place_stop:loss_exit_blocked")
                             return
                 else:
+                    action.position_id = None
                     entry = self._find_working_entry(opposite_of=side)
                     if entry is not None:
                         synth = PositionLeg(
@@ -428,18 +583,38 @@ class RiskGate:
                                 return
             if purpose == "hedge_cover" or not purpose:
                 purpose = purpose or "hedge_cover"
-                if action.position_id:
-                    pid = action.position_id
+                pid = self._known_leg_id(action.position_id)
+                if pid:
                     if self._has_hedge_for(pid):
                         result.rejected.append("place_stop:duplicate_hedge")
                         return
                     action.position_id = pid
+                    leg = self.ledger.positions.get(pid)
+                    if leg is not None:
+                        cleared = self._apply_hedge_clearance(
+                            side=side,
+                            level=order_level,
+                            anchor=float(leg.entry),
+                            result=result,
+                            reject_prefix="place_stop",
+                        )
+                        if cleared is None:
+                            return
+                        order_level = cleared
                 else:
+                    action.position_id = None
                     entry = self._find_working_entry(opposite_of=side)
                     if entry is not None:
-                        if not self._hedge_beyond_entry(side, float(action.level), entry):
-                            result.rejected.append("place_stop:hedge_not_beyond_entry")
+                        cleared = self._apply_hedge_clearance(
+                            side=side,
+                            level=order_level,
+                            anchor=float(entry.level),
+                            result=result,
+                            reject_prefix="place_stop",
+                        )
+                        if cleared is None:
                             return
+                        order_level = cleared
                         if self._has_hedge_for_parent(entry.id):
                             result.rejected.append("place_stop:duplicate_hedge")
                             return
@@ -454,11 +629,23 @@ class RiskGate:
                             return
                         if pid:
                             action.position_id = pid
+                            leg = self.ledger.positions.get(pid)
+                            if leg is not None:
+                                cleared = self._apply_hedge_clearance(
+                                    side=side,
+                                    level=order_level,
+                                    anchor=float(leg.entry),
+                                    result=result,
+                                    reject_prefix="place_stop",
+                                )
+                                if cleared is None:
+                                    return
+                                order_level = cleared
             order = WorkingOrder(
                 id="",
                 type=OrderType.STOP,
                 side=side,
-                level=float(action.level),
+                level=order_level,
                 size=self._size_for_place(
                     action, side=side, purpose=purpose or "hedge_cover"
                 ),

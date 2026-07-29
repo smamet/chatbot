@@ -4,7 +4,7 @@ from typing import Protocol
 
 import pandas as pd
 
-from chatbot.cac40.models import MarketSnapshot, OrderType, Side, WorkingOrder
+from chatbot.trader.models import MarketSnapshot, OrderType, Side, WorkingOrder
 
 
 class MarketConnector(Protocol):

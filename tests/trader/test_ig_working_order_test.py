@@ -1,7 +1,7 @@
 from unittest.mock import MagicMock, patch
 
 from chatbot.application.connector_test_service import run_ig_working_order_test
-from chatbot.cac40.models import OrderType, Side
+from chatbot.trader.models import OrderType, Side
 
 
 def test_ig_working_order_test_blocks_live() -> None:
@@ -126,7 +126,7 @@ def test_ig_working_order_test_places_limit_with_attached_tp() -> None:
 
     with (
         patch(
-            "chatbot.cac40.ig_connector.IgConnector",
+            "chatbot.trader.ig_connector.IgConnector",
             _FakeIg,
         ),
         patch("time.sleep", return_value=None),
@@ -153,5 +153,123 @@ def test_ig_working_order_test_places_limit_with_attached_tp() -> None:
     sell = next(p for p in with_tp if p["side"] == Side.SELL)
     assert buy["limit_level"] > buy["level"]
     assert sell["limit_level"] < sell["level"]
+    stop_places = [p for p in placed_kwargs if p["type"] == OrderType.STOP]
+    # BUY STOP ±TP + SELL STOP ±TP
+    assert len(stop_places) == 4
+    stop_with_tp = [p for p in stop_places if p["limit_level"] is not None]
+    assert len(stop_with_tp) == 2
     assert "TP@" in result.message
     assert "attached" in result.message.lower() or "limitLevel" in result.message
+    assert "allow_market_orders=false" in result.message or "skipped" in result.message.lower()
+
+
+def test_ig_working_order_test_market_flag_calls_open_close() -> None:
+    market_calls: list[str] = []
+
+    class _FakeIg:
+        def __init__(self, *a, **k):
+            self._cst = "cst"
+            self.config = MagicMock(epic="IX.D.CAC.BMU.IP")
+
+        def login(self):
+            return None
+
+        def close(self):
+            return None
+
+        def get_active_account(self):
+            return {"accountType": "CFD", "currency": "EUR"}
+
+        def epic_product_hint(self, epic=None):
+            return "CFD"
+
+        def epic_compatible_with_account(self, **k):
+            return True
+
+        def sync_price(self):
+            return 8450.0
+
+        def resolve_order_currency(self):
+            return "EUR"
+
+        def resolve_min_deal_size(self):
+            return 1.0
+
+        def resolve_order_expiry(self):
+            return "-"
+
+        def market_currency_codes(self):
+            return ["EUR"]
+
+        def get_market(self):
+            return {
+                "snapshot": {"marketStatus": "TRADEABLE"},
+                "dealingRules": {
+                    "minNormalStopOrLimitDistance": {"unit": "POINTS", "value": 8.0},
+                    "maxStopOrLimitDistance": {"unit": "POINTS", "value": 100.0},
+                },
+                "instrument": {
+                    "name": "France 40",
+                    "stopsLimitsAllowed": True,
+                    "forceOpenAllowed": True,
+                },
+            }
+
+        def resolve_min_stop_or_limit_distance(self, epic=None):
+            return 8.0
+
+        def resolve_max_stop_or_limit_distance(self, epic=None):
+            return 100.0
+
+        def snap_level(self, level):
+            return float(level)
+
+        def place_order(self, order, *, currency=None, limit_level=None, stop_level=None):
+            order.deal_id = "D1"
+            order.client_ref = "R1"
+            return order
+
+        def list_working_orders(self):
+            return []
+
+        def cancel_working_order(self, deal_id):
+            return {"dealId": deal_id}
+
+        def open_market_position(self, side, size, *, role=None, currency=None):
+            market_calls.append(f"open:{side.value}:{size}")
+            return "leg1"
+
+        def market_close(self, position_id):
+            market_calls.append(f"close:{position_id}")
+
+    with (
+        patch("chatbot.trader.ig_connector.IgConnector", _FakeIg),
+        patch("time.sleep", return_value=None),
+    ):
+        off = run_ig_working_order_test(
+            {
+                "api_key": "key",
+                "username": "user",
+                "password": "pass",
+                "acc_type": "DEMO",
+                "epic": "IX.D.CAC.BMU.IP",
+            },
+            hold_seconds=0.1,
+            allow_market_orders=False,
+        )
+        assert off.ok is True
+        assert market_calls == []
+        on = run_ig_working_order_test(
+            {
+                "api_key": "key",
+                "username": "user",
+                "password": "pass",
+                "acc_type": "DEMO",
+                "epic": "IX.D.CAC.BMU.IP",
+            },
+            hold_seconds=0.1,
+            allow_market_orders=True,
+        )
+
+    assert on.ok is True
+    assert market_calls == ["open:BUY:1.0", "close:leg1"]

@@ -5,8 +5,8 @@ from typing import Any
 
 import httpx
 
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.hedge_ledger import HedgeLedger
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.hedge_ledger import HedgeLedger
 
 logger = logging.getLogger(__name__)
 
@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 class FundManagerClient:
     """POST heartbeat to Fund Manager Jesse notify-up with source=evenor."""
 
-    def __init__(self, config: Cac40Config) -> None:
+    def __init__(self, config: TraderConfig) -> None:
         self.config = config
 
     def notify(self, ledger: HedgeLedger, *, error: str | None = None) -> bool:

@@ -29,13 +29,20 @@
       {% endif %}
     </nav>
     <div class="topbar-end">
-      {% set cac40_trading = request.state.cac40_trading if request is defined else none %}
-      {% if cac40_trading and cac40_trading.active %}
-      <a href="/dashboard/bots/{{ cac40_trading.slug }}/cac40"
-         class="trading-status trading-status--{{ cac40_trading.mode }}"
-         title="CAC40 trading mode — open Live panel">
+      {% set trader_trading = request.state.trader_trading if request is defined else none %}
+      {% if trader_trading and trader_trading.active %}
+      <a href="/dashboard/bots/{{ trader_trading.slug }}?tab=trading&ttab=live"
+         class="trading-status trading-status--{{ trader_trading.mode }}"
+         title="Trading mode — open Live panel">
         <span class="trading-status__light" aria-hidden="true"></span>
-        <span class="trading-status__label">{{ cac40_trading.mode }}</span>
+        <span class="trading-status__label">{{ trader_trading.mode }}</span>
+      </a>
+      {% set stream_state = trader_trading.stream or 'off' %}
+      <a href="/dashboard/bots/{{ trader_trading.slug }}?tab=trading&ttab=live"
+         class="trading-status trading-status--stream-{{ stream_state }}"
+         title="{% if stream_state == 'ok' %}OHLC streamer connected{% elif stream_state == 'stale' %}OHLC streamer stale or disconnected{% elif stream_state == 'down' %}OHLC stream worker down{% else %}OHLC streamer idle (bot not Live){% endif %}">
+        <span class="trading-status__light" aria-hidden="true"></span>
+        <span class="trading-status__label">Stream</span>
       </a>
       {% endif %}
       <form method="post" action="/auth/logout" class="logout-form no-loader">

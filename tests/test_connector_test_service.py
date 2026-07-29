@@ -97,7 +97,7 @@ def test_connector_test_ig_missing_credentials() -> None:
     assert result.error == "missing_credentials"
 
 
-@patch("chatbot.cac40.ig_connector.IgConnector")
+@patch("chatbot.trader.ig_connector.IgConnector")
 def test_connector_test_ig_login_ok(mock_cls) -> None:
     import pandas as pd
 
@@ -128,9 +128,9 @@ def test_connector_test_ig_login_ok(mock_cls) -> None:
     mock_ig.close.assert_called_once()
 
 
-@patch("chatbot.cac40.ig_connector.IgConnector")
+@patch("chatbot.trader.ig_connector.IgConnector")
 def test_connector_test_ig_auth_error_details(mock_cls) -> None:
-    from chatbot.cac40.ig_connector import IgAuthError
+    from chatbot.trader.ig_connector import IgAuthError
 
     mock_ig = MagicMock()
     mock_ig.login.side_effect = IgAuthError(

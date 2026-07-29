@@ -8,9 +8,9 @@ from typing import Any
 import httpx
 import pandas as pd
 
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.models import (
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.hedge_ledger import HedgeLedger
+from chatbot.trader.models import (
     LegRole,
     MarketSnapshot,
     OrderType,
@@ -127,13 +127,16 @@ class IgConnector:
     Live HTTP order placement is used when dry_run=False and credentials exist.
     """
 
-    def __init__(self, config: Cac40Config, *, dry_run: bool = True) -> None:
+    def __init__(self, config: TraderConfig, *, dry_run: bool = True) -> None:
         self.config = config
         self.dry_run = dry_run
         self.ledger = HedgeLedger(config=config, symbol=config.symbol)
         self._cst: str | None = None
         self._security: str | None = None
         self._client = httpx.Client(timeout=30.0)
+        # From /session JSON — required for Lightstreamer (never hard-code the host).
+        self.lightstreamer_endpoint: str | None = None
+        self.current_account_id: str | None = None
         # Last /prices metadata.allowance (remainingAllowance, totalAllowance, …).
         self.last_price_allowance: dict[str, Any] | None = None
         # Compact last deal/confirm snapshot for mirror / cycle ops log (not raw HTTP).
@@ -177,9 +180,29 @@ class IgConnector:
             raise IgApiError(format_ig_http_error(resp, action="login", url=url))
         self._cst = resp.headers.get("CST")
         self._security = resp.headers.get("X-SECURITY-TOKEN")
-        logger.info("IG session opened (%s)", self.config.ig_acc_type)
+        try:
+            body = resp.json() if resp.content else {}
+        except Exception:
+            body = {}
+        if isinstance(body, dict):
+            ls = str(body.get("lightstreamerEndpoint") or "").strip()
+            self.lightstreamer_endpoint = ls or None
+            acct = str(body.get("currentAccountId") or "").strip()
+            if not acct:
+                accounts = body.get("accounts") or []
+                if isinstance(accounts, list) and accounts:
+                    first = accounts[0] if isinstance(accounts[0], dict) else {}
+                    acct = str(first.get("accountId") or "").strip()
+            self.current_account_id = acct or None
+        logger.info(
+            "IG session opened (%s) ls=%s account=%s",
+            self.config.ig_acc_type,
+            self.lightstreamer_endpoint or "—",
+            self.current_account_id or self.config.ig_account_id or "—",
+        )
         if self.config.ig_account_id:
             self.switch_account(self.config.ig_account_id)
+            self.current_account_id = self.config.ig_account_id.strip() or self.current_account_id
 
     def switch_account(self, account_id: str, *, default: bool = False) -> None:
         """Switch the active IG account for this session (needed for demo CFD accounts)."""
@@ -432,14 +455,45 @@ class IgConnector:
             return 0.0, 0.0
         return mid - half, mid + half
 
+    def resolve_point_size(self, *, epic: str | None = None) -> float:
+        """Price value of one IG dealingRules POINTS unit.
+
+        Indices: 1 point ≈ 1.0 in price. FX majors (EURUSD…): typically
+        ``1 / scalingFactor`` (often 0.0001). Without scalingFactor, infer from mid.
+        """
+        market = self.get_market(epic) if self._cst else {}
+        if not market:
+            ep = (epic or self.config.epic or "").strip()
+            market = self._market_cache.get(ep) or {}
+        snapshot = (market.get("snapshot") or {}) if isinstance(market, dict) else {}
+        raw_sf = snapshot.get("scalingFactor")
+        try:
+            sf = float(raw_sf) if raw_sf is not None else 0.0
+        except (TypeError, ValueError):
+            sf = 0.0
+        if sf > 1.0:
+            return 1.0 / sf
+        mid = float(self.ledger.last_price or 0.0)
+        if mid <= 0:
+            try:
+                bid = float(snapshot.get("bid") or 0)
+                offer = float(snapshot.get("offer") or 0)
+                if bid > 0 and offer > 0:
+                    mid = (bid + offer) / 2.0
+            except (TypeError, ValueError):
+                mid = 0.0
+        from chatbot.trader.point_size import infer_point_size
+
+        return infer_point_size(mid)
+
     def resolve_min_stop_or_limit_distance(self, *, epic: str | None = None) -> float:
-        """minNormalStopOrLimitDistance in price points (0 if unknown/cold)."""
+        """minNormalStopOrLimitDistance converted to **price** units (0 if unknown)."""
         return self._dealing_distance_points(
             "minNormalStopOrLimitDistance", epic=epic
         )
 
     def resolve_max_stop_or_limit_distance(self, *, epic: str | None = None) -> float:
-        """maxStopOrLimitDistance in price points (0 if unknown)."""
+        """maxStopOrLimitDistance converted to **price** units (0 if unknown)."""
         return self._dealing_distance_points("maxStopOrLimitDistance", epic=epic)
 
     def _dealing_distance_points(self, key: str, *, epic: str | None = None) -> float:
@@ -461,19 +515,28 @@ class IgConnector:
         if unit == "PERCENTAGE":
             mid = float(self.ledger.last_price or 0)
             return (mid * value / 100.0) if mid > 0 else 0.0
-        return value
+        # POINTS → price (FX: 2 pts @ 0.0001 = 0.0002; indices: 2 pts = 2.0)
+        return value * self.resolve_point_size(epic=epic)
 
     def working_order_clearance_points(self, order_type: OrderType) -> tuple[float, float]:
-        """Return (min_clearance, max_clearance) in price points vs dealable quote."""
+        """Return (min_clearance, max_clearance) in **price** units vs dealable quote."""
         rules_min = self.resolve_min_stop_or_limit_distance()
         rules_max = self.resolve_max_stop_or_limit_distance()
-        floor = (
-            _DEFAULT_STOP_CLEARANCE_POINTS
-            if order_type == OrderType.STOP
-            else _DEFAULT_LIMIT_CLEARANCE_POINTS
-        )
-        min_c = max(rules_min, floor)
-        max_c = rules_max if rules_max > 0 else _DEFAULT_MAX_CLEARANCE_POINTS
+        mid = float(self.ledger.last_price or 0.0)
+        if 0 < mid < 50:
+            # FX: use IG min (POINTS→price). Do not invent a large mid% floor —
+            # that deferred mean-reversion TPs as "through market" (e.g. SELL
+            # entry above mid with TP a few pips below bid).
+            min_c = max(rules_min, self.resolve_point_size() * 2.0)
+            max_c = rules_max if rules_max > 0 else mid * 0.5
+        else:
+            floor = (
+                _DEFAULT_STOP_CLEARANCE_POINTS
+                if order_type == OrderType.STOP
+                else _DEFAULT_LIMIT_CLEARANCE_POINTS
+            )
+            min_c = max(rules_min, floor)
+            max_c = rules_max if rules_max > 0 else _DEFAULT_MAX_CLEARANCE_POINTS
         if max_c < min_c:
             max_c = min_c
         return min_c, max_c
@@ -537,33 +600,63 @@ class IgConnector:
         if out_tp is not None:
             tp = float(out_tp)
             tp_min, tp_max = self.working_order_clearance_points(OrderType.LIMIT)
-            # IG validates attached limitLevel against the *live* quote, not only
-            # entry. Mean-reversion TP still through the market → omit attach.
-            if order.side == Side.BUY:
+            mid = float(self.ledger.last_price or level or 0)
+            fx = 0 < mid < 50 or 0 < level < 50
+            if fx:
+                # FX working-order TP is sent as limitDistance from *entry* (IG UI).
+                # Do not require TP to clear the live bid/offer — that blocked
+                # mean-reversion brackets the platform accepts manually.
+                if order.side == Side.BUY:
+                    need = level + tp_min
+                    if tp < need:
+                        notes.append(
+                            f"omit_tp_attach {tp} (need>={need:.5f} entry={level:.5f})"
+                        )
+                        out_tp = None
+                    else:
+                        hi = level + tp_max
+                        if tp > hi:
+                            notes.append(f"clamp TP {tp}->{hi:.5f} (max vs entry)")
+                            tp = hi
+                        out_tp = self.snap_level(tp)
+                else:
+                    need = level - tp_min
+                    if tp > need:
+                        notes.append(
+                            f"omit_tp_attach {tp} (need<={need:.5f} entry={level:.5f})"
+                        )
+                        out_tp = None
+                    else:
+                        lo = level - tp_max
+                        if tp < lo:
+                            notes.append(f"clamp TP {tp}->{lo:.5f} (max vs entry)")
+                            tp = lo
+                        out_tp = self.snap_level(tp)
+            elif order.side == Side.BUY:
+                # Indices: IG still validates absolute limitLevel vs live quote.
                 need = max(level + tp_min, offer + tp_min)
                 if tp < need:
                     notes.append(
-                        f"omit_tp_attach {tp} (need>={need:.1f} offer={offer:.1f})"
+                        f"omit_tp_attach {tp} (need>={need:.5f} offer={offer:.5f})"
                     )
                     out_tp = None
                 else:
-                    # Also keep TP within max distance of offer when attached now.
                     hi = offer + tp_max
                     if tp > hi:
-                        notes.append(f"clamp TP {tp}->{hi:.1f} (max vs offer)")
+                        notes.append(f"clamp TP {tp}->{hi:.5f} (max vs offer)")
                         tp = hi
                     out_tp = self.snap_level(tp)
             else:
                 need = min(level - tp_min, bid - tp_min)
                 if tp > need:
                     notes.append(
-                        f"omit_tp_attach {tp} (need<={need:.1f} bid={bid:.1f})"
+                        f"omit_tp_attach {tp} (need<={need:.5f} bid={bid:.5f})"
                     )
                     out_tp = None
                 else:
                     lo = bid - tp_max
                     if tp < lo:
-                        notes.append(f"clamp TP {tp}->{lo:.1f} (max vs bid)")
+                        notes.append(f"clamp TP {tp}->{lo:.5f} (max vs bid)")
                         tp = lo
                     out_tp = self.snap_level(tp)
         return level, out_tp, notes
@@ -742,8 +835,31 @@ class IgConnector:
         return float(self.config.order_size or 1.0)
 
     def resolve_price_step(self, *, epic: str | None = None) -> float:
-        """Minimum price increment from dealingRules (fallback 0.1 for indices)."""
-        market = self.get_market(epic)
+        """Minimum price increment for snapping working-order levels.
+
+        FX: use **pipette** (``point_size / 10``, typically 0.00001). IG's
+        ``minStepDistance`` is often 5 POINTS (0.0005) on EURUSD Mini, but the
+        web UI and OTC amend path accept 5-decimal prices (e.g. 1.13721). Snapping
+        to 0.0005 wrongly collapsed a 2-point hedge nudge (1.13730 → 1.13750).
+
+        Indices: prefer ``minStepDistance`` from dealingRules.
+        """
+        point = self.resolve_point_size(epic=epic)
+        mid = float(self.ledger.last_price or 0.0)
+        if mid <= 0:
+            market = self.get_market(epic) if self._cst else {}
+            snap = (market.get("snapshot") or {}) if isinstance(market, dict) else {}
+            try:
+                bid = float(snap.get("bid") or 0)
+                offer = float(snap.get("offer") or 0)
+                if bid > 0 and offer > 0:
+                    mid = (bid + offer) / 2.0
+            except (TypeError, ValueError):
+                mid = 0.0
+        if point > 0 and (point <= 0.0001 + 1e-15 or 0 < mid < 10):
+            return point / 10.0
+
+        market = self.get_market(epic) if self._cst else {}
         rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
         # Only minStepDistance — never minNormalStopOrLimitDistance (that is a
         # stop/limit clearance, not a tick size).
@@ -752,10 +868,13 @@ class IgConnector:
             try:
                 step = float(row["value"])
                 if step > 0:
+                    unit = str(row.get("unit") or "POINTS").strip().upper()
+                    if unit == "POINTS":
+                        return step * self.resolve_point_size(epic=epic)
                     return step
             except (TypeError, ValueError):
                 pass
-        return 0.1
+        return 0.1 if point <= 0 else point
 
     def snap_level(self, level: float, *, epic: str | None = None) -> float:
         """Round a price level to the instrument step (avoids float noise like …000001)."""
@@ -865,7 +984,13 @@ class IgConnector:
                 deal_status=deal_status or "UNKNOWN",
                 reason=reason,
                 level=order.level,
+                # FX uses limitDistance; indices may use limitLevel. Either means TP went out.
                 limit_level=body.get("limitLevel"),
+                limit_distance=body.get("limitDistance"),
+                tp_attached=(
+                    body.get("limitLevel") is not None
+                    or body.get("limitDistance") is not None
+                ),
                 bid=bid,
                 offer=offer,
                 clearance="; ".join(clearance_notes) if clearance_notes else None,
@@ -1200,8 +1325,12 @@ class IgConnector:
             "level": snapped,
             "timeInForce": "GOOD_TILL_CANCELLED",
         }
+        # FX: prefer limitDistance (same as place). Absolute limitLevel is often
+        # rejected vs live quote when attaching TP on a resting entry.
         if limit_level is not None:
-            body["limitLevel"] = self.snap_level(float(limit_level))
+            self._attach_working_order_tp(
+                body, level=snapped, limit_level=float(limit_level)
+            )
         if stop_level is not None:
             body["stopLevel"] = self.snap_level(float(stop_level))
         url = f"{self.base_url}/workingorders/otc/{did}"
@@ -1222,6 +1351,12 @@ class IgConnector:
                     deal_reference=ref,
                     deal_status="ACCEPTED",
                     level=snapped,
+                    limit_level=body.get("limitLevel"),
+                    limit_distance=body.get("limitDistance"),
+                    tp_attached=(
+                        body.get("limitLevel") is not None
+                        or body.get("limitDistance") is not None
+                    ),
                 )
                 return snapped
             last_exc = IgApiError(
@@ -1378,7 +1513,7 @@ class IgConnector:
         if deal_id and not self.dry_run and self._cst:
             try:
                 self.update_position_protection(deal_id, limit_level=float(level))
-                from chatbot.cac40.models import OrderPurpose, attached_deal_id
+                from chatbot.trader.models import OrderPurpose, attached_deal_id
 
                 self.place_order(
                     WorkingOrder(
@@ -1399,7 +1534,7 @@ class IgConnector:
                     deal_id,
                 )
         close_side = Side.SELL if leg.side == Side.BUY else Side.BUY
-        from chatbot.cac40.models import OrderPurpose
+        from chatbot.trader.models import OrderPurpose
 
         self.place_order(
             WorkingOrder(
@@ -1540,11 +1675,74 @@ class IgConnector:
             "forceOpen": True,
         }
         if limit_level is not None:
-            # Attached TP: IG creates this limit the moment the entry fills.
-            body["limitLevel"] = self.snap_level(float(limit_level))
+            self._attach_working_order_tp(body, level=level, limit_level=float(limit_level))
         if stop_level is not None:
             body["stopLevel"] = self.snap_level(float(stop_level))
         return body
+
+    def _attach_working_order_tp(
+        self,
+        body: dict[str, Any],
+        *,
+        level: float,
+        limit_level: float,
+    ) -> None:
+        """Attach take-profit on a working order (limitLevel or limitDistance).
+
+        FX (mid/level &lt; 50): always ``limitDistance`` in POINTS from the entry —
+        same as IG web UI ("Limit Distance 19.7"). Absolute ``limitLevel`` is
+        validated against the live quote and wrongly deferred mean-reversion TPs.
+
+        Index CFDs with POINTS-capped max: also prefer distance. Otherwise
+        absolute ``limitLevel``.
+        """
+        tp = self.snap_level(limit_level)
+        market = self.get_market() if self._cst else {}
+        rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
+        mx = rules.get("maxStopOrLimitDistance") or {}
+        mn = rules.get("minNormalStopOrLimitDistance") or {}
+        try:
+            max_v = float(mx.get("value") or 0)
+        except (TypeError, ValueError):
+            max_v = 0.0
+        try:
+            min_v = float(mn.get("value") or 0)
+        except (TypeError, ValueError):
+            min_v = 0.0
+        max_u = str(mx.get("unit") or "POINTS").upper()
+        fx = level < 50
+        if fx:
+            pip = self.resolve_point_size()
+            if pip <= 0:
+                pip = 0.0001
+            raw_dist = abs(float(tp) - float(level)) / pip
+            lo = max(min_v, 2.0) if min_v > 0 else 2.0
+            if max_u == "PERCENTAGE" and max_v > 0:
+                hi = (abs(float(level)) * max_v / 100.0) / pip
+            elif max_u == "POINTS" and max_v > 0:
+                hi = max_v * 0.95
+            else:
+                hi = max(raw_dist, lo)
+            dist = raw_dist
+            if hi > 0 and dist > hi:
+                dist = hi
+            if dist < lo:
+                dist = min(lo, hi) if hi > 0 else lo
+            body["limitDistance"] = float(round(dist, 1))
+            return
+        if max_u == "POINTS" and max_v > 0:
+            # Index with POINTS max — distance in index points (1 pt = 1.0 price).
+            raw_dist = abs(float(tp) - float(level))
+            lo = max(min_v * 2.0 if min_v > 0 else 10.0, 10.0)
+            hi = max_v * 0.8 if max_v > lo else max_v
+            dist = raw_dist
+            if dist > hi > 0:
+                dist = hi
+            if dist < lo:
+                dist = min(lo, hi) if hi > 0 else lo
+            body["limitDistance"] = float(round(dist, 2))
+            return
+        body["limitLevel"] = tp
 
 
 def _extract_price_allowance(payload: dict[str, Any]) -> dict[str, Any] | None:

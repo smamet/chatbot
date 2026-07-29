@@ -2,8 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.models import OrderType, Side, WorkingOrder
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.models import OrderType, Side, WorkingOrder
 
 
 @dataclass(frozen=True)
@@ -13,11 +13,11 @@ class FillResult:
     reason: str
 
 
-def _half_spread(cfg: Cac40Config) -> float:
+def _half_spread(cfg: TraderConfig) -> float:
     return abs(cfg.spread_points) / 2.0
 
 
-def evaluate_limit_fill(order: WorkingOrder, bar: dict, cfg: Cac40Config) -> FillResult | None:
+def evaluate_limit_fill(order: WorkingOrder, bar: dict, cfg: TraderConfig) -> FillResult | None:
     """Limit fill if bar touches level. Fill at level +/- half spread (never better)."""
     o, h, l, c = bar["open"], bar["high"], bar["low"], bar["close"]
     level = order.level
@@ -42,7 +42,7 @@ def evaluate_limit_fill(order: WorkingOrder, bar: dict, cfg: Cac40Config) -> Fil
     return None
 
 
-def evaluate_stop_fill(order: WorkingOrder, bar: dict, cfg: Cac40Config) -> FillResult | None:
+def evaluate_stop_fill(order: WorkingOrder, bar: dict, cfg: TraderConfig) -> FillResult | None:
     """
     Stop fill on breach; gap open fills at open + slippage.
 
@@ -51,7 +51,7 @@ def evaluate_stop_fill(order: WorkingOrder, bar: dict, cfg: Cac40Config) -> Fill
     - HEDGE_COVER breakout entries reverse the conventional side placement:
       SELL hedge_cover above market triggers on rise; BUY hedge_cover below on fall.
     """
-    from chatbot.cac40.models import OrderPurpose
+    from chatbot.trader.models import OrderPurpose
 
     o, h, l = bar["open"], bar["high"], bar["low"]
     level = order.level
@@ -87,7 +87,7 @@ def evaluate_stop_fill(order: WorkingOrder, bar: dict, cfg: Cac40Config) -> Fill
     return None
 
 
-def evaluate_order_fill(order: WorkingOrder, bar: dict, cfg: Cac40Config) -> FillResult | None:
+def evaluate_order_fill(order: WorkingOrder, bar: dict, cfg: TraderConfig) -> FillResult | None:
     if order.type == OrderType.LIMIT:
         return evaluate_limit_fill(order, bar, cfg)
     if order.type == OrderType.STOP:

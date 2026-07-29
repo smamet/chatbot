@@ -11,20 +11,20 @@ from typing import Any
 
 import pandas as pd
 
-from chatbot.cac40.chart_renderer import pivot_history_pad, render_multi_timeframe
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.decision_cache import DecisionCache
-from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.llm_decision import (
+from chatbot.trader.chart_renderer import pivot_history_pad, render_multi_timeframe
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.decision_cache import DecisionCache
+from chatbot.trader.hedge_ledger import HedgeLedger
+from chatbot.trader.llm_decision import (
     GeminiDecisionClient,
     SessionFactory,
     load_prompt,
     parse_llm_json,
     summarize_decision,
 )
-from chatbot.cac40.llm_trigger import LlmTrigger
-from chatbot.cac40.ohlc_store import load_ohlc_csv, resample_ohlc, slice_ohlc_period, window_asof
-from chatbot.cac40.risk_gate import RiskGate
+from chatbot.trader.llm_trigger import LlmTrigger
+from chatbot.trader.ohlc_store import load_ohlc_csv, resample_ohlc, slice_ohlc_period, window_asof
+from chatbot.trader.risk_gate import RiskGate
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +47,7 @@ class BacktestEngine:
 
     def __init__(
         self,
-        config: Cac40Config,
+        config: TraderConfig,
         *,
         ohlc_path: Path,
         run_dir: Path,
@@ -124,7 +124,10 @@ class BacktestEngine:
             mode=str(self.config.llm_trigger_mode or "levels"),
             every_bars=int(self.config.resolve_llm_every_bars()),
         )
-        prompt = load_prompt()
+        prompt = load_prompt(
+            override=self.config.system_prompt or None,
+            profile_id=self.config.market_profile or None,
+        )
         journal_path = self.run_dir / "journal.jsonl"
 
         bars = list(df_trade.itertuples())
@@ -185,6 +188,7 @@ class BacktestEngine:
                     show_rsi=bool(self.config.chart_show_rsi),
                     show_pivots=pivots_on,
                     pivot_period=pivot_period,
+                    symbol=self.config.symbol,
                 )
                 chart_files = sorted(p.name for p in chart_dir.glob("chart_*.png"))
 

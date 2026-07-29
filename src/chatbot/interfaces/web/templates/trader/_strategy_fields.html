@@ -50,12 +50,12 @@
     </option>
   </select>
 </label>
-<label id="{{ prefix }}llm-band-wrap" class="cac40-trigger-field">Level band (points)
+<label id="{{ prefix }}llm-band-wrap" class="trader-trigger-field">Level band (points)
   <input type="number" step="0.1" name="llm_level_band_points"
          value="{{ cfg.llm_level_band_points or 15 }}" min="0.1" max="500">
   <small class="field-hint">How close price must get to S/R to trigger a call.</small>
 </label>
-<label id="{{ prefix }}llm-every-wrap" class="cac40-trigger-field">Call every
+<label id="{{ prefix }}llm-every-wrap" class="trader-trigger-field">Call every
   <span class="llm-rate-row">
     <input type="number" name="llm_every_n" value="{{ cfg.llm_every_n or 6 }}" min="1" max="96">
     <select name="llm_every_unit">

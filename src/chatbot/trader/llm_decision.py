@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from chatbot.adapters.gemini_usage import usage_from_response
 from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
 from chatbot.application.usage_recorder_service import UsageRecorderService
-from chatbot.cac40.models import LlmAction, LlmAnalysis, LlmDecision, MarketSnapshot
+from chatbot.trader.models import LlmAction, LlmAnalysis, LlmDecision, MarketSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -71,12 +71,26 @@ JSON schema:
 """
 
 
-def load_prompt(prompt_path: Path | None = None) -> str:
+def load_prompt(
+    prompt_path: Path | None = None,
+    *,
+    override: str | None = None,
+    profile_id: str | None = None,
+) -> str:
+    """Resolve trading system prompt.
+
+    Order: explicit override (tenant Config prompt) → path → profile file → default.
+    Live/backtest UI does **not** override this; only Config (or a file path) does.
+    """
+    if override is not None and str(override).strip():
+        return str(override).strip()
     if prompt_path and prompt_path.exists():
         return prompt_path.read_text(encoding="utf-8")
-    default = Path(__file__).resolve().parents[3] / "prompts" / "cac40" / "system.md"
-    if default.exists():
-        return default.read_text(encoding="utf-8")
+    from chatbot.trader.profiles import default_prompt_text
+
+    text = default_prompt_text(profile_id)
+    if text.strip():
+        return text
     return DEFAULT_PROMPT
 
 
@@ -209,7 +223,7 @@ class GeminiDecisionClient:
             session = self.session_factory()
             UsageRecorderService(SqlAlchemyApiUsageRepository(session)).record(
                 self.tenant_id,
-                "cac40",
+                "trader",
                 self.model,
                 usage,
             )

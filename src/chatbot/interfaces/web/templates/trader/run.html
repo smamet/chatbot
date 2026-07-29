@@ -2,10 +2,10 @@
 {% block body %}
 <section class="page-header">
   <div>
-    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40">← CAC40 Backtest</a></p>
+    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}?tab=trading&amp;ttab=backtest">← Trading</a></p>
     <h1>{% if live %}Live results{% else %}{{ run.run_id }}{% endif %}</h1>
-    <p class="subtitle" id="cac40-run-subtitle"
-       data-poll-url="{% if not live %}/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/status.json{% endif %}"
+    <p class="subtitle" id="trader-run-subtitle"
+       data-poll-url="{% if not live %}/dashboard/bots/{{ tenant.slug }}/trader/runs/{{ run.run_id }}/status.json{% endif %}"
        data-initial-status="{{ run.state.status }}"
        data-poll="{% if run.state.status in ('running', 'stopping') and not live %}1{% else %}0{% endif %}">
       {% if live %}
@@ -34,33 +34,40 @@
       {% endif %}
     </p>
   </div>
-  <div class="header-actions cac40-run-header-actions">
+  <div class="header-actions trader-run-header-actions">
     {% if live %}
-    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40#cac40-live">Live settings</a>
+    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}?tab=trading&amp;ttab=live">Live settings</a>
     {% if run.mode != 'live' %}
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/clear"
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/clear"
           onsubmit="return confirm('Clear journal, decisions, and ledger snapshot?');">
       <button type="submit" class="btn-secondary">Clear history</button>
     </form>
     {% endif %}
     {% else %}
     {% if run.state.status in ('running', 'stopping') %}
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/stop">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/runs/{{ run.run_id }}/stop">
       <button type="submit" class="btn-secondary"{% if run.state.status == 'stopping' %} disabled{% endif %}>
         {% if run.state.status == 'stopping' %}Stopping…{% else %}Stop{% endif %}
       </button>
     </form>
     {% endif %}
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ run.run_id }}/delete"
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/runs/{{ run.run_id }}/delete"
           onsubmit="return confirm('{% if run.state.status in ('running', 'stopping') %}Force-delete this running backtest and all charts?{% else %}Delete this backtest and all charts?{% endif %}');">
       <button type="submit" class="btn-danger">
         {% if run.state.status in ('running', 'stopping') %}Force delete{% else %}Delete run{% endif %}
       </button>
     </form>
-    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40">All runs</a>
+    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}?tab=trading&amp;ttab=backtest">All runs</a>
     {% endif %}
   </div>
 </section>
+
+{% if live_ok %}
+<div class="callout">{{ live_ok }}</div>
+{% endif %}
+{% if live_error %}
+<div class="callout callout--danger">{{ live_error }}</div>
+{% endif %}
 
 {% if run.state.error %}
 <section class="card">
@@ -70,7 +77,7 @@
 {% endif %}
 
 {% if live %}
-{% from "cac40/_open_book.html" import open_book_table %}
+{% from "trader/_open_book.html" import open_book_table %}
 {{ open_book_table(run.report.book if run.report else none, live_mode=run.mode or 'off', heading='Open book') }}
 {% endif %}
 
@@ -78,7 +85,7 @@
 {% if report %}
 <section class="card">
   <h2>Report</h2>
-  <p class="cac40-report-stats">
+  <p class="trader-report-stats">
     <span><strong>Final equity</strong> {{ '%.2f'|format(report.final_equity or 0) }}</span>
     <span><strong>Realized PnL</strong> {{ '%.2f'|format(report.realized_pnl or 0) }}</span>
     <span><strong>Max DD</strong> {{ '%.2f'|format(report.max_drawdown or 0) }}</span>
@@ -128,16 +135,16 @@
   <h2>LLM decisions &amp; charts</h2>
   <p class="text-muted">Charts below are exactly what was sent to Gemini at each decision point, with the model analysis and RiskGate result. “Accepted” means RiskGate updated the <em>local</em> book — check Mirror below for what was pushed to IG.</p>
   {% if run.decisions %}
-  {% from "cac40/_cycle_ops_log.html" import cycle_ops_log %}
-  <div class="cac40-decision-list">
+  {% from "trader/_cycle_ops_log.html" import cycle_ops_log %}
+  <div class="trader-decision-list">
     {% for d in run.decisions %}
     {% if d.kind == 'market_closed_group' %}
-    <details class="cac40-decision cac40-decision--closed" id="cycle-{{ d.cycle_dir or loop.index }}">
+    <details class="trader-decision trader-decision--closed" id="cycle-{{ d.cycle_dir or loop.index }}">
       <summary>
         {% if d.from_ts %}
-        <time class="cac40-decision__ts js-local-datetime" datetime="{{ d.from_ts }}">{{ d.from_ts }}</time>
+        <time class="trader-decision__ts js-local-datetime" datetime="{{ d.from_ts }}">{{ d.from_ts }}</time>
         {% else %}
-        <span class="cac40-decision__ts">—</span>
+        <span class="trader-decision__ts">—</span>
         {% endif %}
         <span class="badge off">Market closed</span>
         <span class="text-muted">{{ d.heartbeat_count or 0 }} heartbeat{% if (d.heartbeat_count or 0) != 1 %}s{% endif %}</span>
@@ -152,9 +159,9 @@
         <span class="text-muted">Opens <time class="js-local-datetime" datetime="{{ d.next_open }}">{{ d.next_open }}</time></span>
         {% endif %}
       </summary>
-      <div class="cac40-decision__body">
+      <div class="trader-decision__body">
         <p class="text-muted">Idle polls while the FR40 session was closed — no OHLC, charts, or LLM.</p>
-        <ul class="cac40-closed-heartbeats">
+        <ul class="trader-closed-heartbeats">
           {% for h in d.heartbeats or [] %}
           <li>
             <time class="js-local-datetime" datetime="{{ h.ts }}">{{ h.ts }}</time>
@@ -165,12 +172,12 @@
       </div>
     </details>
     {% else %}
-    <details class="cac40-decision" id="cycle-{{ d.cycle_dir or loop.index }}" {% if loop.first %}open{% endif %}>
+    <details class="trader-decision" id="cycle-{{ d.cycle_dir or loop.index }}" {% if loop.first %}open{% endif %}>
       <summary>
         {% if d.ts %}
-        <time class="cac40-decision__ts js-local-datetime" datetime="{{ d.ts }}">{{ d.ts }}</time>
+        <time class="trader-decision__ts js-local-datetime" datetime="{{ d.ts }}">{{ d.ts }}</time>
         {% else %}
-        <span class="cac40-decision__ts">—</span>
+        <span class="trader-decision__ts">—</span>
         {% endif %}
         <span class="badge">{{ d.bias or 'no decision' }}</span>
         <span class="text-muted">S={{ d.support if d.support is not none else '—' }} · R={{ d.resistance if d.resistance is not none else '—' }}</span>
@@ -185,9 +192,9 @@
         {% set realized = pnl.realized if pnl.realized is number else (pnl.realized_session if pnl.realized_session is number else none) %}
         {% set net_upl = pnl.net_upl if pnl.net_upl is number else none %}
         {% if net_upl is not none or realized is not none %}
-        <span class="cac40-decision__pnl">
+        <span class="trader-decision__pnl">
           {% if net_upl is not none %}
-          <span class="{% if net_upl > 0 %}cac40-decision__pnl--pos{% elif net_upl < 0 %}cac40-decision__pnl--neg{% endif %}">
+          <span class="{% if net_upl > 0 %}trader-decision__pnl--pos{% elif net_upl < 0 %}trader-decision__pnl--neg{% endif %}">
             UPL {{ '%+.2f'|format(net_upl) }}
           </span>
           {% else %}
@@ -195,7 +202,7 @@
           {% endif %}
           <span class="text-muted">·</span>
           {% if realized is not none %}
-          <span class="{% if realized > 0 %}cac40-decision__pnl--pos{% elif realized < 0 %}cac40-decision__pnl--neg{% endif %}">
+          <span class="{% if realized > 0 %}trader-decision__pnl--pos{% elif realized < 0 %}trader-decision__pnl--neg{% endif %}">
             PnL {{ '%+.2f'|format(realized) }}
           </span>
           {% else %}
@@ -204,14 +211,14 @@
         </span>
         {% endif %}
       </summary>
-      <div class="cac40-decision__body">
+      <div class="trader-decision__body">
         {% if d.charts %}
-        <div class="cac40-chart-grid">
+        <div class="trader-chart-grid">
           {% for c in d.charts %}
-          <figure class="cac40-chart">
+          <figure class="trader-chart">
             <figcaption>{{ c.tf }}</figcaption>
             <button type="button"
-                    class="cac40-chart__open"
+                    class="trader-chart__open"
                     data-src="{{ c.url }}"
                     data-caption="{{ c.tf }} · {{ d.ts }}"
                     data-filename="{{ c.file }}"
@@ -226,7 +233,7 @@
         {% endif %}
 
         {% set an = (d.decision.analysis if d.decision else {}) or {} %}
-        <div class="cac40-decision__notes">
+        <div class="trader-decision__notes">
           {% if an.rsi_note %}<p><strong>RSI:</strong> {{ an.rsi_note }}</p>{% endif %}
           {% if an.pivot_note %}<p><strong>Pivot:</strong> {{ an.pivot_note }}</p>{% endif %}
         </div>
@@ -252,16 +259,22 @@
         </table>
         {% endif %}
 
-        {% if d.executed or d.rejected or d.mirror or d.llm_error or d.llm_mode == 'charts_only' %}
-        <div class="cac40-gate-result">
+        {% if d.executed or d.rejected or d.notes or d.mirror or d.llm_error or d.llm_mode == 'charts_only' or d.replay_of %}
+        <div class="trader-gate-result">
           {% if d.llm_mode == 'charts_only' %}
           <p class="text-muted"><strong>Charts only</strong> — Gemini was not called.</p>
           {% endif %}
           {% if d.executed %}
           <p><strong>Accepted (ledger):</strong> <code>{{ d.executed|join(', ') }}</code></p>
           {% endif %}
+          {% if d.notes %}
+          <p><strong>Notes:</strong> <code>{{ d.notes|join(', ') }}</code></p>
+          {% endif %}
           {% if d.rejected %}
           <p><strong>Rejected:</strong> <code>{{ d.rejected|join(', ') }}</code></p>
+          {% endif %}
+          {% if d.replay_of %}
+          <p class="text-muted"><strong>Replay of</strong> <code>{{ d.replay_of }}</code></p>
           {% endif %}
           {% if d.mirror %}
           {% for m in d.mirror %}
@@ -284,7 +297,16 @@
 
         {{ cycle_ops_log(d) }}
 
-        <details class="cac40-decision__raw">
+        {% if live and dev_mode and d.decision and d.actions and d.cycle_dir %}
+        <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/replay-decision" class="no-loader"
+              style="margin:0.75rem 0;"
+              onsubmit="return confirm('Replay this LLM decision ({{ d.cycle_dir }}) on the current book?\n\nGemini will NOT be called — RiskGate + IG mirror only.');">
+          <input type="hidden" name="cycle_dir" value="{{ d.cycle_dir }}">
+          <button type="submit" class="btn-secondary btn-sm" data-loading="Replaying…">Replay this decision…</button>
+        </form>
+        {% endif %}
+
+        <details class="trader-decision__raw">
           <summary>Raw decision JSON</summary>
           <pre>{{ d.decision | dumps_json if d.decision else 'null' }}</pre>
         </details>
@@ -298,39 +320,39 @@
   {% endif %}
 
   {% if run.state.status == 'running' or run.state.status == 'stopping' %}
-  <p class="text-muted" id="cac40-run-poll-hint">Updating progress… (reloads quietly when new decisions arrive)</p>
+  <p class="text-muted" id="trader-run-poll-hint">Updating progress… (reloads quietly when new decisions arrive)</p>
   {% elif live and run.mode == 'live' %}
   <p class="text-muted">Live report — refresh the page manually when you want the latest cycles.</p>
   {% endif %}
 </section>
 
-<dialog id="cac40-lightbox" class="cac40-lightbox" aria-label="Chart viewer">
-  <div class="cac40-lightbox__bar">
-    <p class="cac40-lightbox__caption" id="cac40-lightbox-caption"></p>
-    <div class="cac40-lightbox__bar-actions">
-      <a class="btn-secondary" id="cac40-lightbox-download" href="#" download>Download</a>
-      <button type="button" class="btn-secondary" id="cac40-lightbox-close" aria-label="Close">Close</button>
+<dialog id="trader-lightbox" class="trader-lightbox" aria-label="Chart viewer">
+  <div class="trader-lightbox__bar">
+    <p class="trader-lightbox__caption" id="trader-lightbox-caption"></p>
+    <div class="trader-lightbox__bar-actions">
+      <a class="btn-secondary" id="trader-lightbox-download" href="#" download>Download</a>
+      <button type="button" class="btn-secondary" id="trader-lightbox-close" aria-label="Close">Close</button>
     </div>
   </div>
-  <div class="cac40-lightbox__stage">
-    <button type="button" class="cac40-lightbox__hit cac40-lightbox__hit--prev" id="cac40-lightbox-prev" aria-label="Previous chart"></button>
-    <img id="cac40-lightbox-img" class="cac40-lightbox__img" alt="">
-    <button type="button" class="cac40-lightbox__hit cac40-lightbox__hit--next" id="cac40-lightbox-next" aria-label="Next chart"></button>
+  <div class="trader-lightbox__stage">
+    <button type="button" class="trader-lightbox__hit trader-lightbox__hit--prev" id="trader-lightbox-prev" aria-label="Previous chart"></button>
+    <img id="trader-lightbox-img" class="trader-lightbox__img" alt="">
+    <button type="button" class="trader-lightbox__hit trader-lightbox__hit--next" id="trader-lightbox-next" aria-label="Next chart"></button>
   </div>
 </dialog>
 
 <script>
 (function () {
-  const openers = Array.from(document.querySelectorAll('.cac40-chart__open'));
+  const openers = Array.from(document.querySelectorAll('.trader-chart__open'));
   if (!openers.length) return;
 
-  const dialog = document.getElementById('cac40-lightbox');
-  const img = document.getElementById('cac40-lightbox-img');
-  const caption = document.getElementById('cac40-lightbox-caption');
-  const download = document.getElementById('cac40-lightbox-download');
-  const btnClose = document.getElementById('cac40-lightbox-close');
-  const btnPrev = document.getElementById('cac40-lightbox-prev');
-  const btnNext = document.getElementById('cac40-lightbox-next');
+  const dialog = document.getElementById('trader-lightbox');
+  const img = document.getElementById('trader-lightbox-img');
+  const caption = document.getElementById('trader-lightbox-caption');
+  const download = document.getElementById('trader-lightbox-download');
+  const btnClose = document.getElementById('trader-lightbox-close');
+  const btnPrev = document.getElementById('trader-lightbox-prev');
+  const btnNext = document.getElementById('trader-lightbox-next');
   let index = 0;
 
   function show(i) {
@@ -388,7 +410,7 @@
 })();
 
 (function () {
-  const SCROLL_KEY = 'cac40-run-scroll:' + location.pathname;
+  const SCROLL_KEY = 'trader-run-scroll:' + location.pathname;
   try {
     const saved = sessionStorage.getItem(SCROLL_KEY);
     if (saved != null) {
@@ -400,14 +422,14 @@
     }
   } catch (_) {}
 
-  const sub = document.getElementById('cac40-run-subtitle');
+  const sub = document.getElementById('trader-run-subtitle');
   if (!sub || sub.dataset.poll !== '1') return;
   const url = sub.dataset.pollUrl;
   if (!url) return;
-  const hint = document.getElementById('cac40-run-poll-hint');
+  const hint = document.getElementById('trader-run-poll-hint');
   const active = new Set(['running', 'stopping', 'pending']);
   let timer = null;
-  let lastDecisionsCount = document.querySelectorAll('.cac40-decision').length;
+  let lastDecisionsCount = document.querySelectorAll('.trader-decision').length;
   let reloading = false;
 
   function softReload(message) {

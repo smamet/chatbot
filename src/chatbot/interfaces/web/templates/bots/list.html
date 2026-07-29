@@ -38,6 +38,7 @@
       <td>{% if t.hooks_enabled %}<span class="badge on">ON</span>{% else %}<span class="badge off">OFF</span>{% endif %}</td>
       {% if user.role == 'admin' %}
       <td class="bot-list-actions">
+        <a href="/dashboard/bots/{{ t.slug }}/duplicate" class="btn-secondary btn-sm">Duplicate</a>
         <a href="/dashboard/bots/{{ t.slug }}/permissions" class="btn-secondary btn-sm">Edit</a>
       </td>
       {% endif %}

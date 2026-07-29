@@ -1,9 +1,9 @@
 {% extends "base.html" %}
-{% from "cac40/_open_book.html" import open_book_diff_table, status_badge %}
+{% from "trader/_open_book.html" import open_book_diff_table, status_badge %}
 {% block body %}
 <section class="page-header">
   <div>
-    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40?tab=live">← Live trading</a></p>
+    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}?tab=trading&amp;ttab=live">← Live trading</a></p>
     <h1>Book vs IG</h1>
     <p class="subtitle">
       Preview what <strong>Apply sync</strong> would change. Auto-sync still runs each cycle —
@@ -12,12 +12,12 @@
   </div>
   <div class="header-actions">
     {% if preview and preview.ok and live_mode != 'off' %}
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/sync-book"
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/sync-book"
           onsubmit="return confirm('Rebuild the local open book from IG? This applies the preview below.');">
       <button type="submit" class="btn-primary" data-loading="Syncing book…">Apply sync from IG</button>
     </form>
     {% endif %}
-    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/book-sync">Refresh preview</a>
+    <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}/trader/live/book-sync">Refresh preview</a>
   </div>
 </section>
 
@@ -37,7 +37,7 @@
 {% set counts = preview.counts or {} %}
 <section class="card">
   <h2>Open book diff</h2>
-  <p class="cac40-report-stats">
+  <p class="trader-report-stats">
     <span><strong>In sync</strong> {{ counts.in_sync or 0 }}</span>
     <span><strong>New from IG</strong> {{ counts.new or 0 }}</span>
     <span><strong>Remove (not on IG)</strong> {{ counts.remove or 0 }}</span>
@@ -50,7 +50,7 @@
   {% if (counts.new or 0) == 0 and (counts.remove or 0) == 0 and (counts.reopened or 0) == 0 %}
   <p class="field-hint">Local open book matches IG for all dealIds.</p>
   {% else %}
-  <p class="field-hint cac40-sync-warn">
+  <p class="field-hint trader-sync-warn">
     Discrepancies detected — red rows would be dropped from local; “new” rows would be imported.
   </p>
   {% endif %}
@@ -69,7 +69,7 @@
     </thead>
     <tbody>
       {% for t in preview.closed_trades or [] %}
-      <tr class="{% if t.status == 'reopened' %}cac40-book__row--remove{% endif %}">
+      <tr class="{% if t.status == 'reopened' %}trader-book__row--remove{% endif %}">
         <td>{{ t.id }}</td>
         <td>{{ t.side or '—' }}</td>
         <td>{% if t.deal_id %}<code>{{ t.deal_id }}</code>{% else %}—{% endif %}</td>
@@ -89,11 +89,11 @@
 </section>
 {% endif %}
 
-<section class="card cac40-sync-log" id="desync-log">
-  <div class="cac40-live-heading">
+<section class="card trader-sync-log" id="desync-log">
+  <div class="trader-live-heading">
     <h2>Desync log</h2>
     {% if sync_log %}
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/sync-log/clear"
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/sync-log/clear"
           onsubmit="return confirm('Flush the desync log? This cannot be undone.');">
       <button type="submit" class="btn-secondary btn-sm">Flush log</button>
     </form>
@@ -104,19 +104,19 @@
     open book actually drifted vs IG — click a row to see the diff (legs/orders added, dropped, closed).
   </p>
   {% if sync_log %}
-  <ul class="cac40-sync-log__list">
+  <ul class="trader-sync-log__list">
     {% for e in sync_log %}
-    <li class="cac40-sync-log__item">
-      <details class="cac40-sync-log__details">
-        <summary class="cac40-sync-log__summary">
-          <div class="cac40-sync-log__head">
+    <li class="trader-sync-log__item">
+      <details class="trader-sync-log__details">
+        <summary class="trader-sync-log__summary">
+          <div class="trader-sync-log__head">
             {% if e.ts %}
             <time class="js-local-datetime" datetime="{{ e.ts }}">{{ e.ts }}</time>
             {% else %}—{% endif %}
             <span class="badge failed">{{ e.source or 'cycle' }}</span>
             {% if e.cycle_id %}<code>{{ e.cycle_id }}</code>{% endif %}
           </div>
-          <div class="cac40-sync-log__meta text-muted">
+          <div class="trader-sync-log__meta text-muted">
             {% if e.dropped %}dropped {{ e.dropped|length }} · {% endif %}
             {% if e.imported_orders %}+orders {{ e.imported_orders|length }} · {% endif %}
             {% if e.opened %}+legs {{ e.opened|length }} · {% endif %}
@@ -124,12 +124,12 @@
             {% if e.quarantined %}quarantined {{ e.quarantined|length }} · {% endif %}
             {% if e.changed or e.desync %}delta · {% endif %}
             {% if e.warnings %}warnings {{ e.warnings|length }}{% endif %}
-            <span class="cac40-sync-log__hint">details</span>
+            <span class="trader-sync-log__hint">details</span>
           </div>
         </summary>
-        <div class="cac40-sync-log__diff">
+        <div class="trader-sync-log__diff">
           {% if e.opened %}
-          <p class="cac40-sync-log__diff-title">+ Legs (from IG)</p>
+          <p class="trader-sync-log__diff-title">+ Legs (from IG)</p>
           <ul>
             {% for row in e.opened %}
             <li>
@@ -144,7 +144,7 @@
           </ul>
           {% endif %}
           {% if e.imported_orders %}
-          <p class="cac40-sync-log__diff-title">+ Orders (from IG)</p>
+          <p class="trader-sync-log__diff-title">+ Orders (from IG)</p>
           <ul>
             {% for row in e.imported_orders %}
             <li>
@@ -161,7 +161,7 @@
           </ul>
           {% endif %}
           {% if e.dropped %}
-          <p class="cac40-sync-log__diff-title">Dropped local orders</p>
+          <p class="trader-sync-log__diff-title">Dropped local orders</p>
           <ul>
             {% for row in e.dropped %}
             <li>
@@ -178,7 +178,7 @@
           </ul>
           {% endif %}
           {% if e.closed %}
-          <p class="cac40-sync-log__diff-title">Closed local legs (gone on IG)</p>
+          <p class="trader-sync-log__diff-title">Closed local legs (gone on IG)</p>
           <ul>
             {% for row in e.closed %}
             <li>
@@ -191,7 +191,7 @@
           </ul>
           {% endif %}
           {% if e.quarantined %}
-          <p class="cac40-sync-log__diff-title">Quarantined phantom closes</p>
+          <p class="trader-sync-log__diff-title">Quarantined phantom closes</p>
           <ul>
             {% for row in e.quarantined %}
             <li><code>{{ row }}</code></li>
@@ -199,7 +199,7 @@
           </ul>
           {% endif %}
           {% if e.warnings %}
-          <p class="cac40-sync-log__diff-title">Warnings</p>
+          <p class="trader-sync-log__diff-title">Warnings</p>
           <ul>
             {% for w in e.warnings %}
             <li>{{ w }}</li>

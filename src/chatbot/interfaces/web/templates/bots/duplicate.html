@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>Duplicate bot</h1>
+  <p class="subtitle">Clone <strong>{{ source.name }}</strong> (<code>{{ source.slug }}</code>)</p>
+</div>
+<div class="card">
+  {% if error %}
+  <div class="callout callout--danger">{{ error }}</div>
+  {% endif %}
+  <p class="text-muted">
+    Copies credentials and settings (connectors, integrations, mail connections, prompt, config,
+    trader strategy with mode Off). Does <strong>not</strong> copy documents, RAG index, chats,
+    validation queue, or live trading journals. A new API token is generated.
+  </p>
+  <form method="post" action="/dashboard/bots/{{ source.slug }}/duplicate">
+    <label>Name <input type="text" name="name" value="{{ name or '' }}" required></label>
+    <label>Slug <small>(optional)</small> <input type="text" name="new_slug" value="{{ slug or '' }}" placeholder="auto from name"></label>
+    {% if source.is_trader %}
+    <fieldset class="form-section">
+      <legend class="form-section-title">Market (override for the clone)</legend>
+      <label>Market profile
+        <select name="market_profile" id="dup-market-profile">
+          {% for p in market_profiles %}
+          <option value="{{ p.id }}"
+                  data-symbol="{{ p.default_symbol }}"
+                  data-epic="{{ p.default_epic }}"
+                  {% if (market_profile or source.config.trader.market_profile) == p.id %}selected{% endif %}>
+            {{ p.label }}
+          </option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Symbol <input type="text" name="trader_symbol" id="dup-trader-symbol" value="{{ trader_symbol or source.config.trader.symbol }}"></label>
+      <label>IG epic <input type="text" name="trader_epic" id="dup-trader-epic" value="{{ trader_epic or source.config.trader.epic }}"></label>
+      <div class="checkbox-row">
+        <input type="checkbox" name="reset_prompt_from_profile" id="dup-reset-prompt" value="on"
+               {% if reset_prompt_from_profile %}checked{% endif %}>
+        <label for="dup-reset-prompt">Reset system prompt from market profile</label>
+      </div>
+    </fieldset>
+    {% endif %}
+    <div class="form-actions">
+      <button type="submit" class="btn btn-primary" data-loading="Duplicating…">Duplicate bot</button>
+      <a href="/dashboard/bots/{{ source.slug }}" class="btn-secondary">Cancel</a>
+    </div>
+  </form>
+</div>
+{% if source.is_trader %}
+<script>
+(function () {
+  const sel = document.getElementById('dup-market-profile');
+  const sym = document.getElementById('dup-trader-symbol');
+  const epic = document.getElementById('dup-trader-epic');
+  if (!sel || !sym || !epic) return;
+  sel.addEventListener('change', () => {
+    const opt = sel.options[sel.selectedIndex];
+    if (opt && opt.dataset.symbol) sym.value = opt.dataset.symbol;
+    if (opt && opt.dataset.epic) epic.value = opt.dataset.epic;
+  });
+})();
+</script>
+{% endif %}
+{% endblock %}

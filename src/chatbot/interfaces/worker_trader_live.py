@@ -5,7 +5,7 @@ import logging
 import time
 
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.application.cac40_live_service import run_due_live_cycles
+from chatbot.application.trader_live_service import run_due_live_cycles
 from chatbot.config.settings import get_settings
 
 logging.basicConfig(level=logging.INFO)
@@ -36,7 +36,7 @@ def main() -> None:
             logger.info("%s", line)
         return
 
-    interval = max(1, settings.cac40_live_poll_seconds)
+    interval = max(1, settings.trader_live_poll_seconds)
     logger.info("CAC40 live worker started (poll every %ss)", interval)
     while True:
         try:

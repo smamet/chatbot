@@ -1,9 +1,55 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from decimal import Decimal
+from enum import StrEnum
+
+
+class BotType(StrEnum):
+    ASSISTANT = "assistant"
+    TRADER = "trader"
+
+
+@dataclass(frozen=True)
+class TraderSettings:
+    """First-class trading bot settings (not an Integrations row)."""
+
+    market_profile: str = "cac40"
+    symbol: str = "CAC40"
+    epic: str = "IX.D.CAC.BMU.IP"
+    fundmanager_url: str = ""
+    fundmanager_token: str = ""
+    max_open_positions: int = 4
+
+    def to_dict(self) -> dict:
+        return {
+            "market_profile": self.market_profile,
+            "symbol": self.symbol,
+            "epic": self.epic,
+            "fundmanager_url": self.fundmanager_url,
+            "fundmanager_token": self.fundmanager_token,
+            "max_open_positions": self.max_open_positions,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict | None) -> TraderSettings:
+        if not isinstance(data, dict):
+            return cls()
+        try:
+            max_legs = int(data.get("max_open_positions", cls.max_open_positions))
+        except (TypeError, ValueError):
+            max_legs = cls.max_open_positions
+        return cls(
+            market_profile=str(data.get("market_profile") or cls.market_profile).strip()
+            or cls.market_profile,
+            symbol=str(data.get("symbol") or cls.symbol).strip() or cls.symbol,
+            epic=str(data.get("epic") or cls.epic).strip() or cls.epic,
+            fundmanager_url=str(data.get("fundmanager_url") or "").strip(),
+            fundmanager_token=str(data.get("fundmanager_token") or ""),
+            max_open_positions=max(1, max_legs),
+        )
 
 
 @dataclass(frozen=True)
@@ -26,6 +72,7 @@ class TenantConfig:
     allowed_connectors: tuple[str, ...] = ()
     # Empty = all integration types allowed (backward compatible).
     allowed_integrations: tuple[str, ...] = ()
+    trader: TraderSettings = field(default_factory=TraderSettings)
 
     def to_json(self) -> str:
         return json.dumps(
@@ -46,6 +93,7 @@ class TenantConfig:
                 "email_blocked_senders": list(self.email_blocked_senders),
                 "allowed_connectors": list(self.allowed_connectors),
                 "allowed_integrations": list(self.allowed_integrations),
+                "trader": self.trader.to_dict(),
             },
             ensure_ascii=True,
         )
@@ -56,6 +104,9 @@ class TenantConfig:
         if legacy_hook_instructions and str(legacy_hook_instructions).strip():
             return ["core.orders"]
         return []
+
+    def with_trader(self, **kwargs) -> TenantConfig:
+        return replace(self, trader=replace(self.trader, **kwargs))
 
     @classmethod
     def from_json(cls, raw: str | None) -> TenantConfig:
@@ -97,6 +148,7 @@ class TenantConfig:
             )
         else:
             allowed_integrations = ()
+        trader_raw = data.get("trader")
         return cls(
             chat_model=str(data.get("chat_model", cls.chat_model)),
             embedding_model=str(data.get("embedding_model", cls.embedding_model)),
@@ -114,6 +166,7 @@ class TenantConfig:
             email_blocked_senders=email_blocked_senders,
             allowed_connectors=allowed_connectors,
             allowed_integrations=allowed_integrations,
+            trader=TraderSettings.from_dict(trader_raw if isinstance(trader_raw, dict) else None),
         )
 
 
@@ -129,8 +182,17 @@ class Tenant:
     active: bool
     created_at: datetime
     updated_at: datetime
+    bot_type: BotType = BotType.ASSISTANT
     client_billing_input_per_million_usd: Decimal | None = None
     client_billing_output_per_million_usd: Decimal | None = None
+
+    @property
+    def is_trader(self) -> bool:
+        return self.bot_type == BotType.TRADER
+
+    @property
+    def is_assistant(self) -> bool:
+        return self.bot_type == BotType.ASSISTANT
 
     @property
     def hooks_enabled(self) -> bool:

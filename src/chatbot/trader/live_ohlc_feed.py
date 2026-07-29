@@ -10,10 +10,10 @@ from typing import Any, Callable
 
 import pandas as pd
 
-from chatbot.cac40.chart_renderer import pivot_history_pad
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.ig_connector import IgApiError, IgConnector
-from chatbot.cac40.ohlc_store import (
+from chatbot.trader.chart_renderer import pivot_history_pad
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.ig_connector import IgApiError, IgConnector
+from chatbot.trader.ohlc_store import (
     append_bars,
     assert_append_contiguous,
     connects_15m,
@@ -94,7 +94,7 @@ def _fetch_range(
     end: pd.Timestamp,
     timezone_name: str,
 ) -> pd.DataFrame:
-    from chatbot.cac40.ig_ohlc import catchup_ohlc_15m
+    from chatbot.trader.ig_ohlc import catchup_ohlc_15m
 
     df, mode = catchup_ohlc_15m(
         connector, start=start, end=end, timezone=timezone_name
@@ -240,7 +240,7 @@ def top_up_csv_from_connector(
 
 def build_live_frames(
     df_15: pd.DataFrame,
-    config: Cac40Config,
+    config: TraderConfig,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Window 15m/1H/1D frames (same sizes as the old IG lookbacks)."""
     if df_15.empty:
@@ -263,16 +263,24 @@ def build_live_frames(
 def prepare_live_ohlc_feed(
     path: Path,
     *,
-    config: Cac40Config,
+    config: TraderConfig,
     connector: IgConnector | None = None,
     top_up: bool = True,
     now: datetime | None = None,
+    stream_healthy: bool | None = None,
+    stream_stale: bool = False,
+    stream_mid: float | None = None,
+    stream_error: str | None = None,
 ) -> LiveOhlcFeed:
     """
     Load local 15m CSV, optionally top up bars from IG, resample higher TFs.
 
     Never bootstraps an empty CSV (caller must Sync/upload once).
     Skips LLM when the chart window still contains mid-session holes.
+
+    When ``stream_healthy`` is True, skips hot-path REST ``/prices`` top-up
+    unless the CSV is behind the expected closed bar (one gap-repair fetch).
+    When ``stream_stale`` is True during an open session, fail-closed for LLM.
     """
     tz = str(config.data_timezone or "Europe/Paris")
     empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -295,7 +303,37 @@ def prepare_live_ohlc_feed(
     skip_llm = False
     error: str | None = None
 
-    if top_up and connector is not None:
+    # Stream-aware top-up: healthy → skip /prices unless CSV behind expected bar.
+    do_top_up = bool(top_up and connector is not None)
+    if stream_stale:
+        do_top_up = False
+        stale = True
+        skip_llm = True
+        msg = stream_error or "Lightstreamer OHLC stream is stale — skipping LLM"
+        error = msg
+        warnings.append(msg)
+    elif stream_healthy:
+        do_top_up = False
+        try:
+            peek = load_ohlc_csv(path, timezone=tz)
+            if not peek.empty:
+                last_ts = pd.Timestamp(peek.index[-1])
+                last_local = (
+                    last_ts.tz_convert(tz) if last_ts.tzinfo else last_ts.tz_localize(tz)
+                )
+                expected = expected_last_closed_15m(now=now, tz=tz)
+                if last_local < expected and not is_natural_session_break(
+                    last_local, expected
+                ):
+                    do_top_up = True
+                    warnings.append(
+                        "stream_gap_repair: CSV behind expected closed bar — one REST top-up"
+                    )
+        except Exception as exc:
+            warnings.append(f"stream_gap_check_failed: {exc}")
+            do_top_up = bool(top_up and connector is not None)
+
+    if do_top_up and connector is not None:
         try:
             result = top_up_csv_from_connector(
                 path,
@@ -423,6 +461,13 @@ def prepare_live_ohlc_feed(
         logger.error(gap_msg)
 
     last_price = float(df_full["close"].iloc[-1])
+    if stream_mid is not None:
+        try:
+            mid_f = float(stream_mid)
+            if mid_f > 0:
+                last_price = mid_f
+        except (TypeError, ValueError):
+            pass
     return LiveOhlcFeed(
         ohlc_15=w15,
         ohlc_1h=w1h,

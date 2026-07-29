@@ -5,10 +5,10 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from chatbot.cac40.backtest_engine import BacktestEngine
-from chatbot.cac40.chart_renderer import render_ohlc_chart
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.ohlc_store import slice_ohlc_period, window_asof
+from chatbot.trader.backtest_engine import BacktestEngine
+from chatbot.trader.chart_renderer import render_ohlc_chart
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.ohlc_store import slice_ohlc_period, window_asof
 
 
 def _make_ohlc(n: int = 200, freq: str = "15min") -> pd.DataFrame:
@@ -45,7 +45,7 @@ def test_chart_window_uses_full_history_before_period() -> None:
 
 def test_rsi_seeded_across_display_window(tmp_path: Path) -> None:
     """With extra seed bars, displayed RSI should have no leading NaN/flat-50 pad."""
-    from chatbot.cac40.chart_renderer import _rsi
+    from chatbot.trader.chart_renderer import _rsi
 
     df = _make_ohlc(40)
     display = 20
@@ -67,7 +67,7 @@ def test_charts_only_skips_llm(tmp_path: Path) -> None:
     out.to_csv(csv_path, index=False)
 
     run_dir = tmp_path / "run"
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         backtest_period="all",
         warmup_bars=14,
         lookback_15m=20,
@@ -80,7 +80,7 @@ def test_charts_only_skips_llm(tmp_path: Path) -> None:
         allow_market_orders=False,
     )
     engine = BacktestEngine(cfg, ohlc_path=csv_path, run_dir=run_dir, api_key="")
-    with patch("chatbot.cac40.backtest_engine.GeminiDecisionClient") as mock_cls:
+    with patch("chatbot.trader.backtest_engine.GeminiDecisionClient") as mock_cls:
         mock_llm = MagicMock()
         mock_cls.return_value = mock_llm
         report = engine.run()
@@ -101,7 +101,7 @@ def test_warmup_skips_llm_until_enough_history(tmp_path: Path) -> None:
     out.to_csv(csv_path, index=False)
 
     run_dir = tmp_path / "run"
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         backtest_period="all",
         warmup_bars=14,
         lookback_15m=20,
@@ -114,10 +114,10 @@ def test_warmup_skips_llm_until_enough_history(tmp_path: Path) -> None:
         allow_market_orders=False,
     )
     engine = BacktestEngine(cfg, ohlc_path=csv_path, run_dir=run_dir, api_key="x")
-    with patch("chatbot.cac40.backtest_engine.GeminiDecisionClient") as mock_cls:
+    with patch("chatbot.trader.backtest_engine.GeminiDecisionClient") as mock_cls:
         mock_llm = MagicMock()
         mock_cls.return_value = mock_llm
-        with patch("chatbot.cac40.backtest_engine.render_multi_timeframe", return_value={}):
+        with patch("chatbot.trader.backtest_engine.render_multi_timeframe", return_value={}):
             engine.run()
         mock_llm.decide.assert_not_called()
 
@@ -130,7 +130,7 @@ def test_warmup_allows_llm_when_history_sufficient(tmp_path: Path) -> None:
     out.to_csv(csv_path, index=False)
 
     run_dir = tmp_path / "run"
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         backtest_period="all",
         warmup_bars=14,
         lookback_15m=20,
@@ -144,18 +144,18 @@ def test_warmup_allows_llm_when_history_sufficient(tmp_path: Path) -> None:
     )
     engine = BacktestEngine(cfg, ohlc_path=csv_path, run_dir=run_dir, api_key="x")
 
-    from chatbot.cac40.models import LlmAnalysis, LlmDecision
+    from chatbot.trader.models import LlmAnalysis, LlmDecision
 
     fake = LlmDecision(
         analysis=LlmAnalysis(support=7000.0, resistance=7100.0, bias="hold"),
         actions=[],
     )
-    with patch("chatbot.cac40.backtest_engine.GeminiDecisionClient") as mock_cls:
+    with patch("chatbot.trader.backtest_engine.GeminiDecisionClient") as mock_cls:
         mock_llm = MagicMock()
         mock_llm.decide.return_value = fake
         mock_cls.return_value = mock_llm
         with patch(
-            "chatbot.cac40.backtest_engine.render_multi_timeframe",
+            "chatbot.trader.backtest_engine.render_multi_timeframe",
             return_value={"15m": b"\x89PNG"},
         ) as mock_render:
             report = engine.run()

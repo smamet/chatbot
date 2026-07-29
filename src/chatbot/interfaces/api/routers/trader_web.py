@@ -7,8 +7,7 @@ from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Redirect
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
-from chatbot.application.cac40_backtest_service import (
+from chatbot.application.trader_backtest_service import (
     default_ohlc_path,
     delete_run,
     get_run,
@@ -22,41 +21,34 @@ from chatbot.application.cac40_backtest_service import (
     stop_run,
     sync_ohlc_from_ig,
 )
-from chatbot.application.cac40_live_service import (
-    LIVE_CYCLE_SECONDS,
+from chatbot.application.trader_live_service import (
     adopt_ig_book,
+    build_live_panel_snapshot,
     clear_live_history,
     clear_sync_log,
     get_live_report,
-    list_live_cycles,
     load_live_config,
     preview_ig_book,
-    read_live_book,
-    read_live_status,
-    read_live_worker_status,
     read_sync_log,
+    replay_live_decision,
     resolve_live_chart_file,
-    resolve_primary_ig_config,
     run_live_cycle_now,
     save_live_config,
     set_live_mode,
 )
 from chatbot.application.connector_service import ConnectorService
-from chatbot.application.integration_service import IntegrationService
 from chatbot.application.tenant_service import TenantService
 from chatbot.application.user_service import UserService
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.chart_renderer import normalize_pivot_period
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.chart_renderer import normalize_pivot_period
 from chatbot.config.settings import Settings
-from chatbot.domain.models.integration import IntegrationType
-from chatbot.domain.models.integration_schema import is_integration_allowed
 from chatbot.domain.models.tenant import Tenant
 from chatbot.domain.models.user import User
 from chatbot.interfaces.api.deps import get_session, get_settings_dep, get_tenant_service
 from chatbot.interfaces.web.deps import get_user_service, require_user
 from chatbot.interfaces.web.templates import templates
 
-router = APIRouter(prefix="/dashboard", tags=["cac40"])
+router = APIRouter(prefix="/dashboard", tags=["trader"])
 
 
 def _tenant_or_404(tenant_service: TenantService, slug: str) -> Tenant:
@@ -71,160 +63,60 @@ def _require_access(user: User, user_service: UserService, tenant: Tenant) -> No
         raise HTTPException(status_code=403, detail="Forbidden")
 
 
-def _require_cac40_active(tenant: Tenant, session: Session) -> None:
-    if not is_integration_allowed(
-        tenant.config.allowed_integrations, IntegrationType.CAC40_BACKTEST.value
-    ):
+def _require_trader_active(tenant: Tenant, session: Session) -> None:
+    del session  # reserved for future session-scoped checks
+    if not tenant.is_trader:
         raise HTTPException(
             status_code=403,
-            detail="CAC40 Backtest integration is not allowed for this bot",
-        )
-    active = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
-        tenant.id, type=IntegrationType.CAC40_BACKTEST
-    )
-    if active is None:
-        raise HTTPException(
-            status_code=403,
-            detail="CAC40 Backtest integration is not active. Save it as Active on the Integrations tab.",
+            detail="Trading is only available for trader bots",
         )
 
 
-@router.get("/bots/{slug}/cac40", response_class=HTMLResponse)
-def cac40_index(
+def _trader_integ_cfg(tenant: Tenant) -> dict:
+    from chatbot.domain.trader_access import trader_settings_as_integration_dict
+
+    return trader_settings_as_integration_dict(tenant)
+
+
+@router.get("/bots/{slug}/trader", response_class=HTMLResponse)
+def trader_index(
     request: Request,
     slug: str,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
-    settings: Settings = Depends(get_settings_dep),
     session: Session = Depends(get_session),
 ):
+    """Legacy URL — Trading now lives on the bot detail tab."""
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
-    runs = list_runs(settings, slug)
-    dataset = ohlc_info(settings, slug)
-    ig_config = ConnectorService(SqlAlchemyConnectorRepository(session)).get_ig_config(
-        tenant.id
-    )
-    integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
-        tenant.id, type=IntegrationType.CAC40_BACKTEST
-    )
-    integ_cfg = dict(integration.config) if integration else {}
-    defaults = Cac40Config().to_dict()
-    defaults["symbol"] = str(integ_cfg.get("symbol") or defaults["symbol"] or "CAC40")
-    defaults["epic"] = str(integ_cfg.get("epic") or defaults["epic"] or "IX.D.CAC.BMU.IP")
-    if integ_cfg.get("max_open_positions") not in (None, ""):
-        try:
-            defaults["max_open_positions"] = int(integ_cfg["max_open_positions"])
-        except (TypeError, ValueError):
-            pass
+    _require_trader_active(tenant, session)
+    ttab = request.query_params.get("ttab") or request.query_params.get("tab") or "live"
+    if ttab not in ("data", "live", "backtest"):
+        ttab = "live"
+    # Preserve flash query params.
+    qs = []
+    for key in (
+        "upload_error",
+        "upload_ok",
+        "sync_error",
+        "sync_ok",
+        "live_ok",
+        "live_error",
+    ):
+        val = request.query_params.get(key)
+        if val:
+            from urllib.parse import quote
 
-    live_cfg = load_live_config(settings, slug)
-    live_strategy = {**defaults, **(live_cfg.get("strategy") or {})}
-    live_status = read_live_status(settings, slug)
-    live_worker = read_live_worker_status(settings)
-    ohlc_sync = read_ohlc_sync_status(settings, slug)
-    from chatbot.cac40.ig_allowance import pick_ig_price_allowance
-    from chatbot.cac40.market_calendar import session_snapshot
-
-    market_session = session_snapshot(
-        flatten_lead_minutes=int(live_strategy.get("flatten_lead_minutes") or 30),
-        flatten_enabled=bool(live_strategy.get("flatten_before_close", True)),
+            qs.append(f"{key}={quote(val)}")
+    extra = ("&" + "&".join(qs)) if qs else ""
+    return RedirectResponse(
+        url=f"/dashboard/bots/{slug}?tab=trading&ttab={ttab}{extra}",
+        status_code=303,
     )
 
-    ig_price_allowance = pick_ig_price_allowance(
-        live_status.get("ig_price_allowance")
-        if isinstance(live_status.get("ig_price_allowance"), dict)
-        else None,
-        ohlc_sync.get("ig_price_allowance")
-        if isinstance(ohlc_sync.get("ig_price_allowance"), dict)
-        else None,
-    )
-    ig_list = ConnectorService(SqlAlchemyConnectorRepository(session)).list_ig(tenant.id)
-    ig_connectors = [
-        {
-            "id": c.id,
-            "name": str(c.config.get("name") or f"IG #{c.id}"),
-            "acc_type": str(c.config.get("acc_type") or "DEMO").upper(),
-            "epic": str(c.config.get("epic") or "—"),
-            "active": c.active,
-            "selected": c.id in (live_cfg.get("ig_connector_ids") or []),
-        }
-        for c in ig_list
-    ]
-    last_cycle = live_status.get("last_cycle_at") or live_status.get("finished_at")
-    worker_finished = live_worker.get("finished_at")
-    stale = False
-    awaiting_first_cycle = False
-    if live_cfg["mode"] != "off":
-        # Worker health = global poll heartbeat (every CAC40_LIVE_POLL_SECONDS).
-        # Bot cycles only every LIVE_CYCLE_SECONDS (~15m), so do not treat
-        # "no recent bot cycle" as a dead worker.
-        heartbeat = worker_finished or last_cycle
-        if heartbeat:
-            try:
-                from datetime import datetime, timezone
-
-                finished = datetime.fromisoformat(str(heartbeat).replace("Z", "+00:00"))
-                age = (
-                    datetime.now(timezone.utc) - finished.astimezone(timezone.utc)
-                ).total_seconds()
-                # ~3 poll intervals (default poll 60s → ~3 min)
-                poll = max(60, int(settings.cac40_live_poll_seconds or 60))
-                stale = age > poll * 3
-            except Exception:
-                stale = True
-        else:
-            stale = True
-        awaiting_first_cycle = not bool(last_cycle) and not stale
-
-
-    return templates.TemplateResponse(
-        request,
-        "cac40/index.html",
-        {
-            "user": user,
-            "tenant": tenant,
-            "title": f"{defaults['symbol']} Backtest — {tenant.name}",
-            "runs": runs,
-            "ohlc": dataset,
-            "ohlc_path": dataset["path"],
-            "ohlc_exists": dataset["exists"],
-            "bot_symbol": defaults["symbol"],
-            "bot_epic": defaults["epic"],
-            "default_config": defaults,
-            "upload_error": request.query_params.get("upload_error"),
-            "upload_ok": request.query_params.get("upload_ok"),
-            "sync_error": request.query_params.get("sync_error"),
-            "sync_ok": request.query_params.get("sync_ok"),
-            "live_ok": request.query_params.get("live_ok"),
-            "live_error": request.query_params.get("live_error"),
-            "ig_connector_ready": bool(ig_config) or any(c["active"] for c in ig_connectors),
-            "ohlc_sync_status": ohlc_sync,
-            "ohlc_worker_status": read_ohlc_worker_status(settings),
-            "cac40_ohlc_poll_seconds": settings.cac40_ohlc_poll_seconds,
-            "ig_price_allowance": ig_price_allowance,
-            "live_config": live_cfg,
-            "live_strategy": live_strategy,
-            "live_mode": live_cfg["mode"],
-            "live_status": live_status,
-            "live_worker_status": live_worker,
-            "live_stale": stale,
-            "live_awaiting_first_cycle": awaiting_first_cycle,
-            "market_session": market_session,
-            "ig_connectors": ig_connectors,
-            "cac40_live_poll_seconds": settings.cac40_live_poll_seconds,
-            "live_cycle_seconds": LIVE_CYCLE_SECONDS,
-            "live_cycles": list_live_cycles(settings, slug, limit=3),
-            "live_book": read_live_book(settings, slug),
-            "sync_log_count": len(read_sync_log(settings, slug, limit=200)),
-        },
-    )
-
-
-@router.post("/bots/{slug}/cac40/ohlc")
-async def cac40_upload_ohlc(
+@router.post("/bots/{slug}/trader/ohlc")
+async def trader_upload_ohlc(
     slug: str,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
@@ -236,13 +128,13 @@ async def cac40_upload_ohlc(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     content = await file.read()
     try:
         info = save_ohlc_upload(
             settings,
             slug,
-            filename=file.filename or "cac40_15m.csv",
+            filename=file.filename or "ohlc_15m.csv",
             content=content,
             source=source,
         )
@@ -250,17 +142,17 @@ async def cac40_upload_ohlc(
         from urllib.parse import quote
 
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?tab=data&upload_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}?tab=trading&ttab=data&upload_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?tab=data&upload_ok={info.get('bars', 0)}",
+        url=f"/dashboard/bots/{slug}?tab=trading&ttab=data&upload_ok={info.get('bars', 0)}",
         status_code=303,
     )
 
 
-@router.post("/bots/{slug}/cac40/ohlc/sync-ig")
-def cac40_sync_ig(
+@router.post("/bots/{slug}/trader/ohlc/sync-ig")
+def trader_sync_ig(
     slug: str,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
@@ -270,10 +162,10 @@ def cac40_sync_ig(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     from urllib.parse import quote
 
-    from chatbot.application.cac40_live_service import resolve_primary_ig_config
+    from chatbot.application.trader_live_service import resolve_primary_ig_config
 
     ig_config = resolve_primary_ig_config(
         settings, slug, session=session, tenant_id=tenant.id
@@ -281,7 +173,7 @@ def cac40_sync_ig(
     if not ig_config:
         return RedirectResponse(
             url=(
-                f"/dashboard/bots/{slug}/cac40?tab=data&"
+                f"/dashboard/bots/{slug}?tab=trading&ttab=data&"
                 f"sync_error={quote('Configure an active IG connector first')}"
             ),
             status_code=303,
@@ -296,17 +188,17 @@ def cac40_sync_ig(
         )
     except Exception as exc:
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?tab=data&sync_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}?tab=trading&ttab=data&sync_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?tab=data&sync_ok={info.get('added', 0)}",
+        url=f"/dashboard/bots/{slug}?tab=trading&ttab=data&sync_ok={info.get('added', 0)}",
         status_code=303,
     )
 
 
-@router.post("/bots/{slug}/cac40/runs")
-def cac40_start_run(
+@router.post("/bots/{slug}/trader/runs")
+def trader_start_run(
     request: Request,
     slug: str,
     user: User = Depends(require_user),
@@ -337,12 +229,12 @@ def cac40_start_run(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     ohlc_path = default_ohlc_path(settings, slug)
     if not ohlc_path.exists():
         raise HTTPException(status_code=400, detail=f"OHLC file not found: {ohlc_path}")
 
-    from chatbot.cac40.ohlc_store import BACKTEST_PERIODS
+    from chatbot.trader.ohlc_store import BACKTEST_PERIODS
 
     period_key = (period or "1w").strip().lower()
     if period_key not in BACKTEST_PERIODS:
@@ -350,7 +242,7 @@ def cac40_start_run(
             status_code=400,
             detail=f"Invalid period. Choose: {', '.join(BACKTEST_PERIODS)}",
         )
-    every_n, every_unit, every_bars = Cac40Config.llm_rate_from_form(
+    every_n, every_unit, every_bars = TraderConfig.llm_rate_from_form(
         every_n=llm_every_n, unit=llm_every_unit
     )
     trigger_mode = (llm_trigger_mode or "levels").strip().lower()
@@ -358,14 +250,14 @@ def cac40_start_run(
         trigger_mode = "levels"
     band = max(0.1, float(llm_level_band_points or 15.0))
     temperature = max(0.0, min(1.0, float(llm_temperature if llm_temperature is not None else 0.0)))
-    integration = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
-        tenant.id, type=IntegrationType.CAC40_BACKTEST
-    )
-    integ_cfg = dict(integration.config) if integration else {}
-    symbol = str(integ_cfg.get("symbol") or "CAC40").strip() or "CAC40"
-    epic = str(integ_cfg.get("epic") or "IX.D.CAC.BMU.IP").strip() or "IX.D.CAC.BMU.IP"
+    integ_cfg = _trader_integ_cfg(tenant)
+    from chatbot.trader.profiles import get_profile
 
-    cfg = Cac40Config(
+    profile = get_profile(integ_cfg.get("market_profile"))
+    symbol = str(integ_cfg.get("symbol") or profile.default_symbol).strip() or profile.default_symbol
+    epic = str(integ_cfg.get("epic") or profile.default_epic).strip() or profile.default_epic
+
+    cfg = TraderConfig(
         symbol=symbol,
         epic=epic,
         max_open_positions=max_open_positions,
@@ -392,6 +284,9 @@ def cac40_start_run(
         chart_pivot_period=normalize_pivot_period(chart_pivot_period),
         gemini_model=(tenant.config.chat_model or settings.chat_model or "gemini-2.5-flash"),
         bot_id=tenant.slug,
+        system_prompt=str(tenant.prompt or ""),
+        market_profile=profile.id,
+        calendar_id=profile.calendar_id,
     )
     from chatbot.interfaces.api.deps import _gemini_api_key
 
@@ -405,11 +300,11 @@ def cac40_start_run(
         tenant_id=tenant.id,
         session_factory=request.app.state.session_factory,
     )
-    return RedirectResponse(url=f"/dashboard/bots/{slug}/cac40/runs/{run_id}", status_code=303)
+    return RedirectResponse(url=f"/dashboard/bots/{slug}/trader/runs/{run_id}", status_code=303)
 
 
-@router.get("/bots/{slug}/cac40/runs.json")
-def cac40_runs_json(
+@router.get("/bots/{slug}/trader/runs.json")
+def trader_runs_json(
     slug: str,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
@@ -420,7 +315,7 @@ def cac40_runs_json(
     """Lightweight run list for in-page polling (no full HTML refresh)."""
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     runs = list_runs(settings, slug)
     active = {"running", "stopping", "pending"}
     return JSONResponse(
@@ -431,8 +326,8 @@ def cac40_runs_json(
     )
 
 
-@router.get("/bots/{slug}/cac40/runs/{run_id}/status.json")
-def cac40_run_status_json(
+@router.get("/bots/{slug}/trader/runs/{run_id}/status.json")
+def trader_run_status_json(
     slug: str,
     run_id: str,
     user: User = Depends(require_user),
@@ -444,7 +339,7 @@ def cac40_run_status_json(
     """Backtest/live run progress for local polling without scroll jump."""
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     try:
         run = get_run(settings, slug, run_id)
     except FileNotFoundError as exc:
@@ -472,8 +367,8 @@ def cac40_run_status_json(
     )
 
 
-@router.get("/bots/{slug}/cac40/runs/{run_id}", response_class=HTMLResponse)
-def cac40_run_detail(
+@router.get("/bots/{slug}/trader/runs/{run_id}", response_class=HTMLResponse)
+def trader_run_detail(
     request: Request,
     slug: str,
     run_id: str,
@@ -485,14 +380,14 @@ def cac40_run_detail(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     try:
         run = get_run(settings, slug, run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Run not found") from exc
     return templates.TemplateResponse(
         request,
-        "cac40/run.html",
+        "trader/run.html",
         {
             "user": user,
             "tenant": tenant,
@@ -502,8 +397,8 @@ def cac40_run_detail(
     )
 
 
-@router.post("/bots/{slug}/cac40/runs/{run_id}/stop")
-def cac40_stop_run(
+@router.post("/bots/{slug}/trader/runs/{run_id}/stop")
+def trader_stop_run(
     slug: str,
     run_id: str,
     user: User = Depends(require_user),
@@ -514,13 +409,13 @@ def cac40_stop_run(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     stop_run(settings, slug, run_id)
-    return RedirectResponse(url=f"/dashboard/bots/{slug}/cac40/runs/{run_id}", status_code=303)
+    return RedirectResponse(url=f"/dashboard/bots/{slug}/trader/runs/{run_id}", status_code=303)
 
 
-@router.get("/bots/{slug}/cac40/runs/{run_id}/charts/{chart_key}/{filename}")
-def cac40_run_chart(
+@router.get("/bots/{slug}/trader/runs/{run_id}/charts/{chart_key}/{filename}")
+def trader_run_chart(
     slug: str,
     run_id: str,
     chart_key: str,
@@ -534,7 +429,7 @@ def cac40_run_chart(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     path = resolve_chart_file(settings, slug, run_id, chart_key, filename)
     if path is None:
         raise HTTPException(status_code=404, detail="Chart not found")
@@ -544,8 +439,8 @@ def cac40_run_chart(
     return FileResponse(path, media_type="image/png")
 
 
-@router.post("/bots/{slug}/cac40/runs/{run_id}/delete")
-def cac40_delete_run(
+@router.post("/bots/{slug}/trader/runs/{run_id}/delete")
+def trader_delete_run(
     slug: str,
     run_id: str,
     user: User = Depends(require_user),
@@ -556,10 +451,10 @@ def cac40_delete_run(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     if not delete_run(settings, slug, run_id):
         raise HTTPException(status_code=404, detail="Run not found")
-    return RedirectResponse(url=f"/dashboard/bots/{slug}/cac40?tab=backtest", status_code=303)
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=trading&ttab=backtest", status_code=303)
 
 
 def _strategy_from_form(
@@ -583,7 +478,7 @@ def _strategy_from_form(
     chart_show_pivots: str,
     chart_pivot_period: str,
 ) -> dict:
-    every_n, every_unit, every_bars = Cac40Config.llm_rate_from_form(
+    every_n, every_unit, every_bars = TraderConfig.llm_rate_from_form(
         every_n=llm_every_n, unit=llm_every_unit
     )
     trigger_mode = (llm_trigger_mode or "levels").strip().lower()
@@ -613,8 +508,8 @@ def _strategy_from_form(
     }
 
 
-@router.post("/bots/{slug}/cac40/live/config")
-async def cac40_live_save_config(
+@router.post("/bots/{slug}/trader/live/config")
+async def trader_live_save_config(
     request: Request,
     slug: str,
     user: User = Depends(require_user),
@@ -645,7 +540,7 @@ async def cac40_live_save_config(
 
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     form = await request.form()
     ids = []
     for raw in form.getlist("ig_connector_id"):
@@ -680,13 +575,13 @@ async def cac40_live_save_config(
         {"mode": current["mode"], "ig_connector_ids": ids, "strategy": strategy},
     )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote('Live config saved')}",
+        url=f"/dashboard/bots/{slug}?tab=trading&ttab=live&live_ok={quote('Live config saved')}",
         status_code=303,
     )
 
 
-@router.post("/bots/{slug}/cac40/live/mode")
-async def cac40_live_set_mode(
+@router.post("/bots/{slug}/trader/live/mode")
+async def trader_live_set_mode(
     request: Request,
     slug: str,
     mode: str = Form(...),
@@ -700,7 +595,7 @@ async def cac40_live_set_mode(
 
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     form = await request.form()
     ids: list[int] | None = None
     if "ig_connector_id" in form:
@@ -721,17 +616,17 @@ async def cac40_live_set_mode(
         )
     except ValueError as exc:
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?tab=live&live_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}?tab=trading&ttab=live&live_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote('Mode set to ' + mode)}",
+        url=f"/dashboard/bots/{slug}?tab=trading&ttab=live&live_ok={quote('Mode set to ' + mode)}",
         status_code=303,
     )
 
 
-@router.get("/bots/{slug}/cac40/live/report", response_class=HTMLResponse)
-def cac40_live_report(
+@router.get("/bots/{slug}/trader/live/report", response_class=HTMLResponse)
+def trader_live_report(
     request: Request,
     slug: str,
     user: User = Depends(require_user),
@@ -742,23 +637,68 @@ def cac40_live_report(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     run = get_live_report(settings, slug)
     return templates.TemplateResponse(
         request,
-        "cac40/run.html",
+        "trader/run.html",
         {
             "user": user,
             "tenant": tenant,
             "title": f"Live results — {tenant.name}",
             "run": run,
             "live": True,
+            "dev_mode": settings.dev_mode,
+            "live_ok": request.query_params.get("live_ok"),
+            "live_error": request.query_params.get("live_error"),
         },
     )
 
 
-@router.get("/bots/{slug}/cac40/live/charts/{cycle}/{filename}")
-def cac40_live_chart(
+@router.get("/bots/{slug}/trader/live/snapshot.json")
+def trader_live_snapshot_json(
+    slug: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    """Open book + latest cycles for Trading → Live in-page polling."""
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    _require_trader_active(tenant, session)
+    snap = build_live_panel_snapshot(settings, slug, cycle_limit=3)
+    live_mode = str(snap.get("mode") or "off")
+    sync_href = f"/dashboard/bots/{slug}/trader/live/book-sync"
+    book_html = templates.env.from_string(
+        "{% from 'trader/_open_book.html' import open_book_table %}"
+        "{{ open_book_table(book, live_mode=live_mode, heading='Open book',"
+        " embedded=true, sync_href=sync_href) }}"
+    ).render(
+        book=snap.get("book"),
+        live_mode=live_mode,
+        sync_href=sync_href,
+    )
+    cycles_html = templates.env.from_string(
+        "{% from 'trader/_live_poll_parts.html' import live_cycles_list %}"
+        "{{ live_cycles_list(cycles, slug) }}"
+    ).render(cycles=snap.get("cycles") or [], slug=slug)
+    return JSONResponse(
+        {
+            "mode": live_mode,
+            "as_of": snap.get("as_of"),
+            "book_as_of": snap.get("book_as_of"),
+            "last_cycle_at": snap.get("last_cycle_at"),
+            "fingerprint": snap.get("fingerprint"),
+            "book_html": book_html,
+            "cycles_html": cycles_html,
+        }
+    )
+
+
+@router.get("/bots/{slug}/trader/live/charts/{cycle}/{filename}")
+def trader_live_chart(
     slug: str,
     cycle: str,
     filename: str,
@@ -771,7 +711,7 @@ def cac40_live_chart(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     path = resolve_live_chart_file(settings, slug, cycle, filename)
     if path is None:
         raise HTTPException(status_code=404, detail="Chart not found")
@@ -780,8 +720,8 @@ def cac40_live_chart(
     return FileResponse(path, media_type="image/png")
 
 
-@router.post("/bots/{slug}/cac40/live/run-once")
-async def cac40_live_run_once(
+@router.post("/bots/{slug}/trader/live/run-once")
+async def trader_live_run_once(
     request: Request,
     slug: str,
     user: User = Depends(require_user),
@@ -794,7 +734,7 @@ async def cac40_live_run_once(
 
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     form = await request.form()
     # Checkbox: present "1" when checked (default in UI). Absent when unchecked.
     force_llm = str(form.get("force_llm") or "").strip().lower() in (
@@ -812,17 +752,65 @@ async def cac40_live_run_once(
     )
     if result.get("ok"):
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote(str(result['message']))}",
+            url=f"/dashboard/bots/{slug}?tab=trading&ttab=live&live_ok={quote(str(result['message']))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_error={quote(str(result['message']))}",
+        url=f"/dashboard/bots/{slug}?tab=trading&ttab=live&live_error={quote(str(result['message']))}",
         status_code=303,
     )
 
 
-@router.get("/bots/{slug}/cac40/live/book-sync", response_class=HTMLResponse)
-def cac40_live_book_sync(
+@router.post("/bots/{slug}/trader/live/replay-decision")
+async def trader_live_replay_decision(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    """Dev-only: re-apply a stored LLM decision without calling Gemini."""
+    from urllib.parse import quote
+
+    if not settings.dev_mode:
+        raise HTTPException(
+            status_code=403,
+            detail="Decision replay is only available when DEV_MODE=true",
+        )
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    _require_trader_active(tenant, session)
+    form = await request.form()
+    cycle_dir = str(form.get("cycle_dir") or "").strip() or None
+    result = replay_live_decision(
+        session,
+        settings,
+        slug,
+        cycle_dir=cycle_dir,
+        session_factory=getattr(request.app.state, "session_factory", None),
+    )
+    # Prefer staying on report when replaying a specific cycle.
+    redirect_base = (
+        f"/dashboard/bots/{slug}/trader/live/report"
+        if cycle_dir
+        else f"/dashboard/bots/{slug}?tab=trading&ttab=live"
+    )
+    sep = "&" if "?" in redirect_base else "?"
+    if result.get("ok"):
+        return RedirectResponse(
+            url=f"{redirect_base}{sep}live_ok={quote(str(result['message']))}",
+            status_code=303,
+        )
+    return RedirectResponse(
+        url=f"{redirect_base}{sep}live_error={quote(str(result['message']))}",
+        status_code=303,
+    )
+
+
+@router.get("/bots/{slug}/trader/live/book-sync", response_class=HTMLResponse)
+def trader_live_book_sync(
     request: Request,
     slug: str,
     user: User = Depends(require_user),
@@ -834,12 +822,12 @@ def cac40_live_book_sync(
     """Preview local vs IG open book; apply via POST sync-book."""
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     live_cfg = load_live_config(settings, slug)
     preview = preview_ig_book(session, settings, slug)
     return templates.TemplateResponse(
         request,
-        "cac40/book_sync.html",
+        "trader/book_sync.html",
         {
             "user": user,
             "tenant": tenant,
@@ -853,8 +841,8 @@ def cac40_live_book_sync(
     )
 
 
-@router.post("/bots/{slug}/cac40/live/sync-book")
-def cac40_live_sync_book(
+@router.post("/bots/{slug}/trader/live/sync-book")
+def trader_live_sync_book(
     slug: str,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
@@ -867,27 +855,27 @@ def cac40_live_sync_book(
 
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     result = adopt_ig_book(session, settings, slug)
     if result.get("ok"):
         return RedirectResponse(
             url=(
-                f"/dashboard/bots/{slug}/cac40/live/book-sync"
+                f"/dashboard/bots/{slug}/trader/live/book-sync"
                 f"?live_ok={quote(str(result['message']))}"
             ),
             status_code=303,
         )
     return RedirectResponse(
         url=(
-            f"/dashboard/bots/{slug}/cac40/live/book-sync"
+            f"/dashboard/bots/{slug}/trader/live/book-sync"
             f"?live_error={quote(str(result['message']))}"
         ),
         status_code=303,
     )
 
 
-@router.post("/bots/{slug}/cac40/live/sync-log/clear")
-def cac40_live_sync_log_clear(
+@router.post("/bots/{slug}/trader/live/sync-log/clear")
+def trader_live_sync_log_clear(
     slug: str,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
@@ -899,16 +887,16 @@ def cac40_live_sync_log_clear(
 
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     clear_sync_log(settings, slug)
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40/live/book-sync?live_ok={quote('Desync log flushed')}",
+        url=f"/dashboard/bots/{slug}/trader/live/book-sync?live_ok={quote('Desync log flushed')}",
         status_code=303,
     )
 
 
-@router.post("/bots/{slug}/cac40/live/clear")
-def cac40_live_clear(
+@router.post("/bots/{slug}/trader/live/clear")
+def trader_live_clear(
     slug: str,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
@@ -920,15 +908,42 @@ def cac40_live_clear(
 
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
-    _require_cac40_active(tenant, session)
+    _require_trader_active(tenant, session)
     try:
         clear_live_history(settings, slug)
     except ValueError as exc:
         return RedirectResponse(
-            url=f"/dashboard/bots/{slug}/cac40?tab=live&live_error={quote(str(exc))}",
+            url=f"/dashboard/bots/{slug}?tab=trading&ttab=live&live_error={quote(str(exc))}",
             status_code=303,
         )
     return RedirectResponse(
-        url=f"/dashboard/bots/{slug}/cac40?tab=live&live_ok={quote('Paper history cleared')}",
+        url=f"/dashboard/bots/{slug}?tab=trading&ttab=live&live_ok={quote('Paper history cleared')}",
         status_code=303,
     )
+
+
+@router.api_route(
+    "/bots/{slug}/cac40",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
+@router.api_route(
+    "/bots/{slug}/cac40/{rest:path}",
+    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+)
+async def legacy_cac40_path(
+    request: Request,
+    slug: str,
+    rest: str = "",
+):
+    """Redirect/rewrite legacy /cac40 URLs to /trader."""
+    from starlette.datastructures import URL
+
+    suffix = f"/{rest}" if rest else ""
+    target = str(request.url).replace(
+        f"/bots/{slug}/cac40{suffix}", f"/bots/{slug}/trader{suffix}", 1
+    )
+    if request.method.upper() == "GET":
+        # Preserve query string already in target.
+        return RedirectResponse(url=target, status_code=307)
+    # For mutating methods, forward internally is hard; redirect with 307 keeps method.
+    return RedirectResponse(url=URL(target), status_code=307)

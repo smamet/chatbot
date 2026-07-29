@@ -38,7 +38,7 @@ def bundle_ctx(test_settings):
             rag_enabled=True,
             rag_top_k=7,
             allowed_connectors=("whatsapp:in", "email:out"),
-            allowed_integrations=("erpnext", "cac40_backtest"),
+            allowed_integrations=("erpnext",),
         ),
     )
     tenant_svc.update_tenant(result.tenant.id, active=True)
@@ -90,7 +90,6 @@ def test_build_export_contains_manifest_and_documents(bundle_ctx) -> None:
         ]
         assert manifest["bot"]["config"]["allowed_integrations"] == [
             "erpnext",
-            "cac40_backtest",
         ]
         assert manifest["email_blocked_senders"] == ["noise@test.com", "spammer@evil.com"]
         assert BLACKLIST_NAME in zf.namelist()
@@ -123,7 +122,7 @@ def test_import_create_round_trip(bundle_ctx) -> None:
     assert imported.gemini_api_key == "tenant-gemini-key"
     assert imported.config.rag_top_k == 7
     assert imported.config.allowed_connectors == ("whatsapp:in", "email:out")
-    assert imported.config.allowed_integrations == ("erpnext", "cac40_backtest")
+    assert imported.config.allowed_integrations == ("erpnext",)
     assert imported.config.email_blocked_senders == ("noise@test.com", "spammer@evil.com")
 
     docs_dir = tenant_docs_dir(settings, imported.slug)

@@ -13,12 +13,12 @@ from typing import Any
 import pandas as pd
 from sqlalchemy.orm import Session
 
-from chatbot.application.cac40_cycle_ops_log import (
+from chatbot.application.trader_cycle_ops_log import (
     build_cycle_ops_log,
     ops_log_line_count,
 )
-from chatbot.cac40.backtest_engine import BacktestEngine, new_run_dir
-from chatbot.cac40.config import Cac40Config, public_config_snapshot
+from chatbot.trader.backtest_engine import BacktestEngine, new_run_dir
+from chatbot.trader.config import TraderConfig, public_config_snapshot
 from chatbot.config.settings import Settings
 
 logger = logging.getLogger(__name__)
@@ -47,14 +47,21 @@ def _read_json(path: Path, default: Any = None) -> Any:
         return default
 
 
-def cac40_root(settings: Settings, tenant_slug: str) -> Path:
-    root = settings.data_root / "cac40" / tenant_slug
+def trader_root(settings: Settings, tenant_slug: str) -> Path:
+    """Per-bot trader data dir. Migrates legacy data/cac40/{slug} once if present."""
+    root = settings.data_root / "trader" / tenant_slug
+    legacy = settings.data_root / "cac40" / tenant_slug
+    if legacy.is_dir() and not root.exists():
+        import shutil
+
+        root.parent.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(legacy), str(root))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
 
 def runs_dir(settings: Settings, tenant_slug: str) -> Path:
-    path = cac40_root(settings, tenant_slug) / "backtests"
+    path = trader_root(settings, tenant_slug) / "backtests"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -231,7 +238,7 @@ def _load_decision_entries(
                         "tf": tf,
                         "file": name,
                         "url": (
-                            f"/dashboard/bots/{tenant_slug}/cac40/runs/{run_id}"
+                            f"/dashboard/bots/{tenant_slug}/trader/runs/{run_id}"
                             f"/charts/{key}/{name}"
                         ),
                     }
@@ -293,7 +300,7 @@ def start_run(
     settings: Settings,
     tenant_slug: str,
     *,
-    config: Cac40Config,
+    config: TraderConfig,
     ohlc_path: Path,
     api_key: str,
     tenant_id: int | None = None,
@@ -321,7 +328,7 @@ def start_run(
                 _THREADS.pop(run_path.name, None)
                 _ENGINES.pop(run_path.name, None)
 
-    thread = threading.Thread(target=_target, name=f"cac40-{run_path.name}", daemon=True)
+    thread = threading.Thread(target=_target, name=f"trader-{run_path.name}", daemon=True)
     with _LOCK:
         _THREADS[run_path.name] = thread
         _ENGINES[run_path.name] = engine
@@ -365,7 +372,7 @@ def default_ohlc_path(settings: Settings, tenant_slug: str) -> Path:
 
     Prefers ``ohlc_15m.csv``; falls back to legacy ``cac40_15m.csv`` when present.
     """
-    ohlc_dir = cac40_root(settings, tenant_slug) / "ohlc"
+    ohlc_dir = trader_root(settings, tenant_slug) / "ohlc"
     preferred = ohlc_dir / "ohlc_15m.csv"
     legacy = ohlc_dir / "cac40_15m.csv"
     if preferred.exists():
@@ -400,7 +407,7 @@ def ohlc_info(settings: Settings, tenant_slug: str) -> dict[str, Any]:
         return info
     info["size_bytes"] = path.stat().st_size
     try:
-        from chatbot.cac40.ohlc_store import load_ohlc_csv
+        from chatbot.trader.ohlc_store import load_ohlc_csv
 
         df = load_ohlc_csv(path)
         info["bars"] = int(len(df))
@@ -437,7 +444,7 @@ _GAPS_CACHE_VERSION = 2
 
 def _ohlc_gap_report_cached(path: Path, df) -> dict[str, Any]:
     """Reuse gap scan while CSV mtime unchanged (large history is expensive)."""
-    from chatbot.cac40.ohlc_store import summarize_ohlc_gaps
+    from chatbot.trader.ohlc_store import summarize_ohlc_gaps
 
     cache = path.parent / "gaps_status.json"
     try:
@@ -471,7 +478,7 @@ def save_ohlc_upload(
     """Validate and store uploaded 15m OHLCV CSV as the tenant default dataset."""
     import tempfile
 
-    from chatbot.cac40.ohlc_store import OHLC_SOURCES, load_ohlc_csv
+    from chatbot.trader.ohlc_store import OHLC_SOURCES, load_ohlc_csv
 
     if not content:
         raise ValueError("Empty file")
@@ -507,7 +514,7 @@ def ohlc_sync_status_path(settings: Settings, tenant_slug: str) -> Path:
 
 
 def ohlc_worker_status_path(settings: Settings) -> Path:
-    return settings.data_root / "cac40" / "worker_status.json"
+    return settings.data_root / "trader" / "worker_status.json"
 
 
 def read_ohlc_sync_status(settings: Settings, tenant_slug: str) -> dict[str, Any]:
@@ -575,8 +582,8 @@ def sync_ohlc_from_ig(
 
     Raises ValueError for gap > max_gap_days or missing bootstrap when not allowed.
     """
-    from chatbot.cac40.ig_ohlc import fetch_ig_ohlc_range
-    from chatbot.cac40.ohlc_store import append_bars, load_ohlc_csv
+    from chatbot.trader.ig_ohlc import fetch_ig_ohlc_range
+    from chatbot.trader.ohlc_store import append_bars, load_ohlc_csv
 
     dest = default_ohlc_path(settings, tenant_slug)
     dest.parent.mkdir(parents=True, exist_ok=True)
@@ -639,7 +646,7 @@ def sync_ohlc_from_ig(
                 ig_config, start=start, end=end, allowance_out=allowance
             )
             if last_ts is not None and not fresh.empty:
-                from chatbot.cac40.ohlc_store import (
+                from chatbot.trader.ohlc_store import (
                     assert_append_contiguous,
                     find_intrasession_gaps,
                 )
@@ -659,8 +666,8 @@ def sync_ohlc_from_ig(
         last_candle = info.get("to")
         stale_behind_msg: str | None = None
         if added == 0 and last_ts is not None:
-            from chatbot.cac40.live_ohlc_feed import expected_last_closed_15m
-            from chatbot.cac40.market_calendar import is_trading_day
+            from chatbot.trader.live_ohlc_feed import expected_last_closed_15m
+            from chatbot.trader.market_calendar import is_trading_day
 
             expected = expected_last_closed_15m(now=clock, tz="Europe/Paris")
             last_local = (
@@ -723,32 +730,27 @@ def sync_ohlc_from_ig(
 
 def run_due_ig_ohlc_syncs(session: Session, settings: Settings) -> list[str]:
     """
-    Top up OHLC for tenants with active CAC40 + IG connector + existing CSV.
+    Top up OHLC for active trader bots with IG connector + existing CSV.
 
     Never raises out of the loop; returns log lines.
     """
-    from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
     from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
     from chatbot.application.connector_service import ConnectorService
     from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
     from chatbot.application.tenant_service import TenantService
-    from chatbot.domain.models.integration import IntegrationType
 
     started = datetime.now(UTC)
-    repo = SqlAlchemyIntegrationRepository(session)
-    tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
+    tenant_repo = SqlAlchemyTenantRepository(session)
+    tenant_svc = TenantService(tenant_repo)
     connector_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
     logs: list[str] = []
     ok_count = 0
     fail_count = 0
     skip_count = 0
 
-    for integration in repo.list_active_by_type(IntegrationType.CAC40_BACKTEST):
-        tenant = tenant_svc.get_by_id(integration.tenant_id)
-        if tenant is None:
-            continue
+    for tenant in tenant_repo.list_active_traders():
         slug = tenant.slug
-        from chatbot.application.cac40_live_service import (
+        from chatbot.application.trader_live_service import (
             load_live_config,
             resolve_primary_ig_config,
         )
@@ -797,7 +799,7 @@ def run_due_ig_ohlc_syncs(session: Session, settings: Settings) -> list[str]:
             "ok": fail_count == 0,
             "started_at": started.isoformat(),
             "finished_at": finished.isoformat(),
-            "poll_seconds": settings.cac40_ohlc_poll_seconds,
+            "poll_seconds": settings.trader_ohlc_poll_seconds,
             "tenants_ok": ok_count,
             "tenants_failed": fail_count,
             "tenants_skipped": skip_count,

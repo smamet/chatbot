@@ -286,15 +286,77 @@ def user_set_password_cmd(
 def tenant_create_cmd(
     name: Annotated[str, typer.Argument(help="Display name")],
     slug: Annotated[str | None, typer.Option("--slug", help="URL slug (auto if omitted)")] = None,
+    bot_type: Annotated[
+        str,
+        typer.Option("--type", help="assistant | trader"),
+    ] = "assistant",
 ) -> None:
     settings = get_settings()
     engine = create_db_engine(settings)
     factory = session_factory(engine)
     with factory() as session:
         svc = TenantService(SqlAlchemyTenantRepository(session))
-        result = svc.create_tenant(name=name, slug=slug)
+        result = svc.create_tenant(name=name, slug=slug, bot_type=bot_type)
         session.commit()
         typer.echo(f"slug={result.tenant.slug}")
+        typer.echo(f"bot_type={result.tenant.bot_type.value}")
+        typer.echo(f"token={result.token}")
+
+
+@app.command("bot-duplicate")
+def bot_duplicate_cmd(
+    source: Annotated[str, typer.Argument(help="Source tenant slug")],
+    name: Annotated[str, typer.Option("--name", "-n", help="Display name for the clone")],
+    slug: Annotated[str | None, typer.Option("--slug", help="URL slug (auto if omitted)")] = None,
+    profile: Annotated[
+        str | None,
+        typer.Option("--profile", help="Trader market profile override (e.g. eurusd)"),
+    ] = None,
+    symbol: Annotated[
+        str | None,
+        typer.Option("--symbol", help="Trader symbol override"),
+    ] = None,
+    epic: Annotated[
+        str | None,
+        typer.Option("--epic", help="IG epic override"),
+    ] = None,
+    reset_prompt: Annotated[
+        bool,
+        typer.Option(
+            "--reset-prompt",
+            help="Replace system prompt with the market profile default",
+        ),
+    ] = False,
+) -> None:
+    """Clone credentials and settings into a new bot (no RAG / operational data)."""
+    from chatbot.application.tenant_duplicate_service import (
+        TenantDuplicateError,
+        duplicate_tenant,
+    )
+
+    settings = get_settings()
+    engine = create_db_engine(settings)
+    factory = session_factory(engine)
+    with factory() as session:
+        try:
+            result = duplicate_tenant(
+                session,
+                settings,
+                source,
+                name=name,
+                slug=slug,
+                market_profile=profile,
+                symbol=symbol,
+                epic=epic,
+                reset_prompt_from_profile=reset_prompt,
+            )
+        except TenantDuplicateError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
+        session.commit()
+        typer.echo(f"source={source}")
+        typer.echo(f"slug={result.tenant.slug}")
+        typer.echo(f"bot_type={result.tenant.bot_type.value}")
         typer.echo(f"token={result.token}")
 
 
@@ -461,25 +523,25 @@ def mail_connection_migrate_cmd(
         )
 
 
-cac40_app = typer.Typer(no_args_is_help=True, help="CAC40 mean-reversion bot / backtest.")
-app.add_typer(cac40_app, name="cac40")
+trader_app = typer.Typer(no_args_is_help=True, help="Trader bot / backtest / live.")
+app.add_typer(trader_app, name="trader")
 
 
-@cac40_app.command("backtest")
-def cac40_backtest_cmd(
+@trader_app.command("backtest")
+def trader_backtest_cmd(
     ohlc: Annotated[Path, typer.Argument(help="15m OHLCV CSV path")],
-    out: Annotated[Path, typer.Option("--out", help="Run output directory")] = Path("data/cac40/cli_runs"),
+    out: Annotated[Path, typer.Option("--out", help="Run output directory")] = Path("data/trader/cli_runs"),
     max_open_positions: Annotated[int, typer.Option("--max-open-positions")] = 4,
     llm_mode: Annotated[str, typer.Option("--llm-mode")] = "replay",
     llm_every_bars: Annotated[int, typer.Option("--llm-every-bars")] = 4,
     spread_points: Annotated[float, typer.Option("--spread-points")] = 1.5,
 ) -> None:
-    """Run a hedge-mode CAC40 backtest (HedgeLedger)."""
-    from chatbot.cac40.backtest_engine import BacktestEngine, new_run_dir
-    from chatbot.cac40.config import Cac40Config
+    """Run a hedge-mode trader backtest (HedgeLedger)."""
+    from chatbot.trader.backtest_engine import BacktestEngine, new_run_dir
+    from chatbot.trader.config import TraderConfig
 
     settings = get_settings()
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         max_open_positions=max_open_positions,
         llm_mode=llm_mode,
         llm_every_bars=llm_every_bars,
@@ -500,11 +562,11 @@ def cac40_backtest_cmd(
     )
 
 
-@cac40_app.command("live")
-def cac40_live_cmd(
+@trader_app.command("live")
+def trader_live_cmd(
     config_json: Annotated[
         Path | None,
-        typer.Option("--config", help="JSON config file (Cac40Config fields)"),
+        typer.Option("--config", help="JSON config file (TraderConfig fields)"),
     ] = None,
     dry_run: Annotated[bool, typer.Option("--dry-run/--no-dry-run")] = True,
     once: Annotated[bool, typer.Option("--once", help="Single cycle then exit")] = False,
@@ -513,13 +575,13 @@ def cac40_live_cmd(
     """Run the 15m live/demo loop (fail-closed)."""
     import json as _json
 
-    from chatbot.cac40.config import Cac40Config
-    from chatbot.cac40.scheduler import LiveScheduler
+    from chatbot.trader.config import TraderConfig
+    from chatbot.trader.scheduler import LiveScheduler
 
     settings = get_settings()
     data = _json.loads(config_json.read_text()) if config_json else {}
-    cfg = Cac40Config.from_dict(data)
-    journal = settings.data_root / "cac40" / "live"
+    cfg = TraderConfig.from_dict(data)
+    journal = settings.data_root / "trader" / "live"
     sched = LiveScheduler(
         cfg,
         api_key=settings.gemini_api_key or "",
@@ -532,6 +594,121 @@ def cac40_live_cmd(
         typer.echo(_json.dumps(payload, indent=2, default=str))
     else:
         sched.run_forever()
+
+
+@trader_app.command("stream-probe")
+def trader_stream_probe_cmd(
+    from_db_slug: Annotated[
+        str | None,
+        typer.Option("--from-db-slug", help="Load IG connector credentials from this bot slug"),
+    ] = None,
+    epics: Annotated[
+        str,
+        typer.Option("--epics", help="Comma-separated epics"),
+    ] = "IX.D.CAC.BMU.IP,CS.D.EURUSD.MINI.IP",
+    seconds: Annotated[float, typer.Option("--seconds", help="How long to listen")] = 45.0,
+) -> None:
+    """DEMO Lightstreamer probe: PRICE ticks + TRADE + tick→15m HLC buckets."""
+    import json as _json
+
+    from chatbot.trader.ig_stream_probe import run_ig_stream_probe
+
+    cfg = _ig_config_from_cli(from_db_slug)
+    epic_list = [e.strip() for e in epics.split(",") if e.strip()]
+    result = run_ig_stream_probe(cfg, epics=epic_list, seconds=seconds)
+    typer.echo(_json.dumps(result.to_dict(), indent=2, default=str))
+    raise typer.Exit(0 if result.ok else 1)
+
+
+@trader_app.command("order-probe")
+def trader_order_probe_cmd(
+    from_db_slug: Annotated[
+        str | None,
+        typer.Option("--from-db-slug", help="Load IG connector credentials from this bot slug"),
+    ] = None,
+    allow_market_orders: Annotated[
+        bool,
+        typer.Option(
+            "--allow-market-orders/--no-allow-market-orders",
+            help="Also open/close a tiny DEMO market position (off by default)",
+        ),
+    ] = False,
+) -> None:
+    """DEMO France CAC LIMIT/STOP ±TP matrix (+ EURUSD smoke); market only with flag."""
+    from chatbot.application.connector_test_service import run_ig_stream_order_probe
+
+    cfg = _ig_config_from_cli(from_db_slug)
+    result = run_ig_stream_order_probe(cfg, allow_market_orders=allow_market_orders)
+    typer.echo(result.message)
+    raise typer.Exit(0 if result.ok else 1)
+
+
+def _ig_config_from_cli(from_db_slug: str | None) -> dict:
+    """Load DEMO IG config from a bot slug's stored connector."""
+    if not from_db_slug:
+        raise typer.BadParameter("Provide --from-db-slug with a bot that has an IG connector")
+    from sqlalchemy import select
+
+    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from chatbot.adapters.persistence.engine import create_db_engine, session_factory
+    from chatbot.adapters.persistence.orm import TenantRow
+    from chatbot.application.connector_service import ConnectorService
+    from chatbot.config.settings import get_settings
+
+    Factory = session_factory(create_db_engine(get_settings()))
+    with Factory() as session:
+        tenant = session.execute(
+            select(TenantRow).where(TenantRow.slug == from_db_slug.strip())
+        ).scalar_one_or_none()
+        if tenant is None:
+            raise typer.BadParameter(f"Unknown bot slug: {from_db_slug}")
+        cfg = ConnectorService(SqlAlchemyConnectorRepository(session)).get_ig_config(tenant.id)
+    if not cfg:
+        raise typer.BadParameter(f"No IG connector on bot {from_db_slug}")
+    out = dict(cfg)
+    out["acc_type"] = "DEMO"
+    return out
+
+
+@trader_app.command("migrate-data")
+def trader_migrate_data_cmd(
+    slug: Annotated[
+        str | None,
+        typer.Option("--slug", help="Only migrate this bot slug (default: all under data/cac40)"),
+    ] = None,
+) -> None:
+    """Move data/cac40/{slug} → data/trader/{slug} (and global worker status files)."""
+    import shutil
+
+    settings = get_settings()
+    legacy_root = settings.data_root / "cac40"
+    new_root = settings.data_root / "trader"
+    new_root.mkdir(parents=True, exist_ok=True)
+    moved = 0
+    if slug:
+        candidates = [legacy_root / slug]
+    else:
+        candidates = [p for p in legacy_root.iterdir()] if legacy_root.is_dir() else []
+    for src in candidates:
+        if not src.exists():
+            continue
+        if src.name in ("worker_status.json", "live_worker_status.json", "sample_15m.csv"):
+            dest = new_root / src.name
+            if not dest.exists():
+                shutil.move(str(src), str(dest))
+                typer.echo(f"moved {src} -> {dest}")
+                moved += 1
+            continue
+        if not src.is_dir():
+            continue
+        dest = new_root / src.name
+        if dest.exists():
+            typer.echo(f"skip {src.name} (already at {dest})")
+            continue
+        shutil.move(str(src), str(dest))
+        typer.echo(f"moved {src} -> {dest}")
+        moved += 1
+    typer.echo(f"done moved={moved}")
 
 
 @app.command("serve")

@@ -238,6 +238,19 @@ class LlmAnalysis:
     rsi_note: str = ""
     pivot_note: str = ""
 
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> LlmAnalysis:
+        data = data or {}
+        return cls(
+            support=float(data["support"]) if data.get("support") is not None else None,
+            resistance=(
+                float(data["resistance"]) if data.get("resistance") is not None else None
+            ),
+            bias=str(data.get("bias") or "hold"),
+            rsi_note=str(data.get("rsi_note") or ""),
+            pivot_note=str(data.get("pivot_note") or ""),
+        )
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
@@ -275,6 +288,21 @@ class LlmDecision:
     analysis: LlmAnalysis
     actions: list[LlmAction] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> LlmDecision:
+        data = data if isinstance(data, dict) else {}
+        actions_raw = data.get("actions") or []
+        actions = [
+            LlmAction.from_dict(a) for a in actions_raw if isinstance(a, dict)
+        ]
+        return cls(
+            analysis=LlmAnalysis.from_dict(
+                data.get("analysis") if isinstance(data.get("analysis"), dict) else {}
+            ),
+            actions=actions,
+            raw=dict(data),
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return {

@@ -98,9 +98,9 @@ services:
       api:
         condition: service_started
 
-  worker-cac40-ohlc:
+  worker-trader-ohlc:
     build: .
-    command: python -m chatbot.interfaces.worker_cac40_ohlc
+    command: python -m chatbot.interfaces.worker_trader_ohlc
     restart: unless-stopped
     env_file:
       - .env
@@ -108,7 +108,7 @@ services:
       DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
       APP_SECRET_KEY: ${APP_SECRET_KEY:-}
       DATA_ROOT: /app/data
-      CAC40_OHLC_POLL_SECONDS: ${CAC40_OHLC_POLL_SECONDS:-900}
+      TRADER_OHLC_POLL_SECONDS: ${TRADER_OHLC_POLL_SECONDS:-900}
     volumes:
       - ./data:/app/data
     depends_on:
@@ -117,9 +117,9 @@ services:
       api:
         condition: service_started
 
-  worker-cac40-live:
+  worker-trader-live:
     build: .
-    command: python -m chatbot.interfaces.worker_cac40_live
+    command: python -m chatbot.interfaces.worker_trader_live
     restart: unless-stopped
     env_file:
       - .env
@@ -128,7 +128,27 @@ services:
       APP_SECRET_KEY: ${APP_SECRET_KEY:-}
       GEMINI_API_KEY: ${GEMINI_API_KEY:-}
       DATA_ROOT: /app/data
-      CAC40_LIVE_POLL_SECONDS: ${CAC40_LIVE_POLL_SECONDS:-60}
+      TRADER_LIVE_POLL_SECONDS: ${TRADER_LIVE_POLL_SECONDS:-60}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      db:
+        condition: service_healthy
+      api:
+        condition: service_started
+
+  worker-trader-stream:
+    build: .
+    command: python -m chatbot.interfaces.worker_trader_stream
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: mysql+pymysql://${MYSQL_USER:-chatbot}:${MYSQL_PASSWORD:-chatbot}@db:3306/${MYSQL_DATABASE:-chatbot}
+      APP_SECRET_KEY: ${APP_SECRET_KEY:-}
+      DATA_ROOT: /app/data
+      TRADER_STREAM_LOOP_SECONDS: ${TRADER_STREAM_LOOP_SECONDS:-5}
+      STREAM_TICK_STALE_SECONDS: ${STREAM_TICK_STALE_SECONDS:-120}
     volumes:
       - ./data:/app/data
     depends_on:

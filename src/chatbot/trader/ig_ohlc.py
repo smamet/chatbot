@@ -6,22 +6,22 @@ from typing import Any
 
 import pandas as pd
 
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.ig_connector import IgConnector
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.ig_connector import IgConnector
 
 logger = logging.getLogger(__name__)
 
 
-def ig_config_from_connector(config: dict[str, Any] | None) -> Cac40Config:
-    """Map saved IG connector config keys onto Cac40Config."""
+def ig_config_from_connector(config: dict[str, Any] | None) -> TraderConfig:
+    """Map saved IG connector config keys onto TraderConfig."""
     cfg = dict(config or {})
-    return Cac40Config(
+    return TraderConfig(
         ig_api_key=str(cfg.get("api_key") or ""),
         ig_username=str(cfg.get("username") or ""),
         ig_password=str(cfg.get("password") or ""),
         ig_account_id=str(cfg.get("account_id") or ""),
         ig_acc_type=str(cfg.get("acc_type") or "DEMO").upper() or "DEMO",
-        epic=str(cfg.get("epic") or Cac40Config().epic),
+        epic=str(cfg.get("epic") or TraderConfig().epic),
     )
 
 

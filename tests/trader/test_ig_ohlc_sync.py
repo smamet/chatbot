@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from chatbot.application.cac40_backtest_service import (
+from chatbot.application.trader_backtest_service import (
     MAX_OHLC_GAP_DAYS,
     default_ohlc_path,
     read_ohlc_sync_status,
@@ -15,9 +15,9 @@ from chatbot.application.cac40_backtest_service import (
     run_due_ig_ohlc_syncs,
     sync_ohlc_from_ig,
 )
-from chatbot.cac40.ig_connector import IgConnector, _ig_api_ts, _prices_payload_to_df
-from chatbot.cac40.ig_ohlc import ig_config_from_connector
-from chatbot.cac40.ohlc_store import load_ohlc_csv
+from chatbot.trader.ig_connector import IgConnector, _ig_api_ts, _prices_payload_to_df
+from chatbot.trader.ig_ohlc import ig_config_from_connector
+from chatbot.trader.ohlc_store import load_ohlc_csv
 from chatbot.config.settings import Settings
 
 
@@ -112,7 +112,7 @@ def test_sync_bootstrap_disallowed_without_csv(tmp_path: Path) -> None:
         )
 
 
-@patch("chatbot.cac40.ig_ohlc.fetch_ig_ohlc_range")
+@patch("chatbot.trader.ig_ohlc.fetch_ig_ohlc_range")
 def test_sync_appends_only_new_bars(mock_fetch, tmp_path: Path) -> None:
     settings = Settings(data_root=tmp_path)
     existing = _sample_bars("2024-06-01 09:00:00", n=2)
@@ -144,7 +144,7 @@ def test_sync_appends_only_new_bars(mock_fetch, tmp_path: Path) -> None:
     assert status["last_candle"]
 
 
-@patch("chatbot.cac40.ig_ohlc.fetch_ig_ohlc_range")
+@patch("chatbot.trader.ig_ohlc.fetch_ig_ohlc_range")
 def test_sync_up_to_date_adds_zero(mock_fetch, tmp_path: Path) -> None:
     settings = Settings(data_root=tmp_path)
     existing = _sample_bars("2024-06-01 09:00:00", n=2)  # last 09:15 Paris
@@ -163,7 +163,7 @@ def test_sync_up_to_date_adds_zero(mock_fetch, tmp_path: Path) -> None:
     assert info["ok"] is True
 
 
-@patch("chatbot.application.cac40_backtest_service.sync_ohlc_from_ig")
+@patch("chatbot.application.trader_backtest_service.sync_ohlc_from_ig")
 def test_run_due_skips_missing_csv_and_connector(mock_sync, tmp_path: Path) -> None:
     settings = Settings(data_root=tmp_path)
     session = MagicMock()
@@ -172,27 +172,22 @@ def test_run_due_skips_missing_csv_and_connector(mock_sync, tmp_path: Path) -> N
     tenant.id = 1
     tenant.slug = "cac-bot"
 
-    integration = MagicMock()
-    integration.tenant_id = 1
-
     with (
         patch(
-            "chatbot.adapters.persistence.integration_repository.SqlAlchemyIntegrationRepository"
-        ) as mock_int_repo,
-        patch(
             "chatbot.adapters.persistence.tenant_repository.SqlAlchemyTenantRepository"
-        ),
-        patch("chatbot.application.tenant_service.TenantService") as mock_tenant_svc,
+        ) as mock_tenant_repo,
+        patch("chatbot.application.tenant_service.TenantService"),
         patch(
             "chatbot.adapters.persistence.connector_repository.SqlAlchemyConnectorRepository"
         ),
-        patch("chatbot.application.connector_service.ConnectorService") as mock_conn_svc,
+        patch("chatbot.application.connector_service.ConnectorService"),
         patch(
-            "chatbot.application.cac40_live_service.resolve_primary_ig_config"
+            "chatbot.application.trader_live_service.resolve_primary_ig_config"
         ) as mock_primary,
+        patch("chatbot.application.trader_live_service.load_live_config") as mock_live,
     ):
-        mock_int_repo.return_value.list_active_by_type.return_value = [integration]
-        mock_tenant_svc.return_value.get_by_id.return_value = tenant
+        mock_tenant_repo.return_value.list_active_traders.return_value = [tenant]
+        mock_live.return_value = {"mode": "off"}
         mock_primary.return_value = None
 
         logs = run_due_ig_ohlc_syncs(session, settings)
@@ -225,9 +220,9 @@ def test_run_due_skips_missing_csv_and_connector(mock_sync, tmp_path: Path) -> N
 
 
 def test_fetch_ohlc_range_pages(monkeypatch) -> None:
-    from chatbot.cac40.config import Cac40Config
+    from chatbot.trader.config import TraderConfig
 
-    cfg = Cac40Config(ig_api_key="k", ig_username="u", ig_password="p")
+    cfg = TraderConfig(ig_api_key="k", ig_username="u", ig_password="p")
     conn = IgConnector(cfg, dry_run=True)
     conn._cst = "cst"  # noqa: SLF001
     conn._security = "sec"  # noqa: SLF001
@@ -271,7 +266,7 @@ def test_fetch_ohlc_range_pages(monkeypatch) -> None:
         return FakeResp(responses.pop(0))
 
     monkeypatch.setattr(conn._client, "get", fake_get)  # noqa: SLF001
-    monkeypatch.setattr("chatbot.cac40.ig_connector.time.sleep", lambda *_: None)
+    monkeypatch.setattr("chatbot.trader.ig_connector.time.sleep", lambda *_: None)
 
     df = conn.fetch_ohlc_range(
         start=pd.Timestamp("2024-06-01T08:00:00Z"),
@@ -282,7 +277,7 @@ def test_fetch_ohlc_range_pages(monkeypatch) -> None:
     conn.close()
 
 
-@patch("chatbot.cac40.ig_ohlc.fetch_ig_ohlc_range")
+@patch("chatbot.trader.ig_ohlc.fetch_ig_ohlc_range")
 def test_sync_zero_bars_while_behind_raises(mock_fetch, tmp_path: Path) -> None:
     """Success-+0 while CSV is mid-session behind is a failure, not 'ok'."""
     settings = Settings(data_root=tmp_path)
@@ -303,7 +298,7 @@ def test_sync_zero_bars_while_behind_raises(mock_fetch, tmp_path: Path) -> None:
     assert status.get("added") == 0
 
 
-@patch("chatbot.cac40.ig_ohlc.fetch_ig_ohlc_range")
+@patch("chatbot.trader.ig_ohlc.fetch_ig_ohlc_range")
 def test_sync_appends_across_preopen_to_cash_open(mock_fetch, tmp_path: Path) -> None:
     """Overnight/pre-open last bar → cash-open bars must append (natural break)."""
     settings = Settings(data_root=tmp_path)
@@ -347,8 +342,8 @@ def test_sync_via_catchup_max_fallback_after_overlap(tmp_path: Path) -> None:
             return tip
 
     with (
-        patch("chatbot.cac40.ig_ohlc.IgConnector", return_value=_FakeConn()),
-        patch("chatbot.cac40.ig_ohlc.ig_config_from_connector") as mock_cfg,
+        patch("chatbot.trader.ig_ohlc.IgConnector", return_value=_FakeConn()),
+        patch("chatbot.trader.ig_ohlc.ig_config_from_connector") as mock_cfg,
     ):
         mock_cfg.return_value = MagicMock(
             ig_api_key="k", ig_username="u", ig_password="p"
@@ -367,7 +362,7 @@ def test_sync_via_catchup_max_fallback_after_overlap(tmp_path: Path) -> None:
 
 
 def test_natural_break_preopen_to_cash() -> None:
-    from chatbot.cac40.ohlc_store import is_natural_session_break
+    from chatbot.trader.ohlc_store import is_natural_session_break
 
     a = pd.Timestamp("2026-07-22 06:15:00", tz="Europe/Paris")
     b = pd.Timestamp("2026-07-22 09:00:00", tz="Europe/Paris")
@@ -379,11 +374,11 @@ def test_natural_break_preopen_to_cash() -> None:
 
 
 def test_catchup_falls_back_to_max_when_range_empty() -> None:
-    from chatbot.cac40.config import Cac40Config
-    from chatbot.cac40.ig_connector import IgConnector
-    from chatbot.cac40.ig_ohlc import catchup_ohlc_15m
+    from chatbot.trader.config import TraderConfig
+    from chatbot.trader.ig_connector import IgConnector
+    from chatbot.trader.ig_ohlc import catchup_ohlc_15m
 
-    cfg = Cac40Config()
+    cfg = TraderConfig()
     conn = IgConnector(cfg, dry_run=True)
     conn._cst = "cst"  # noqa: SLF001
 
@@ -406,11 +401,11 @@ def test_catchup_falls_back_to_max_when_range_empty() -> None:
 
 def test_catchup_falls_back_when_range_only_has_overlap() -> None:
     """IG often re-sends the last candle; that must not skip max= fallback."""
-    from chatbot.cac40.config import Cac40Config
-    from chatbot.cac40.ig_connector import IgConnector
-    from chatbot.cac40.ig_ohlc import catchup_ohlc_15m
+    from chatbot.trader.config import TraderConfig
+    from chatbot.trader.ig_connector import IgConnector
+    from chatbot.trader.ig_ohlc import catchup_ohlc_15m
 
-    cfg = Cac40Config()
+    cfg = TraderConfig()
     conn = IgConnector(cfg, dry_run=True)
     conn._cst = "cst"  # noqa: SLF001
 
@@ -431,7 +426,7 @@ def test_catchup_falls_back_when_range_only_has_overlap() -> None:
 
 
 def test_natural_break_rejects_preopen_to_midday_splice() -> None:
-    from chatbot.cac40.ohlc_store import is_natural_session_break
+    from chatbot.trader.ohlc_store import is_natural_session_break
 
     a = pd.Timestamp("2026-07-22 06:15:00", tz="Europe/Paris")
     midday = pd.Timestamp("2026-07-22 12:00:00", tz="Europe/Paris")

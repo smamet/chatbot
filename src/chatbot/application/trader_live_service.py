@@ -13,19 +13,17 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.application.connector_service import ConnectorService
-from chatbot.application.integration_service import IntegrationService
 from chatbot.application.tenant_service import TenantService
-from chatbot.application.cac40_backtest_service import default_ohlc_path
-from chatbot.cac40.config import Cac40Config, public_config_snapshot
-from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.ig_connector import IgConnector
-from chatbot.cac40.ig_ohlc import ig_config_from_connector
-from chatbot.cac40.live_ohlc_feed import prepare_live_ohlc_feed
-from chatbot.cac40.scheduler import LiveScheduler
+from chatbot.application.trader_backtest_service import default_ohlc_path
+from chatbot.trader.config import TraderConfig, public_config_snapshot
+from chatbot.trader.hedge_ledger import HedgeLedger
+from chatbot.trader.ig_connector import IgConnector
+from chatbot.trader.ig_ohlc import ig_config_from_connector
+from chatbot.trader.live_ohlc_feed import prepare_live_ohlc_feed
+from chatbot.trader.scheduler import LiveScheduler
 from chatbot.config.settings import Settings
-from chatbot.domain.models.integration import IntegrationType
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +144,10 @@ def _resolve_selected_ig_connectors(
 
 
 def live_dir(settings: Settings, slug: str) -> Path:
-    path = Path(settings.data_root) / "cac40" / slug / "live"
+    """Live journal under data/trader/{slug}/live (migrates data/cac40/... once)."""
+    from chatbot.application.trader_backtest_service import trader_root
+
+    path = trader_root(settings, slug) / "live"
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -270,7 +271,7 @@ def live_journal_dir(settings: Settings, slug: str) -> Path:
 
 
 def live_worker_status_path(settings: Settings) -> Path:
-    return Path(settings.data_root) / "cac40" / "live_worker_status.json"
+    return Path(settings.data_root) / "trader" / "live_worker_status.json"
 
 
 def llm_schedule_path(settings: Settings, slug: str) -> Path:
@@ -364,7 +365,7 @@ def _write_json(path: Path, payload: Any) -> None:
 
 
 def default_live_config() -> dict[str, Any]:
-    cfg = Cac40Config().public_snapshot()
+    cfg = TraderConfig().public_snapshot()
     return {
         "mode": "off",
         "ig_connector_ids": [],
@@ -431,33 +432,65 @@ def load_live_config(settings: Settings, slug: str) -> dict[str, Any]:
     return cfg
 
 
-def resolve_cac40_trading_banner(
+def resolve_trader_trading_banner(
     session: Session,
     settings: Settings,
     *,
     tenant_id: int,
     slug: str,
-    allowed_integrations: list[str] | tuple[str, ...] | None,
+    allowed_integrations: list[str] | tuple[str, ...] | None = None,
+    bot_type: str | None = None,
 ) -> dict[str, Any] | None:
     """
-    Topbar indicator when CAC40 Backtest is active for this bot.
+    Topbar indicator when this bot is a trader.
 
-    Returns None when the integration is inactive/disallowed; otherwise
-    ``{"active": True, "mode": "off"|"live", "slug": ...}``.
+    Returns None for assistant bots; otherwise
+    ``{"active": True, "mode": "off"|"live", "slug": ..., "stream": "off"|"ok"|"stale"|"down"}``.
     """
-    from chatbot.domain.models.integration_schema import is_integration_allowed
-
-    if not is_integration_allowed(
-        allowed_integrations, IntegrationType.CAC40_BACKTEST.value
-    ):
-        return None
-    active = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
-        tenant_id, type=IntegrationType.CAC40_BACKTEST
+    del session, allowed_integrations  # signature kept for call-site compatibility
+    from chatbot.domain.models.tenant import BotType
+    from chatbot.application.trader_stream_service import (
+        read_stream_status,
+        read_stream_worker_status,
+        stream_is_healthy,
     )
-    if active is None:
+    from chatbot.trader.market_calendar import session_snapshot
+
+    if str(bot_type or "").strip().lower() != BotType.TRADER.value:
         return None
     mode = normalize_live_mode(load_live_config(settings, slug)["mode"])
-    return {"active": True, "mode": mode, "slug": slug}
+    stream = "off"
+    if mode == "live":
+        stream_status = read_stream_status(settings, slug)
+        stream_worker = read_stream_worker_status(settings)
+        stream_worker_down = False
+        try:
+            hb = stream_worker.get("last_heartbeat_at") or stream_worker.get("finished_at")
+            if hb:
+                finished = datetime.fromisoformat(str(hb).replace("Z", "+00:00"))
+                age = (
+                    datetime.now(timezone.utc) - finished.astimezone(timezone.utc)
+                ).total_seconds()
+                loop = max(5.0, float(getattr(settings, "trader_stream_loop_seconds", 5) or 5))
+                stream_worker_down = age > loop * 3
+            else:
+                stream_worker_down = True
+        except Exception:
+            stream_worker_down = True
+        dealing_open = True
+        try:
+            dealing_open = bool(session_snapshot().get("dealing_open"))
+        except Exception:
+            pass
+        if stream_worker_down:
+            stream = "down"
+        elif stream_status.get("stale") or not stream_status.get("connected"):
+            stream = "stale"
+        elif stream_is_healthy(stream_status, dealing_open=dealing_open):
+            stream = "ok"
+        else:
+            stream = "stale"
+    return {"active": True, "mode": mode, "slug": slug, "stream": stream}
 
 
 def save_live_config(settings: Settings, slug: str, payload: dict[str, Any]) -> dict[str, Any]:
@@ -476,9 +509,9 @@ def save_live_config(settings: Settings, slug: str, payload: dict[str, Any]) -> 
     for key in list(strategy.keys()):
         if key in incoming and incoming[key] is not None:
             strategy[key] = incoming[key]
-    # Normalize bools / numbers via Cac40Config
-    cfg = Cac40Config.from_dict(strategy)
-    every_n, every_unit, every_bars = Cac40Config.llm_rate_from_form(
+    # Normalize bools / numbers via TraderConfig
+    cfg = TraderConfig.from_dict(strategy)
+    every_n, every_unit, every_bars = TraderConfig.llm_rate_from_form(
         every_n=int(cfg.llm_every_n or 6), unit=str(cfg.llm_every_unit or "1h")
     )
     strategy = {
@@ -592,19 +625,24 @@ def resolve_primary_ig_config(
     return svc.get_ig_config(tenant_id)
 
 
-def _build_cac40_config(
+def _build_trader_config(
     *,
     live_cfg: dict[str, Any],
     integ_cfg: dict[str, Any],
     primary_ig: dict[str, Any],
     tenant_slug: str,
     gemini_model: str,
-) -> Cac40Config:
+    system_prompt: str = "",
+    market_profile: str = "cac40",
+) -> TraderConfig:
+    from chatbot.trader.profiles import get_profile
+
     strategy = dict(live_cfg.get("strategy") or {})
     ig_base = ig_config_from_connector(primary_ig)
+    profile = get_profile(str(integ_cfg.get("market_profile") or market_profile))
     merged = {
         **strategy,
-        "symbol": str(integ_cfg.get("symbol") or "CAC40"),
+        "symbol": str(integ_cfg.get("symbol") or profile.default_symbol),
         "epic": str(primary_ig.get("epic") or integ_cfg.get("epic") or ig_base.epic),
         "ig_api_key": ig_base.ig_api_key,
         "ig_username": ig_base.ig_username,
@@ -616,23 +654,37 @@ def _build_cac40_config(
         "bot_id": tenant_slug,
         "llm_mode": "live",
         "gemini_model": gemini_model,
+        "system_prompt": system_prompt or "",
+        "market_profile": profile.id,
+        "calendar_id": profile.calendar_id,
     }
+    # Profile default unless strategy explicitly overrides.
+    if "hedge_beyond_entry_points" not in strategy:
+        merged["hedge_beyond_entry_points"] = float(profile.hedge_beyond_entry_points)
     if integ_cfg.get("max_open_positions") not in (None, "") and "max_open_positions" not in strategy:
         try:
             merged["max_open_positions"] = int(integ_cfg["max_open_positions"])
         except (TypeError, ValueError):
             pass
-    cfg = Cac40Config.from_dict(merged)
+    cfg = TraderConfig.from_dict(merged)
     cfg.llm_mode = "live"
     cfg.llm_every_bars = cfg.resolve_llm_every_bars()
     return cfg
+
+
+def _resolved_calendar_id(cfg: TraderConfig) -> str:
+    if str(cfg.calendar_id or "").strip():
+        return str(cfg.calendar_id).strip()
+    from chatbot.trader.profiles import get_profile
+
+    return get_profile(cfg.market_profile).calendar_id
 
 
 def _config_hash(
     *,
     mode: str,
     connector_ids: list[int],
-    cfg: Cac40Config,
+    cfg: TraderConfig,
 ) -> str:
     payload = {
         "mode": mode,
@@ -763,7 +815,7 @@ def _live_chart_urls(
             {
                 "tf": tf,
                 "file": name,
-                "url": f"/dashboard/bots/{slug}/cac40/live/charts/{cycle}/{name}",
+                "url": f"/dashboard/bots/{slug}/trader/live/charts/{cycle}/{name}",
             }
         )
     return charts
@@ -773,7 +825,7 @@ def _decision_row_from_entry(
     entry: dict[str, Any], *, slug: str, journal_root: Path
 ) -> dict[str, Any]:
     """Map a cycle.json / decisions_log entry into run.html decision shape."""
-    from chatbot.application.cac40_cycle_ops_log import (
+    from chatbot.application.trader_cycle_ops_log import (
         build_cycle_ops_log,
         ops_log_line_count,
     )
@@ -1016,6 +1068,52 @@ def read_live_book(settings: Settings, slug: str) -> dict[str, Any]:
     }
 
 
+def build_live_panel_snapshot(
+    settings: Settings, slug: str, *, cycle_limit: int = 3
+) -> dict[str, Any]:
+    """
+    Lightweight payload for Trading → Live auto-refresh.
+
+    ``fingerprint`` changes when open-book groups or the latest cycles change so
+    the browser can skip DOM swaps when nothing moved.
+    """
+    book = read_live_book(settings, slug)
+    cycles = list_live_cycles(settings, slug, limit=cycle_limit)
+    live_cfg = load_live_config(settings, slug)
+    status = read_live_status(settings, slug)
+    fp_src = {
+        "book_as_of": book.get("as_of"),
+        "phase": book.get("phase"),
+        "last_price": book.get("last_price"),
+        "groups": book.get("groups"),
+        "cycles": [
+            {
+                "cycle_id": c.get("cycle_id"),
+                "ts": c.get("ts"),
+                "skipped": c.get("skipped"),
+                "bias": c.get("bias"),
+                "has_charts": c.get("has_charts"),
+                "executed_count": c.get("executed_count"),
+                "rejected_count": c.get("rejected_count"),
+            }
+            for c in cycles
+            if isinstance(c, dict)
+        ],
+    }
+    digest = hashlib.sha256(
+        json.dumps(fp_src, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    return {
+        "mode": live_cfg.get("mode") or "off",
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "book_as_of": book.get("as_of"),
+        "last_cycle_at": status.get("last_cycle_at"),
+        "fingerprint": digest,
+        "book": book,
+        "cycles": cycles,
+    }
+
+
 def _book_position_row(pos: dict[str, Any]) -> dict[str, Any]:
     return {
         "row_kind": "position",
@@ -1249,14 +1347,51 @@ def _attach_local_ohlc_provider(
     path = default_ohlc_path(settings, slug)
 
     def _provider():
+        from chatbot.application.trader_stream_service import (
+            read_stream_quote,
+            read_stream_status,
+            stream_is_healthy,
+        )
+        from chatbot.trader.market_calendar import session_snapshot
+
+        stream_status = read_stream_status(settings, slug)
+        quote = read_stream_quote(settings, slug)
+        dealing_open = True
+        try:
+            dealing_open = bool(session_snapshot().get("dealing_open"))
+        except Exception:
+            pass
+        healthy = stream_is_healthy(stream_status, dealing_open=dealing_open)
+        stale = bool(stream_status.get("stale")) if stream_status else False
+        # Only treat missing stream as non-stale when worker never wrote status
+        # (stream worker not deployed) — then fall back to REST top-up.
+        stream_configured = bool(stream_status)
+        mid = None
+        try:
+            mid = float(quote.get("mid") or 0) or None
+        except (TypeError, ValueError):
+            mid = None
         return prepare_live_ohlc_feed(
             path,
             config=sched.config,
             connector=sched.ig,
             top_up=True,
+            stream_healthy=healthy if stream_configured else None,
+            stream_stale=stale if stream_configured else False,
+            stream_mid=mid,
+            stream_error=str(stream_status.get("stale_reason") or stream_status.get("error") or "")
+            or None,
         )
 
     sched.ohlc_provider = _provider
+    # Allow live cycle to skip redundant REST book sync when stream just reconciled.
+    sched.stream_status_path = stream_status_path_for_slug(settings, slug)
+
+
+def stream_status_path_for_slug(settings: Settings, slug: str):
+    from chatbot.application.trader_stream_service import stream_status_path
+
+    return stream_status_path(settings, slug)
 
 
 def _status_from_cycle_payload(
@@ -1302,7 +1437,7 @@ def _get_or_build_scheduler(
     settings: Settings,
     slug: str,
     live_cfg: dict[str, Any],
-    cfg: Cac40Config,
+    cfg: TraderConfig,
     api_key: str,
     connectors: list[tuple[int, dict[str, Any]]],
     tenant_id: int,
@@ -1355,11 +1490,72 @@ def _get_or_build_scheduler(
     return sched
 
 
+def _optional_positive_float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        n = float(value)
+    except (TypeError, ValueError):
+        return None
+    if n <= 0:
+        return None
+    return n
+
+
+def _attached_levels_from_wo_payload(
+    data: dict[str, Any], *, side: Any, level: float
+) -> tuple[float | None, float | None]:
+    """
+    Resolve attached TP/SL on an IG working order.
+
+    Prefers absolute ``limitLevel`` / ``stopLevel``. Falls back to
+    ``limitDistance`` / ``stopDistance`` (IG FX often returns distance only).
+    """
+    from chatbot.trader.models import Side
+
+    limit_level = _optional_positive_float(
+        data.get("limitLevel") if data.get("limitLevel") is not None else data.get("limit_level")
+    )
+    stop_level = _optional_positive_float(
+        data.get("stopLevel") if data.get("stopLevel") is not None else data.get("stop_level")
+    )
+    side_s = side if isinstance(side, Side) else None
+    if side_s is None:
+        token = str(getattr(side, "value", side) or "").upper()
+        side_s = Side.BUY if token == "BUY" else Side.SELL if token == "SELL" else None
+    if side_s is None or level <= 0:
+        return limit_level, stop_level
+
+    # FX mid < 50 → 0.0001/pt; indices → 1.0/pt (same heuristic as WO TP attach).
+    pip = 0.0001 if level < 50 else 1.0
+    if limit_level is None:
+        dist = _optional_positive_float(
+            data.get("limitDistance")
+            if data.get("limitDistance") is not None
+            else data.get("limit_distance")
+        )
+        if dist is not None:
+            limit_level = (
+                level + dist * pip if side_s == Side.BUY else level - dist * pip
+            )
+    if stop_level is None:
+        dist = _optional_positive_float(
+            data.get("stopDistance")
+            if data.get("stopDistance") is not None
+            else data.get("stop_distance")
+        )
+        if dist is not None:
+            stop_level = (
+                level - dist * pip if side_s == Side.BUY else level + dist * pip
+            )
+    return limit_level, stop_level
+
+
 def _parse_ig_working_order_row(
     row: dict[str, Any], *, epic: str
 ) -> dict[str, Any] | None:
     """Normalize an IG working-order payload into side/type/level/size/deal_id."""
-    from chatbot.cac40.models import OrderType, Side
+    from chatbot.trader.models import OrderType, Side
 
     data = row.get("workingOrderData") if isinstance(row.get("workingOrderData"), dict) else row
     if not isinstance(data, dict):
@@ -1367,12 +1563,16 @@ def _parse_ig_working_order_row(
     row_epic = str(data.get("epic") or "").strip()
     if epic and row_epic and row_epic != epic:
         return None
-    deal_id = str(data.get("dealId") or "").strip()
+    deal_id = str(data.get("dealId") or data.get("deal_id") or "").strip()
     if not deal_id:
         return None
     direction = str(data.get("direction") or "").upper()
     if direction not in ("BUY", "SELL"):
+        side_raw = data.get("side")
+        direction = str(getattr(side_raw, "value", side_raw) or "").upper()
+    if direction not in ("BUY", "SELL"):
         return None
+    side = Side.BUY if direction == "BUY" else Side.SELL
     raw_type = str(data.get("orderType") or data.get("type") or "LIMIT").upper()
     otype = OrderType.STOP if "STOP" in raw_type else OrderType.LIMIT
     try:
@@ -1395,14 +1595,113 @@ def _parse_ig_working_order_row(
         size = 0.0
     if level <= 0 or size <= 0:
         return None
+    limit_level, stop_level = _attached_levels_from_wo_payload(
+        data, side=side, level=level
+    )
     return {
         "deal_id": deal_id,
-        "side": Side.BUY if direction == "BUY" else Side.SELL,
+        "side": side,
         "type": otype,
         "level": level,
         "size": size,
         "epic": row_epic,
+        "limit_level": limit_level,
+        "stop_level": stop_level,
     }
+
+
+def _import_attached_protection(
+    ledger: HedgeLedger,
+    *,
+    parent_deal_id: str,
+    close_side: Any,
+    size: float,
+    limit_level: float | None,
+    stop_level: float | None,
+    position_id: str | None = None,
+    parent_order_id: str | None = None,
+    known_wo: set[str],
+    order_book: dict[str, str],
+    imported_orders: list[dict[str, Any]],
+) -> None:
+    """Model IG attached limit/stop as local TP / hedge_cover WOs (sentinel deal ids)."""
+    from chatbot.trader.models import (
+        OrderPurpose,
+        OrderType,
+        WorkingOrder,
+        attached_deal_id,
+    )
+
+    for purpose, attached_lvl, otype in (
+        (OrderPurpose.TP, limit_level, OrderType.LIMIT),
+        (OrderPurpose.HEDGE_COVER, stop_level, OrderType.STOP),
+    ):
+        if attached_lvl is None:
+            continue
+        try:
+            lvl = float(attached_lvl)
+        except (TypeError, ValueError):
+            continue
+        if lvl <= 0:
+            continue
+        sentinel = attached_deal_id(parent_deal_id, purpose)
+        if sentinel in known_wo:
+            continue
+        twin = None
+        if position_id:
+            twin = _find_attached_protection_twin(
+                ledger,
+                purpose=purpose,
+                side=close_side,
+                level=lvl,
+                leg_id=position_id,
+            )
+        if twin is not None:
+            old_did = (twin.deal_id or "").strip()
+            if old_did and old_did in known_wo:
+                known_wo.discard(old_did)
+            twin.deal_id = sentinel
+            twin.position_id = position_id
+            twin.parent_order_id = parent_order_id
+            twin.level = lvl
+            twin.size = size
+            known_wo.add(sentinel)
+            order_book[twin.id] = sentinel
+            imported_orders.append(
+                {
+                    "id": twin.id,
+                    "deal_id": sentinel,
+                    "purpose": purpose.value,
+                    "side": getattr(close_side, "value", close_side),
+                    "level": lvl,
+                    "upgraded": True,
+                }
+            )
+            continue
+        placed = ledger.place_order(
+            WorkingOrder(
+                id="",
+                type=otype,
+                side=close_side,
+                level=lvl,
+                size=size,
+                purpose=purpose,
+                position_id=position_id,
+                parent_order_id=parent_order_id,
+                deal_id=sentinel,
+            )
+        )
+        known_wo.add(sentinel)
+        order_book[placed.id] = sentinel
+        imported_orders.append(
+            {
+                "id": placed.id,
+                "deal_id": sentinel,
+                "purpose": purpose.value,
+                "side": getattr(close_side, "value", close_side),
+                "level": lvl,
+            }
+        )
 
 
 def _find_attached_protection_twin(
@@ -1419,7 +1718,7 @@ def _find_attached_protection_twin(
     Matches empty deal_id, any ``attached:…`` sentinel, or a child of a vanished
     entry — same side/level, not bound to a different open leg.
     """
-    from chatbot.cac40.models import OrderPurpose, parse_attached_deal_id
+    from chatbot.trader.models import OrderPurpose, parse_attached_deal_id
 
     want_purpose = purpose if isinstance(purpose, OrderPurpose) else OrderPurpose(str(purpose))
     open_leg_ids = set(ledger.positions.keys())
@@ -1783,13 +2082,12 @@ def adopt_ig_snapshot_into_ledger(
     Returns ``{imported_positions, imported_orders, skipped, warnings, order_book,
     quarantined, replaced}``.
     """
-    from chatbot.cac40.models import (
+    from chatbot.trader.models import (
         LegRole,
         OrderPurpose,
         OrderType,
         Side,
         WorkingOrder,
-        attached_deal_id,
     )
 
     want = (epic or "").strip()
@@ -1883,73 +2181,18 @@ def adopt_ig_snapshot_into_ledger(
 
         # Model attached stop/limit from the position payload (not in /workingorders).
         close_side = Side.SELL if side == Side.BUY else Side.BUY
-        for purpose, lvl_key, otype in (
-            (OrderPurpose.TP, "limit_level", OrderType.LIMIT),
-            (OrderPurpose.HEDGE_COVER, "stop_level", OrderType.STOP),
-        ):
-            raw_lvl = row.get(lvl_key)
-            if raw_lvl is None:
-                continue
-            try:
-                attached_lvl = float(raw_lvl)
-            except (TypeError, ValueError):
-                continue
-            if attached_lvl <= 0:
-                continue
-            sentinel = attached_deal_id(deal_id, purpose)
-            if sentinel in known_wo:
-                continue
-            twin = _find_attached_protection_twin(
-                ledger,
-                purpose=purpose,
-                side=close_side,
-                level=attached_lvl,
-                leg_id=leg.id,
-            )
-            if twin is not None:
-                old_did = (twin.deal_id or "").strip()
-                if old_did and old_did in known_wo:
-                    known_wo.discard(old_did)
-                twin.deal_id = sentinel
-                twin.position_id = leg.id
-                twin.level = attached_lvl
-                twin.size = size
-                known_wo.add(sentinel)
-                order_book[twin.id] = sentinel
-                imported_orders.append(
-                    {
-                        "id": twin.id,
-                        "deal_id": sentinel,
-                        "purpose": purpose.value,
-                        "side": close_side.value,
-                        "level": attached_lvl,
-                        "upgraded": True,
-                    }
-                )
-                continue
-            placed = ledger.place_order(
-                WorkingOrder(
-                    id="",
-                    type=otype,
-                    side=close_side,
-                    level=attached_lvl,
-                    size=size,
-                    purpose=purpose,
-                    position_id=leg.id,
-                    deal_id=sentinel,
-                )
-            )
-            known_wo.add(sentinel)
-            order_book[placed.id] = sentinel
-            imported_orders.append(
-                {
-                    "id": placed.id,
-                    "deal_id": sentinel,
-                    "purpose": purpose.value,
-                    "side": close_side.value,
-                    "level": attached_lvl,
-                }
-            )
+        _import_attached_protection(
+            ledger,
+            parent_deal_id=deal_id,
+            close_side=close_side,
+            size=size,
+            limit_level=_optional_positive_float(row.get("limit_level")),
+            stop_level=_optional_positive_float(row.get("stop_level")),
+            position_id=leg.id,
+            known_wo=known_wo,
+            order_book=order_book,
+            imported_orders=imported_orders,
+        )
 
     # --- working orders ---
     for raw in working_orders:
@@ -1986,17 +2229,16 @@ def adopt_ig_snapshot_into_ledger(
 
         purpose = OrderPurpose.ENTRY
         position_id: str | None = None
-        # Heuristic: opposite an open leg → TP (limit) or hedge_cover (stop).
-        for leg in ledger.positions.values():
-            if leg.side != side:
-                if otype == OrderType.LIMIT:
-                    purpose = OrderPurpose.TP
-                    position_id = leg.id
-                else:
+        # IG /workingorders are standalone forceOpen orders (Orders tab).
+        # True position TP lives on position.limitLevel → attached:* above.
+        # Opposite-side LIMIT must stay ENTRY (new short/long), not fake TP.
+        # Opposite-side STOP may be our forceOpen hedge_cover — nest for UX.
+        if otype == OrderType.STOP:
+            for leg in ledger.positions.values():
+                if leg.side != side:
                     purpose = OrderPurpose.HEDGE_COVER
                     position_id = leg.id
-                break
-
+                    break
         order = WorkingOrder(
             id="",
             type=otype,
@@ -2019,6 +2261,34 @@ def adopt_ig_snapshot_into_ledger(
                 "level": level,
             }
         )
+
+        # IG can attach TP/SL on the working-order ticket (limitLevel/stopLevel
+        # or *Distance). Nest under the entry via parent_order_id — do not treat
+        # separate opposite LIMITs as TP (those stay ENTRY above).
+        if purpose == OrderPurpose.ENTRY:
+            close_side = Side.SELL if side == Side.BUY else Side.BUY
+            lim = _optional_positive_float(parsed.get("limit_level"))
+            stp = _optional_positive_float(parsed.get("stop_level"))
+            if lim is None and stp is None and isinstance(raw, dict):
+                lim, stp = _attached_levels_from_wo_payload(
+                    raw.get("workingOrderData")
+                    if isinstance(raw.get("workingOrderData"), dict)
+                    else raw,
+                    side=side,
+                    level=level,
+                )
+            _import_attached_protection(
+                ledger,
+                parent_deal_id=deal_id,
+                close_side=close_side,
+                size=size,
+                limit_level=lim,
+                stop_level=stp,
+                parent_order_id=placed.id,
+                known_wo=known_wo,
+                order_book=order_book,
+                imported_orders=imported_orders,
+            )
 
     if not imported_positions and not imported_orders and not warnings and not replaced:
         warnings.append("nothing_new")
@@ -2057,13 +2327,10 @@ def _fetch_ig_snapshot(
     if tenant is None:
         return {"ok": False, "message": f"Bot {slug!r} not found.", "error": "not_found"}
 
-    integ = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
-        tenant.id, type=IntegrationType.CAC40_BACKTEST
-    )
-    if integ is None:
+    if not tenant.is_trader:
         return {
             "ok": False,
-            "message": "CAC40 integration is not active.",
+            "message": "This bot is not a trader bot.",
             "error": "no_integration",
         }
 
@@ -2087,14 +2354,18 @@ def _fetch_ig_snapshot(
         }
 
     primary_id, primary_cfg = connectors[0]
-    integ_cfg = dict(integ.config or {})
+    from chatbot.domain.trader_access import trader_settings_as_integration_dict
+
+    integ_cfg = trader_settings_as_integration_dict(tenant)
     gemini_model = tenant.config.chat_model or settings.chat_model or "gemini-2.5-flash"
-    cfg = _build_cac40_config(
+    cfg = _build_trader_config(
         live_cfg=live_cfg,
         integ_cfg=integ_cfg,
         primary_ig=primary_cfg,
         tenant_slug=slug,
         gemini_model=gemini_model,
+        system_prompt=str(tenant.prompt or ""),
+        market_profile=str(getattr(tenant.config.trader, "market_profile", None) or "cac40"),
     )
 
     connector = IgConnector(ig_config_from_connector(primary_cfg), dry_run=True)
@@ -2170,6 +2441,15 @@ def _ig_deal_sets(
         did = str(parsed.get("deal_id") or "").strip()
         if did:
             wo_ids.add(did)
+            for purpose, lvl_key in (("tp", "limit_level"), ("hedge_cover", "stop_level")):
+                raw_lvl = parsed.get(lvl_key)
+                if raw_lvl is None:
+                    continue
+                try:
+                    if float(raw_lvl) > 0:
+                        wo_ids.add(f"attached:{did}:{purpose}")
+                except (TypeError, ValueError):
+                    continue
     return pos_ids, wo_ids, pos_by_deal
 
 
@@ -2247,26 +2527,9 @@ def preview_ig_book(
         row = _book_order_row(order)
         did = str(order.get("deal_id") or "").strip()
         if did.startswith("attached:"):
-            from chatbot.cac40.models import OrderPurpose, parse_attached_deal_id
-
-            parsed = parse_attached_deal_id(did)
-            parent = parsed[0] if parsed else ""
-            purpose = parsed[1] if parsed else OrderPurpose.TP.value
-            parent_row = ig_pos_by_deal.get(parent)
-            if parent_row is None:
-                status = "remove"
-            else:
-                # Legacy 2-part attached:{deal} defaults to tp → limit_level.
-                lvl_key = (
-                    "limit_level"
-                    if purpose in (OrderPurpose.TP.value, OrderPurpose.CLOSE.value)
-                    else "stop_level"
-                )
-                try:
-                    lvl = float(parent_row.get(lvl_key) or 0)
-                except (TypeError, ValueError):
-                    lvl = 0.0
-                status = "in_sync" if lvl > 0 else "remove"
+            # Position- and WO-attached TP/SL are both recorded in ig_wo_ids as
+            # attached:{parentDeal}:{purpose} when IG still has the level.
+            status = "in_sync" if did in ig_wo_ids else "remove"
         elif did and did in ig_wo_ids:
             status = "in_sync"
         else:
@@ -2547,13 +2810,10 @@ def run_live_cycle_now(
     if tenant is None:
         return {"ok": False, "message": f"Bot {slug!r} not found.", "error": "not_found"}
 
-    integ = IntegrationService(SqlAlchemyIntegrationRepository(session)).find_active(
-        tenant.id, type=IntegrationType.CAC40_BACKTEST
-    )
-    if integ is None:
+    if not tenant.is_trader:
         return {
             "ok": False,
-            "message": "CAC40 integration is not active.",
+            "message": "This bot is not a trader bot.",
             "error": "no_integration",
         }
 
@@ -2585,14 +2845,18 @@ def run_live_cycle_now(
         except Exception:
             session_factory = None
 
-    integ_cfg = dict(integ.config or {})
+    from chatbot.domain.trader_access import trader_settings_as_integration_dict
+
+    integ_cfg = trader_settings_as_integration_dict(tenant)
     gemini_model = tenant.config.chat_model or settings.chat_model or "gemini-2.5-flash"
-    cfg = _build_cac40_config(
+    cfg = _build_trader_config(
         live_cfg=live_cfg,
         integ_cfg=integ_cfg,
         primary_ig=connectors[0][1],
         tenant_slug=slug,
         gemini_model=gemini_model,
+        system_prompt=str(tenant.prompt or ""),
+        market_profile=str(getattr(tenant.config.trader, "market_profile", None) or "cac40"),
     )
     api_key = _gemini_api_key(tenant, settings) or ""
     if not api_key:
@@ -2664,7 +2928,7 @@ def run_live_cycle_now(
                     "ok": True,
                     "started_at": datetime.now(timezone.utc).isoformat(),
                     "finished_at": datetime.now(timezone.utc).isoformat(),
-                    "poll_seconds": settings.cac40_live_poll_seconds,
+                    "poll_seconds": settings.trader_live_poll_seconds,
                     "tenants_ok": 1,
                     "tenants_failed": 0,
                     "tenants_skipped": 0,
@@ -2702,9 +2966,7 @@ def run_live_cycle_now(
                 f"orders={pnl.get('working_orders_count', 0)} · "
                 f"realized={float(pnl.get('realized_session') or 0):.2f}"
             )
-            if warnings:
-                msg += f" · note: {'; '.join(warnings)}"
-            return {"ok": True, "message": msg, "error": None, "payload": payload}
+            return {"ok": True, "message": msg, "payload": payload}
         except Exception as exc:
             logger.exception("Manual live cycle failed for %s", slug)
             write_live_status(
@@ -2727,6 +2989,234 @@ def run_live_cycle_now(
             }
 
 
+def find_replayable_cycle(
+    settings: Settings,
+    slug: str,
+    *,
+    cycle_dir: str | None = None,
+) -> dict[str, Any] | None:
+    """Return a journal cycle.json dict that has a non-empty LLM decision."""
+    journal = live_dir(settings, slug) / "journal"
+    if not journal.is_dir():
+        return None
+
+    def _load(path: Path) -> dict[str, Any] | None:
+        raw = _read_json(path, default=None)
+        if not isinstance(raw, dict):
+            return None
+        dec = raw.get("decision")
+        if not isinstance(dec, dict):
+            return None
+        actions = dec.get("actions")
+        if not isinstance(actions, list) or not actions:
+            return None
+        out = dict(raw)
+        if not out.get("cycle_dir"):
+            out["cycle_dir"] = path.parent.name
+        return out
+
+    wanted = str(cycle_dir or "").strip()
+    if wanted:
+        path = journal / wanted / "cycle.json"
+        return _load(path) if path.is_file() else None
+
+    dirs = sorted(
+        (p for p in journal.iterdir() if p.is_dir() and p.name != "market_closed"),
+        key=lambda p: p.name,
+        reverse=True,
+    )
+    # Prefer original Gemini decisions — skip cycles that are themselves replays
+    # (those may carry already-nudged levels from older gate bugs).
+    for prefer_original in (True, False):
+        for d in dirs:
+            path = d / "cycle.json"
+            if not path.is_file():
+                continue
+            loaded = _load(path)
+            if not loaded:
+                continue
+            if prefer_original and loaded.get("replay_of"):
+                continue
+            return loaded
+    return None
+
+
+def replay_live_decision(
+    session: Session,
+    settings: Settings,
+    slug: str,
+    *,
+    cycle_dir: str | None = None,
+    session_factory=None,
+) -> dict[str, Any]:
+    """
+    Re-apply a stored LLM decision (no Gemini call) on the current book.
+
+    Dev tool: useful to re-test RiskGate / IG mirror after code changes.
+    """
+    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from chatbot.trader.models import LlmDecision
+
+    tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
+    tenant = tenant_svc.get_by_slug(slug)
+    if tenant is None:
+        return {"ok": False, "message": f"Bot {slug!r} not found.", "error": "not_found"}
+    if not tenant.is_trader:
+        return {
+            "ok": False,
+            "message": "This bot is not a trader bot.",
+            "error": "no_integration",
+        }
+
+    stored = find_replayable_cycle(settings, slug, cycle_dir=cycle_dir)
+    if not stored:
+        return {
+            "ok": False,
+            "message": "No stored LLM decision to replay"
+            + (f" (cycle {cycle_dir})" if cycle_dir else "")
+            + ".",
+            "error": "no_decision",
+        }
+    source_cycle = str(stored.get("cycle_dir") or cycle_dir or "")
+    decision = LlmDecision.from_dict(stored.get("decision"))
+
+    live_cfg = load_live_config(settings, slug)
+    mode = live_cfg["mode"]
+    if mode == "off":
+        return {
+            "ok": False,
+            "message": "Bot is Off — arm Live/Paper before replaying a decision.",
+            "error": "mode_off",
+        }
+
+    conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
+    connectors, warnings, conn_err = _resolve_selected_ig_connectors(
+        conn_svc, tenant.id, live_cfg
+    )
+    if conn_err:
+        return {
+            "ok": False,
+            "message": "No selected active IG connector — check accounts, Save live config, retry.",
+            "error": conn_err,
+        }
+
+    if session_factory is None:
+        try:
+            from chatbot.adapters.persistence.engine import session_factory as make_factory
+
+            session_factory = make_factory(session.get_bind())
+        except Exception:
+            session_factory = None
+
+    from chatbot.domain.trader_access import trader_settings_as_integration_dict
+
+    integ_cfg = trader_settings_as_integration_dict(tenant)
+    gemini_model = tenant.config.chat_model or settings.chat_model or "gemini-2.5-flash"
+    cfg = _build_trader_config(
+        live_cfg=live_cfg,
+        integ_cfg=integ_cfg,
+        primary_ig=connectors[0][1],
+        tenant_slug=slug,
+        gemini_model=gemini_model,
+        system_prompt=str(tenant.prompt or ""),
+        market_profile=str(getattr(tenant.config.trader, "market_profile", None) or "cac40"),
+    )
+    # Replay does not call Gemini; placeholder key is fine.
+    api_key = "replay-no-llm"
+
+    prev_status = read_live_status(settings, slug)
+    prev_cycles = int(prev_status.get("cycles") or 0)
+    with live_cycle_lock(settings, slug, blocking=False) as acquired:
+        if not acquired:
+            return {
+                "ok": False,
+                "message": "A cycle is already running for this bot — try again in a moment.",
+                "error": "cycle_busy",
+            }
+        try:
+            sched = _get_or_build_scheduler(
+                settings=settings,
+                slug=slug,
+                live_cfg=live_cfg,
+                cfg=cfg,
+                api_key=api_key,
+                connectors=connectors,
+                tenant_id=tenant.id,
+                session_factory=session_factory,
+            )
+            payload = sched.run_once(
+                force_llm=False,
+                replay_decision=decision,
+                replay_of=source_cycle or None,
+            )
+            _persist_llm_schedule(sched, settings, slug)
+            _write_json(live_state_path(settings, slug), sched.ig.ledger.to_state_dict())
+            _append_decision(settings, slug, payload)
+            append_sync_log_from_payload(
+                settings, slug, payload, source="cycle_replay"
+            )
+            slot = _remember_cycle_slot(slug)
+            pnl = sched.ig.ledger.pnl_payload()
+            feed_status = _status_from_cycle_payload(payload, base_warnings=warnings)
+            notes = list(payload.get("notes") or [])
+            write_live_status(
+                settings,
+                slug,
+                {
+                    "mode": mode,
+                    "dry_run": mode != "live",
+                    "ig_connector_ids": [c[0] for c in connectors],
+                    "last_cycle_at": payload.get("ts"),
+                    "last_cycle_slot": slot,
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "last_status": "ok",
+                    "error": None,
+                    "warnings": warnings,
+                    "mirror": payload.get("mirror") or [],
+                    "open_legs": sched.ig.ledger.legs_count(),
+                    "working_orders": len(sched.ig.ledger.working_orders),
+                    "pnl": pnl,
+                    "last_decision": sched._last_decision_summary,
+                    "skipped_llm": False,
+                    "cycles": prev_cycles + 1,
+                    "trigger": "replay",
+                    "replay_of": source_cycle,
+                    **feed_status,
+                },
+            )
+            _write_json(
+                live_worker_status_path(settings),
+                {
+                    "ok": True,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "poll_seconds": settings.trader_live_poll_seconds,
+                    "tenants_ok": 1,
+                    "tenants_failed": 0,
+                    "tenants_skipped": 0,
+                    "logs": [f"{slug}: replay ok of={source_cycle}"],
+                    "trigger": "replay",
+                },
+            )
+            note_bit = f" · notes={','.join(notes)}" if notes else ""
+            msg = (
+                f"Replay OK of {source_cycle} · "
+                f"executed={len(payload.get('executed') or [])} "
+                f"rejected={len(payload.get('rejected') or [])}"
+                f"{note_bit} · "
+                f"legs={pnl.get('legs_count', 0)} · "
+                f"orders={pnl.get('working_orders_count', 0)}"
+            )
+            return {"ok": True, "message": msg, "payload": payload}
+        except Exception as exc:
+            logger.exception("Replay live decision failed for %s", slug)
+            return {
+                "ok": False,
+                "message": f"Replay failed: {exc}",
+                "error": "replay_error",
+            }
+
+
 def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
     """One worker poll: run a live cycle for each armed bot due on the candle clock."""
     from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
@@ -2739,8 +3229,8 @@ def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
     skipped = 0
     slot = live_cycle_slot_key()
 
-    integ_repo = SqlAlchemyIntegrationRepository(session)
-    tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
+    integ_repo = SqlAlchemyTenantRepository(session)
+    tenant_svc = TenantService(integ_repo)
     conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
 
     try:
@@ -2750,11 +3240,7 @@ def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
     except Exception:
         factory = None
 
-    for integration in integ_repo.list_active_by_type(IntegrationType.CAC40_BACKTEST):
-        tenant = tenant_svc.get_by_id(integration.tenant_id)
-        if tenant is None:
-            skipped += 1
-            continue
+    for tenant in integ_repo.list_active_traders():
         slug = tenant.slug
         live_cfg = load_live_config(settings, slug)
         mode = live_cfg["mode"]
@@ -2783,14 +3269,18 @@ def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
             logs.append(f"{slug}: skip (no selected IG connector)")
             continue
 
-        integ_cfg = dict(integration.config or {})
+        from chatbot.domain.trader_access import trader_settings_as_integration_dict
+
+        integ_cfg = trader_settings_as_integration_dict(tenant)
         gemini_model = tenant.config.chat_model or settings.chat_model or "gemini-2.5-flash"
-        cfg = _build_cac40_config(
+        cfg = _build_trader_config(
             live_cfg=live_cfg,
             integ_cfg=integ_cfg,
             primary_ig=connectors[0][1],
             tenant_slug=slug,
             gemini_model=gemini_model,
+            system_prompt=str(tenant.prompt or ""),
+            market_profile=str(getattr(tenant.config.trader, "market_profile", None) or "cac40"),
         )
         api_key = _gemini_api_key(tenant, settings) or ""
         prev_status = read_live_status(settings, slug)
@@ -2870,7 +3360,7 @@ def run_due_live_cycles(session: Session, settings: Settings) -> list[str]:
             "ok": failed == 0,
             "started_at": started,
             "finished_at": finished,
-            "poll_seconds": settings.cac40_live_poll_seconds,
+            "poll_seconds": settings.trader_live_poll_seconds,
             "tenants_ok": ok,
             "tenants_failed": failed,
             "tenants_skipped": skipped,

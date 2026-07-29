@@ -272,11 +272,13 @@ def render_multi_timeframe(
     show_rsi: bool = True,
     show_pivots: bool = True,
     pivot_period: str = "D",
+    symbol: str | None = None,
 ) -> dict[str, bytes]:
     levels = last_levels or {}
     support = levels.get("support")
     resistance = levels.get("resistance")
     pivot_period = normalize_pivot_period(pivot_period)
+    label = (symbol or "").strip() or "OHLC"
     images: dict[str, bytes] = {}
     for tf, df in ohlc.items():
         if df is None or df.empty:
@@ -290,7 +292,7 @@ def render_multi_timeframe(
         tf_pivots = bool(show_pivots) and str(tf) not in _PIVOT_SKIP_TF
         images[tf] = render_ohlc_chart(
             df,
-            title=f"CAC40 {tf}",
+            title=f"{label} {tf}",
             support=float(support) if support is not None else None,
             resistance=float(resistance) if resistance is not None else None,
             out_path=path,

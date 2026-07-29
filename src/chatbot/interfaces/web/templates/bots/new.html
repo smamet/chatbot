@@ -8,6 +8,30 @@
   <form method="post" action="/dashboard/bots/new">
     <label>Name <input type="text" name="name" value="{{ name or '' }}" required></label>
     <label>Slug <small>(optional)</small> <input type="text" name="slug" value="{{ slug or '' }}" placeholder="auto from name"></label>
+    <fieldset class="form-section">
+      <legend class="form-section-title">Bot type</legend>
+      <p class="text-muted">Assistant bots use chat/RAG/hooks. Trader bots use IG + Trading (backtest/live).</p>
+      <div class="checkbox-grid checkbox-grid--stack">
+        <div class="checkbox-row">
+          <input type="radio" name="bot_type" id="bot-type-assistant" value="assistant" checked>
+          <label for="bot-type-assistant">Assistant</label>
+        </div>
+        <div class="checkbox-row">
+          <input type="radio" name="bot_type" id="bot-type-trader" value="trader">
+          <label for="bot-type-trader">Trader</label>
+        </div>
+      </div>
+      <div id="trader-defaults" hidden>
+        <label>Market profile
+          <select name="market_profile">
+            <option value="cac40" selected>CAC40 (France 40)</option>
+            <option value="eurusd">EURUSD (FX)</option>
+          </select>
+        </label>
+        <label>Symbol <input type="text" name="trader_symbol" value="CAC40"></label>
+        <label>IG epic <input type="text" name="trader_epic" value="IX.D.CAC.BMU.IP"></label>
+      </div>
+    </fieldset>
     <label>System prompt<textarea name="prompt" rows="8">{{ prompt or 'You are a helpful assistant.' }}</textarea></label>
 
     <div class="form-section">
@@ -56,4 +80,18 @@
   </form>
 </div>
 <a href="/dashboard/bots" class="back-link">← Back to bots</a>
+<script>
+(function () {
+  const assistant = document.getElementById("bot-type-assistant");
+  const trader = document.getElementById("bot-type-trader");
+  const panel = document.getElementById("trader-defaults");
+  function sync() {
+    if (!panel) return;
+    panel.hidden = !(trader && trader.checked);
+  }
+  if (assistant) assistant.addEventListener("change", sync);
+  if (trader) trader.addEventListener("change", sync);
+  sync();
+})();
+</script>
 {% endblock %}

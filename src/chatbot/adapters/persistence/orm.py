@@ -23,6 +23,7 @@ class TenantRow(Base):
     gemini_api_key_enc: Mapped[str | None] = mapped_column(Text(), nullable=True)
     config_json: Mapped[str] = mapped_column(Text(), default="{}")
     active: Mapped[bool] = mapped_column(Boolean(), default=True)
+    bot_type: Mapped[str] = mapped_column(String(32), default="assistant", index=True)
     client_billing_input_per_million_usd: Mapped[Decimal | None] = mapped_column(
         Numeric(10, 4), nullable=True
     )

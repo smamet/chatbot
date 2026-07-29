@@ -1,13 +1,13 @@
 import json
 from pathlib import Path
 
-from chatbot.application.cac40_backtest_service import (
+from chatbot.application.trader_backtest_service import (
     delete_run,
     get_run,
     resolve_chart_file,
     runs_dir,
 )
-from chatbot.cac40.chart_renderer import render_ohlc_chart
+from chatbot.trader.chart_renderer import render_ohlc_chart
 from chatbot.config.settings import Settings
 import pandas as pd
 
@@ -111,7 +111,7 @@ def test_get_run_tolerates_empty_decisions_log(tmp_path: Path) -> None:
 
 
 def test_stop_run_marks_orphan_stopped(tmp_path: Path) -> None:
-    from chatbot.application.cac40_backtest_service import stop_run
+    from chatbot.application.trader_backtest_service import stop_run
 
     settings = Settings(data_root=tmp_path)
     run_id = "run_orphan"

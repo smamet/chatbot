@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from chatbot.cac40.llm_decision import build_user_payload, summarize_decision
-from chatbot.cac40.models import LlmAction, LlmAnalysis, LlmDecision, MarketSnapshot
+from chatbot.trader.llm_decision import build_user_payload, summarize_decision
+from chatbot.trader.models import LlmAction, LlmAnalysis, LlmDecision, MarketSnapshot
 
 
 def test_build_user_payload_includes_continuity_fields():

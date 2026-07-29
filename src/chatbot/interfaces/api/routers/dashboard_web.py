@@ -216,7 +216,7 @@ from chatbot.domain.models.integration_schema import (
 )
 from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
 from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
-from chatbot.domain.models.tenant import Tenant, TenantConfig
+from chatbot.domain.models.tenant import BotType, Tenant, TenantConfig
 from chatbot.domain.models.user import User, UserRole
 from chatbot.mail.process_since import (
     format_for_datetime_local,
@@ -1224,20 +1224,40 @@ async def bot_new_submit(
     name: str = Form(...),
     slug: str = Form(""),
     prompt: str = Form("You are a helpful assistant."),
+    bot_type: str = Form("assistant"),
     user: User = Depends(require_admin),
     tenant_service: TenantService = Depends(get_tenant_service),
     session: Session = Depends(get_session),
 ):
     form = await request.form()
+    try:
+        parsed_type = BotType(str(bot_type or "assistant").strip().lower())
+    except ValueError:
+        parsed_type = BotType.ASSISTANT
     allowed_connectors = _allowed_connectors_from_form(form)
     allowed_integrations = _allowed_integrations_from_form(form)
+    trader_kwargs: dict = {}
+    if parsed_type == BotType.TRADER:
+        from chatbot.domain.models.tenant import TraderSettings
+
+        trader_kwargs["trader"] = TraderSettings(
+            market_profile=str(form.get("market_profile") or "cac40").strip() or "cac40",
+            symbol=str(form.get("trader_symbol") or "CAC40").strip() or "CAC40",
+            epic=str(form.get("trader_epic") or "IX.D.CAC.BMU.IP").strip() or "IX.D.CAC.BMU.IP",
+        )
+        if not allowed_connectors:
+            allowed_connectors = ("ig",)
+        if not allowed_integrations:
+            allowed_integrations = ("__none__",)
     result = tenant_service.create_tenant(
         name=name,
         slug=slug.strip() or None,
         prompt=prompt,
+        bot_type=parsed_type,
         config=TenantConfig(
             allowed_connectors=allowed_connectors,
             allowed_integrations=allowed_integrations,
+            **trader_kwargs,
         ),
     )
     session.commit()
@@ -1245,6 +1265,139 @@ async def bot_new_submit(
         request,
         "bots/created.html",
         {"user": user, "tenant": result.tenant, "token": result.token, "title": "Bot created"},
+    )
+
+
+@router.get("/bots/{slug}/duplicate", response_class=HTMLResponse)
+def bot_duplicate_form(
+    request: Request,
+    slug: str,
+    user: User = Depends(require_admin),
+    tenant_service: TenantService = Depends(get_tenant_service),
+):
+    tenant = tenant_service.get_by_slug(slug)
+    if tenant is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    from chatbot.trader.profiles import list_profiles_for_ui
+
+    return templates.TemplateResponse(
+        request,
+        "bots/duplicate.html",
+        {
+            "user": user,
+            "source": tenant,
+            "title": f"Duplicate — {tenant.name}",
+            "name": f"{tenant.name} (copy)",
+            "slug": "",
+            "error": None,
+            "market_profiles": list_profiles_for_ui(),
+            "market_profile": tenant.config.trader.market_profile if tenant.is_trader else None,
+            "trader_symbol": tenant.config.trader.symbol if tenant.is_trader else None,
+            "trader_epic": tenant.config.trader.epic if tenant.is_trader else None,
+            "reset_prompt_from_profile": False,
+        },
+    )
+
+
+@router.post("/bots/{slug}/duplicate", response_class=HTMLResponse)
+async def bot_duplicate_submit(
+    request: Request,
+    slug: str,
+    name: str = Form(...),
+    new_slug: str = Form(""),
+    user: User = Depends(require_admin),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    from chatbot.application.tenant_duplicate_service import (
+        TenantDuplicateError,
+        duplicate_tenant,
+    )
+    from chatbot.trader.profiles import list_profiles_for_ui
+
+    source = tenant_service.get_by_slug(slug)
+    if source is None:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    form = await request.form()
+    market_profile = str(form.get("market_profile") or "").strip() or None
+    trader_symbol = str(form.get("trader_symbol") or "").strip() or None
+    trader_epic = str(form.get("trader_epic") or "").strip() or None
+    reset_prompt = str(form.get("reset_prompt_from_profile") or "").strip().lower() in (
+        "1",
+        "true",
+        "on",
+        "yes",
+    )
+    try:
+        result = duplicate_tenant(
+            session,
+            settings,
+            slug,
+            name=name,
+            slug=new_slug.strip() or None,
+            market_profile=market_profile,
+            symbol=trader_symbol,
+            epic=trader_epic,
+            reset_prompt_from_profile=reset_prompt,
+        )
+        session.commit()
+    except TenantDuplicateError as exc:
+        return templates.TemplateResponse(
+            request,
+            "bots/duplicate.html",
+            {
+                "user": user,
+                "source": source,
+                "title": f"Duplicate — {source.name}",
+                "name": name,
+                "slug": new_slug,
+                "error": str(exc),
+                "market_profiles": list_profiles_for_ui(),
+                "market_profile": market_profile or (
+                    source.config.trader.market_profile if source.is_trader else None
+                ),
+                "trader_symbol": trader_symbol
+                or (source.config.trader.symbol if source.is_trader else None),
+                "trader_epic": trader_epic
+                or (source.config.trader.epic if source.is_trader else None),
+                "reset_prompt_from_profile": reset_prompt,
+            },
+            status_code=400,
+        )
+    except Exception as exc:
+        session.rollback()
+        return templates.TemplateResponse(
+            request,
+            "bots/duplicate.html",
+            {
+                "user": user,
+                "source": source,
+                "title": f"Duplicate — {source.name}",
+                "name": name,
+                "slug": new_slug,
+                "error": str(exc),
+                "market_profiles": list_profiles_for_ui(),
+                "market_profile": market_profile or (
+                    source.config.trader.market_profile if source.is_trader else None
+                ),
+                "trader_symbol": trader_symbol
+                or (source.config.trader.symbol if source.is_trader else None),
+                "trader_epic": trader_epic
+                or (source.config.trader.epic if source.is_trader else None),
+                "reset_prompt_from_profile": reset_prompt,
+            },
+            status_code=400,
+        )
+    return templates.TemplateResponse(
+        request,
+        "bots/created.html",
+        {
+            "user": user,
+            "tenant": result.tenant,
+            "token": result.token,
+            "title": "Bot duplicated",
+        },
     )
 
 
@@ -1524,7 +1677,7 @@ async def user_set_access(
 def bot_detail(
     request: Request,
     slug: str,
-    tab: str = "config",
+    tab: str | None = None,
     user: User = Depends(require_user),
     tenant_service: TenantService = Depends(get_tenant_service),
     user_service: UserService = Depends(get_user_service),
@@ -1533,8 +1686,24 @@ def bot_detail(
 ):
     tenant = _tenant_or_404(tenant_service, slug)
     _require_access(user, user_service, tenant)
+    if not tab:
+        tab = "trading" if tenant.is_trader else "config"
     if user_service.is_validation_only(user) and tab != "validation":
         return RedirectResponse(url=_validation_inbox_url(slug), status_code=303)
+    if tenant.is_trader and tab in (
+        "documents",
+        "integrations",
+        "validation",
+        "history",
+        "chat",
+        "email-test",
+        "hooks",
+    ):
+        return RedirectResponse(
+            url=f"/dashboard/bots/{slug}?tab=trading&ttab=live", status_code=303
+        )
+    if tab == "trading" and not tenant.is_trader:
+        return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
     connector_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
     if connector_svc.migrate_ig_to_both(tenant.id):
         session.commit()
@@ -1550,7 +1719,10 @@ def bot_detail(
     show_connectors_tab = bool(connector_schemas) or bool(connectors)
     show_mail_connections = "email" in connector_schemas
     if tab == "connectors" and not show_connectors_tab:
-        return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+        return RedirectResponse(
+            url=f"/dashboard/bots/{slug}?tab={'trading' if tenant.is_trader else 'config'}",
+            status_code=303,
+        )
     ctx: dict = {
         "user": user,
         "tenant": tenant,
@@ -1614,13 +1786,8 @@ def bot_detail(
             for i in integrations
             if not is_integration_allowed(tenant.config.allowed_integrations, i.type.value)
         },
-        "cac40_active": (
-            is_integration_allowed(
-                tenant.config.allowed_integrations, IntegrationType.CAC40_BACKTEST.value
-            )
-            and IntegrationType.CAC40_BACKTEST.value
-            in _active_integration_types(integrations)
-        ),
+        "trader_active": tenant.is_trader,
+        "bot_type": tenant.bot_type.value,
         "pending_count": pending_repo.count_pending(tenant.id),
         "has_validation_connectors": any(c.mode == ConnectorMode.VALIDATION for c in connectors),
         "automation_modules_ui": _automation_modules_for_ui(integrations),
@@ -1658,6 +1825,20 @@ def bot_detail(
         ),
         "bot_dev_mode": tenant.config.dev_mode,
     }
+    from chatbot.trader.profiles import list_profiles_for_ui
+
+    ctx["market_profiles"] = list_profiles_for_ui()
+    if tab == "trading" and tenant.is_trader:
+        from chatbot.application.trading_panel_context import build_trading_panel_context
+
+        ctx.update(
+            build_trading_panel_context(
+                tenant=tenant,
+                settings=settings,
+                session=session,
+                query_params=request.query_params,
+            )
+        )
     if tab == "documents":
         ctx["documents"] = _list_documents(settings, slug)
         ctx["sync_logs"] = request.session.pop("sync_logs", None)
@@ -1895,6 +2076,73 @@ def bot_save_settings(
     tenant_service.update_tenant(tenant.id, name=name.strip(), active=active == "on")
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.post("/bots/{slug}/trader-settings")
+def bot_save_trader_settings(
+    slug: str,
+    market_profile: str = Form("cac40"),
+    symbol: str = Form("CAC40"),
+    epic: str = Form("IX.D.CAC.BMU.IP"),
+    max_open_positions: int = Form(4),
+    fundmanager_url: str = Form(""),
+    fundmanager_token: str = Form(""),
+    user: User = Depends(require_editor),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    session: Session = Depends(get_session),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    if not tenant.is_trader:
+        raise HTTPException(status_code=403, detail="Trading settings require a trader bot")
+    from chatbot.trader.profiles import get_profile
+
+    profile = get_profile(market_profile)
+    token = fundmanager_token.strip() or tenant.config.trader.fundmanager_token
+    config = tenant.config.with_trader(
+        market_profile=profile.id,
+        symbol=(symbol or profile.default_symbol).strip() or profile.default_symbol,
+        epic=(epic or profile.default_epic).strip() or profile.default_epic,
+        max_open_positions=max(1, int(max_open_positions or 4)),
+        fundmanager_url=fundmanager_url.strip(),
+        fundmanager_token=token,
+    )
+    tenant_service.update_tenant(tenant.id, config=config)
+    session.commit()
+    return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.get("/bots/{slug}/trader-default-prompt")
+def bot_trader_default_prompt(
+    slug: str,
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+):
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    if not tenant.is_trader:
+        raise HTTPException(status_code=403, detail="Not a trader bot")
+    from chatbot.trader.profiles import default_prompt_text, get_profile
+
+    profile_id = tenant.config.trader.market_profile
+    prompt = default_prompt_text(profile_id)
+    if not prompt.strip():
+        profile = get_profile(profile_id)
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"Default prompt file missing for profile {profile.id!r} "
+                f"({profile.prompt_relative}). Ensure prompts/ is available in the app."
+            ),
+        )
+    return JSONResponse(
+        {
+            "prompt": prompt,
+            "profile": profile_id,
+        }
+    )
 
 
 @router.post("/bots/{slug}/regenerate-token", response_class=HTMLResponse)
@@ -2391,7 +2639,15 @@ async def test_connector_working_orders(
         connector_type=connector_type,
         direction=direction,
     )
-    result = run_ig_working_order_test(cfg, hold_seconds=15.0)
+    allow_market = str(form.get("allow_market_orders", "")).strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    result = run_ig_working_order_test(
+        cfg, hold_seconds=15.0, allow_market_orders=allow_market
+    )
     return JSONResponse(result.to_dict())
 
 
@@ -2998,8 +3254,6 @@ async def save_integration(
         else False
     )
     cfg = _merge_integration_config(existing.config if existing else None, incoming)
-    if itype == IntegrationType.CAC40_BACKTEST:
-        cfg["bot_id"] = tenant.slug
     saved = svc.upsert(tenant_id=tenant.id, type=itype, config=cfg, active=active == "on")
     if itype == IntegrationType.ERPNEXT:
         now_enabled = catalog_rag_effective_enabled(active=saved.active, config=saved.config)

@@ -1,8 +1,8 @@
-from chatbot.application.cac40_cycle_ops_log import (
+from chatbot.application.trader_cycle_ops_log import (
     build_cycle_ops_log,
     ops_log_line_count,
 )
-from chatbot.cac40.ig_connector import compact_ig_error
+from chatbot.trader.ig_connector import compact_ig_error
 
 
 def test_build_cycle_ops_log_backtest_gate_only():

@@ -1,0 +1,41 @@
+{# HTML fragments for Trading → Live auto-refresh (open book + latest cycles). #}
+
+{% macro live_cycles_list(cycles, slug) %}
+  <h3 class="card-title" style="font-size:1rem;margin-top:1rem;">Live cycles</h3>
+  <p class="field-hint">Latest 3 cycles — open <a href="/dashboard/bots/{{ slug }}/trader/live/report">View results</a> for full history.</p>
+  {% if cycles %}
+  <ul class="trader-runs__list trader-runs__list--compact" style="margin-bottom:1rem;">
+    {% for c in cycles %}
+    <li class="trader-run trader-run--compact">
+      <div class="trader-run__main">
+        <a class="trader-run__id" href="/dashboard/bots/{{ slug }}/trader/live/report#cycle-{{ c.cycle_id }}" title="{{ c.cycle_id }}">{{ c.cycle_id }}</a>
+        {% if c.skipped %}<span class="badge off">skipped</span>
+        {% elif c.bias %}<span class="badge">{{ c.bias }}</span>
+        {% else %}<span class="badge">decision</span>{% endif %}
+        {% if c.has_charts %}<span class="badge done">charts</span>{% endif %}
+        {% if c.ts %}
+        <time class="text-muted js-local-datetime" datetime="{{ c.ts }}">{{ c.ts }}</time>
+        {% else %}
+        <span class="text-muted">—</span>
+        {% endif %}
+      </div>
+      <div class="trader-run__metrics">
+        <span class="trader-run__metric">
+          <b>{{ c.executed_count }}</b>
+          <small>Accepted</small>
+        </span>
+        <span class="trader-run__metric">
+          <b>{{ c.rejected_count }}</b>
+          <small>Rejected</small>
+        </span>
+      </div>
+      <div class="trader-run__actions">
+        <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ slug }}/trader/live/report#cycle-{{ c.cycle_id }}">Open</a>
+      </div>
+    </li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="field-hint" style="margin-bottom:1rem;">No cycles yet.</p>
+  {% endif %}
+{% endmacro %}

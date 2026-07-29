@@ -9,21 +9,21 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import pytest
 
-from chatbot.application.cac40_live_service import (
+from chatbot.application.trader_live_service import (
     _load_market_closed_groups,
     merge_decisions_with_market_closed,
 )
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.llm_decision import build_user_payload
-from chatbot.cac40.market_calendar import (
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.hedge_ledger import HedgeLedger
+from chatbot.trader.llm_decision import build_user_payload
+from chatbot.trader.market_calendar import (
     euronext_closures,
     flatten_check,
     is_dealing_open,
     is_trading_day,
     session_snapshot,
 )
-from chatbot.cac40.models import (
+from chatbot.trader.models import (
     LegRole,
     LlmAction,
     LlmAnalysis,
@@ -34,8 +34,8 @@ from chatbot.cac40.models import (
     Side,
     WorkingOrder,
 )
-from chatbot.cac40.risk_gate import RiskGate
-from chatbot.cac40.scheduler import LiveScheduler
+from chatbot.trader.risk_gate import RiskGate
+from chatbot.trader.scheduler import LiveScheduler
 
 
 LONDON = ZoneInfo("Europe/London")
@@ -178,7 +178,7 @@ def test_payload_includes_market_clock_and_flatten_instruction():
 
 
 def test_risk_gate_flatten_allows_market_hedge_uncapped_at_max():
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         allow_market_orders=False,
         max_open_positions=2,
         order_size=1.0,
@@ -216,7 +216,7 @@ def test_risk_gate_flatten_allows_market_hedge_uncapped_at_max():
 
 
 def test_risk_gate_still_blocks_market_without_flatten():
-    cfg = Cac40Config(allow_market_orders=False, spread_points=0)
+    cfg = TraderConfig(allow_market_orders=False, spread_points=0)
     ledger = HedgeLedger(config=cfg)
     ledger.last_price = 100
     ledger.market_open(Side.BUY, 1.0)
@@ -247,7 +247,7 @@ def _ohlc_df(n: int = 5) -> pd.DataFrame:
 
 
 def test_auto_flatten_on_llm_fail_closes_net_and_cancels_entries(tmp_path: Path, monkeypatch):
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         flatten_before_close=True,
         flatten_lead_minutes=30,
         allow_market_orders=False,
@@ -297,7 +297,7 @@ def test_auto_flatten_on_llm_fail_closes_net_and_cancels_entries(tmp_path: Path,
     )()
 
     monkeypatch.setattr(
-        "chatbot.cac40.scheduler.session_snapshot",
+        "chatbot.trader.scheduler.session_snapshot",
         lambda *a, **k: _open_session(
             flatten_now=True,
             flatten_reason="weekend",
@@ -317,7 +317,7 @@ def test_auto_flatten_on_llm_fail_closes_net_and_cancels_entries(tmp_path: Path,
 
 
 def test_auto_flatten_noop_when_already_flat(tmp_path: Path, monkeypatch):
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         flatten_before_close=True,
         flatten_lead_minutes=30,
         spread_points=0,
@@ -350,7 +350,7 @@ def test_auto_flatten_noop_when_already_flat(tmp_path: Path, monkeypatch):
         },
     )()
     monkeypatch.setattr(
-        "chatbot.cac40.scheduler.session_snapshot",
+        "chatbot.trader.scheduler.session_snapshot",
         lambda *a, **k: _open_session(
             flatten_now=True,
             flatten_reason="weekend",
@@ -365,7 +365,7 @@ def test_auto_flatten_noop_when_already_flat(tmp_path: Path, monkeypatch):
 
 
 def test_idle_when_market_closed_skips_ohlc_and_llm(tmp_path: Path, monkeypatch):
-    cfg = Cac40Config(chart_show_pivots=False, chart_show_rsi=False)
+    cfg = TraderConfig(chart_show_pivots=False, chart_show_rsi=False)
     sched = LiveScheduler(cfg, api_key="", journal_dir=tmp_path, dry_run=True)
     called = {"ohlc": False, "login": False}
 
@@ -382,7 +382,7 @@ def test_idle_when_market_closed_skips_ohlc_and_llm(tmp_path: Path, monkeypatch)
     sched.llm.decide = lambda *a, **k: (_ for _ in ()).throw(AssertionError("llm"))
 
     monkeypatch.setattr(
-        "chatbot.cac40.scheduler.session_snapshot",
+        "chatbot.trader.scheduler.session_snapshot",
         lambda *a, **k: {
             **_open_session(
                 dealing_open=False,
@@ -408,7 +408,7 @@ def test_idle_when_market_closed_skips_ohlc_and_llm(tmp_path: Path, monkeypatch)
 
 
 def test_resume_when_open_runs_full_path(tmp_path: Path, monkeypatch):
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         chart_show_pivots=False,
         chart_show_rsi=False,
         llm_trigger_mode="interval",
@@ -441,7 +441,7 @@ def test_resume_when_open_runs_full_path(tmp_path: Path, monkeypatch):
     sched.trigger.evaluate = lambda **k: quiet  # type: ignore[method-assign]
 
     monkeypatch.setattr(
-        "chatbot.cac40.scheduler.session_snapshot",
+        "chatbot.trader.scheduler.session_snapshot",
         lambda *a, **k: _open_session(),
     )
     payload = sched.run_once(force_llm=False)
@@ -473,9 +473,9 @@ def test_market_closed_groups_many_heartbeats(tmp_path: Path):
 
 
 def test_open_market_position_dry_run_sets_hedge_role():
-    from chatbot.cac40.ig_connector import IgConnector
+    from chatbot.trader.ig_connector import IgConnector
 
-    cfg = Cac40Config(spread_points=0)
+    cfg = TraderConfig(spread_points=0)
     conn = IgConnector(cfg, dry_run=True)
     conn.ledger.last_price = 100
     conn.ledger.market_open(Side.BUY, 1.0)

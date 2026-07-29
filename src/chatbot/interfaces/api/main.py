@@ -15,14 +15,14 @@ from chatbot.adapters.persistence.engine import create_db_engine, session_factor
 from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 from chatbot.adapters.rag.fasttext_language_gate import load_rewrite_language_gate
 from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
-from chatbot.application.cac40_live_service import resolve_cac40_trading_banner
+from chatbot.application.trader_live_service import resolve_trader_trading_banner
 from chatbot.application.tenant_service import TenantService
 from chatbot.config.settings import Settings, get_settings
 from chatbot.interfaces.api.error_handlers import register_exception_handlers
 from chatbot.interfaces.api.routers import (
     admin,
     auth_web,
-    cac40_web,
+    trader_web,
     chat,
     dashboard_web,
     instagram_webhook,
@@ -107,8 +107,8 @@ def create_app() -> FastAPI:
         return await call_next(request)
 
     @app.middleware("http")
-    async def _cac40_trading_banner_middleware(request: Request, call_next):
-        request.state.cac40_trading = None
+    async def _trader_trading_banner_middleware(request: Request, call_next):
+        request.state.trader_trading = None
         if request.method == "GET":
             match = _BOT_PAGE_RE.match(request.url.path)
             if match is not None:
@@ -122,16 +122,17 @@ def create_app() -> FastAPI:
                                 SqlAlchemyTenantRepository(session)
                             ).get_by_slug(slug)
                             if tenant is not None:
-                                request.state.cac40_trading = resolve_cac40_trading_banner(
+                                request.state.trader_trading = resolve_trader_trading_banner(
                                     session,
                                     settings,
                                     tenant_id=tenant.id,
                                     slug=tenant.slug,
                                     allowed_integrations=tenant.config.allowed_integrations,
+                                    bot_type=tenant.bot_type.value,
                                 )
                     except Exception:
                         _logger.exception(
-                            "CAC40 trading banner lookup failed for slug=%s", slug
+                            "Trading banner lookup failed for slug=%s", slug
                         )
         return await call_next(request)
 
@@ -141,7 +142,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth_web.router)
     app.include_router(dashboard_web.router)
-    app.include_router(cac40_web.router)
+    app.include_router(trader_web.router)
     app.include_router(chat.router, tags=["chat"])
     app.include_router(admin.router, tags=["admin"])
     app.include_router(whatsapp_webhook.router, tags=["whatsapp"])

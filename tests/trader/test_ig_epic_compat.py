@@ -1,16 +1,16 @@
 from unittest.mock import MagicMock
 
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.ig_connector import IgConnector
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.ig_connector import IgConnector
 
 
 def _ig() -> IgConnector:
-    return IgConnector(Cac40Config(), dry_run=True)
+    return IgConnector(TraderConfig(), dry_run=True)
 
 
 def test_cancel_working_order_uses_post_method_override() -> None:
     """IG rejects bare DELETE; must POST with _method=DELETE (trading-ig pattern)."""
-    ig = IgConnector(Cac40Config(epic="IX.D.CAC.BMU.IP"), dry_run=False)
+    ig = IgConnector(TraderConfig(epic="IX.D.CAC.BMU.IP"), dry_run=False)
     ig._cst = "cst"
     ig._security = "sec"
     resp = MagicMock()

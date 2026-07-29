@@ -1,4 +1,4 @@
-"""IG FR40 Cash CFD session SoT — weekly hours + Euronext holiday flatten/idle."""
+"""Market session calendars — FR40 Cash CFD + IG FX 24x5."""
 
 from __future__ import annotations
 
@@ -16,14 +16,54 @@ _FIXED_CLOSURES: tuple[tuple[int, int, str], ...] = (
     (12, 26, "Boxing Day"),
 )
 
-# IG France 40 Cash CFD — Europe/London (IG indices CFD product details).
 SESSION_TZ = "Europe/London"
 SESSION_ZONE = ZoneInfo(SESSION_TZ)
-SESSION_SOURCE = "IG France 40 Cash CFD (hardcoded)"
-WEEKLY_OPEN_WEEKDAY = 6  # Sunday
-WEEKLY_OPEN_TIME = time(23, 2)
-WEEKLY_CLOSE_WEEKDAY = 4  # Friday
-WEEKLY_CLOSE_TIME = time(22, 0)
+
+_FR40_SOURCE = "IG France 40 Cash CFD"
+_FR40_OPEN_WEEKDAY = 6  # Sunday
+_FR40_OPEN_TIME = time(23, 2)
+_FR40_CLOSE_WEEKDAY = 4  # Friday
+_FR40_CLOSE_TIME = time(22, 0)
+
+_FX_SOURCE = "IG FX 24x5 (approx)"
+_FX_OPEN_WEEKDAY = 6
+_FX_OPEN_TIME = time(22, 5)
+_FX_CLOSE_WEEKDAY = 4
+_FX_CLOSE_TIME = time(21, 55)
+
+# Backward-compatible aliases used by older call sites / tests.
+SESSION_SOURCE = _FR40_SOURCE
+WEEKLY_OPEN_WEEKDAY = _FR40_OPEN_WEEKDAY
+WEEKLY_OPEN_TIME = _FR40_OPEN_TIME
+WEEKLY_CLOSE_WEEKDAY = _FR40_CLOSE_WEEKDAY
+WEEKLY_CLOSE_TIME = _FR40_CLOSE_TIME
+
+
+def _calendar_params(calendar_id: str | None) -> dict[str, Any]:
+    key = str(calendar_id or "euronext_fr40").strip().lower() or "euronext_fr40"
+    if key in ("forex_ig", "fx", "forex"):
+        return {
+            "id": "forex_ig",
+            "source": _FX_SOURCE,
+            "open_weekday": _FX_OPEN_WEEKDAY,
+            "open_time": _FX_OPEN_TIME,
+            "close_weekday": _FX_CLOSE_WEEKDAY,
+            "close_time": _FX_CLOSE_TIME,
+            "use_euronext_holidays": False,
+            "weekly_open_label": "Sun 22:05 Europe/London",
+            "weekly_close_label": "Fri 21:55 Europe/London",
+        }
+    return {
+        "id": "euronext_fr40",
+        "source": _FR40_SOURCE,
+        "open_weekday": _FR40_OPEN_WEEKDAY,
+        "open_time": _FR40_OPEN_TIME,
+        "close_weekday": _FR40_CLOSE_WEEKDAY,
+        "close_time": _FR40_CLOSE_TIME,
+        "use_euronext_holidays": True,
+        "weekly_open_label": "Sun 23:02 Europe/London",
+        "weekly_close_label": "Fri 22:00 Europe/London",
+    }
 
 
 def euronext_closures(year: int) -> dict[date, str]:
@@ -37,11 +77,14 @@ def euronext_closures(year: int) -> dict[date, str]:
     return out
 
 
-def is_trading_day(d: date) -> bool:
-    """True if weekday and not a Euronext full closure."""
+def is_trading_day(d: date, *, calendar_id: str | None = None) -> bool:
+    """True if weekday (and not a Euronext full closure for FR40 calendar)."""
+    cal = _calendar_params(calendar_id)
     if d.weekday() >= 5:
         return False
-    return d not in euronext_closures(d.year)
+    if cal["use_euronext_holidays"] and d in euronext_closures(d.year):
+        return False
+    return True
 
 
 def _to_london(now: datetime | None) -> datetime:
@@ -51,112 +94,132 @@ def _to_london(now: datetime | None) -> datetime:
     return current.astimezone(SESSION_ZONE)
 
 
-def _session_day(london: datetime) -> date:
-    """Calendar day whose holiday status applies (Sun after weekly open → Monday)."""
+def _session_day(london: datetime, *, open_weekday: int, open_time: time) -> date:
     d = london.date()
-    if london.weekday() == WEEKLY_OPEN_WEEKDAY and london.time() >= WEEKLY_OPEN_TIME:
+    if london.weekday() == open_weekday and london.time() >= open_time:
         return d + timedelta(days=1)
     return d
 
 
-def _in_weekly_window(london: datetime) -> bool:
-    """True from Sun 23:02 through Fri 22:00 London (exclusive of close instant)."""
+def _in_weekly_window(
+    london: datetime,
+    *,
+    open_weekday: int,
+    open_time: time,
+    close_weekday: int,
+    close_time: time,
+) -> bool:
     wd = london.weekday()
     t = london.time()
     if wd == 5:  # Saturday
         return False
-    if wd == WEEKLY_OPEN_WEEKDAY:  # Sunday
-        return t >= WEEKLY_OPEN_TIME
-    if wd == WEEKLY_CLOSE_WEEKDAY:  # Friday
-        return t < WEEKLY_CLOSE_TIME
-    return True  # Mon–Thu
+    if wd == open_weekday:
+        return t >= open_time
+    if wd == close_weekday:
+        return t < close_time
+    return True  # Mon–Thu (and Sun after open)
 
 
-def is_dealing_open(now: datetime | None = None) -> bool:
-    """
-    True while the FR40 Cash CFD weekday session is dealing.
-
-    Open Sun 23:02 → Fri 22:00 London; Mon–Thu overnight stays open.
-    Closed on Euronext full-closure dates, and from 22:00 London on the eve
-    of a non-trading day (holiday eve mirrors Friday weekly close).
-    """
+def is_dealing_open(now: datetime | None = None, *, calendar_id: str | None = None) -> bool:
+    cal = _calendar_params(calendar_id)
     london = _to_london(now)
-    if not _in_weekly_window(london):
+    if not _in_weekly_window(
+        london,
+        open_weekday=cal["open_weekday"],
+        open_time=cal["open_time"],
+        close_weekday=cal["close_weekday"],
+        close_time=cal["close_time"],
+    ):
         return False
     tomorrow = london.date() + timedelta(days=1)
-    if london.time() >= WEEKLY_CLOSE_TIME and not is_trading_day(tomorrow):
+    if london.time() >= cal["close_time"] and not is_trading_day(
+        tomorrow, calendar_id=cal["id"]
+    ):
         return False
-    return is_trading_day(_session_day(london))
+    return is_trading_day(
+        _session_day(
+            london, open_weekday=cal["open_weekday"], open_time=cal["open_time"]
+        ),
+        calendar_id=cal["id"],
+    )
 
 
-def _sunday_open_on_or_after(d: date) -> datetime:
-    days = (WEEKLY_OPEN_WEEKDAY - d.weekday()) % 7
-    return datetime.combine(d + timedelta(days=days), WEEKLY_OPEN_TIME, tzinfo=SESSION_ZONE)
+def _sunday_open_on_or_after(d: date, *, open_weekday: int, open_time: time) -> datetime:
+    days = (open_weekday - d.weekday()) % 7
+    return datetime.combine(d + timedelta(days=days), open_time, tzinfo=SESSION_ZONE)
 
 
-def _next_open_at(london: datetime) -> datetime:
-    """Next weekly/holiday reopen at or after ``london`` (London tz)."""
-    if is_dealing_open(london):
+def _next_open_at(london: datetime, *, calendar_id: str | None = None) -> datetime:
+    cal = _calendar_params(calendar_id)
+    if is_dealing_open(london, calendar_id=cal["id"]):
         return london.replace(second=0, microsecond=0)
     d = london.date()
     for _ in range(21):
         day_start = datetime.combine(d, time(0, 0), tzinfo=SESSION_ZONE)
-        if day_start >= london and is_dealing_open(day_start):
+        if day_start >= london and is_dealing_open(day_start, calendar_id=cal["id"]):
             return day_start
-        sun_open = datetime.combine(d, WEEKLY_OPEN_TIME, tzinfo=SESSION_ZONE)
+        sun_open = datetime.combine(d, cal["open_time"], tzinfo=SESSION_ZONE)
         if (
-            d.weekday() == WEEKLY_OPEN_WEEKDAY
+            d.weekday() == cal["open_weekday"]
             and sun_open >= london
-            and is_dealing_open(sun_open)
+            and is_dealing_open(sun_open, calendar_id=cal["id"])
         ):
             return sun_open
         d += timedelta(days=1)
-    return _sunday_open_on_or_after(london.date() + timedelta(days=1))
+    return _sunday_open_on_or_after(
+        london.date() + timedelta(days=1),
+        open_weekday=cal["open_weekday"],
+        open_time=cal["open_time"],
+    )
 
 
-def _next_close_at(london: datetime) -> datetime | None:
-    """Next dealing close while currently open (Fri/holiday-eve 22:00 London)."""
-    if not is_dealing_open(london):
+def _next_close_at(london: datetime, *, calendar_id: str | None = None) -> datetime | None:
+    cal = _calendar_params(calendar_id)
+    if not is_dealing_open(london, calendar_id=cal["id"]):
         return None
     today = london.date()
     for offset in range(8):
         d = today + timedelta(days=offset)
-        close_at = datetime.combine(d, WEEKLY_CLOSE_TIME, tzinfo=SESSION_ZONE)
+        close_at = datetime.combine(d, cal["close_time"], tzinfo=SESSION_ZONE)
         if close_at <= london:
             continue
-        # Close applies on Fri weekly, or any day whose tomorrow is non-trading.
         tomorrow = d + timedelta(days=1)
-        if d.weekday() == WEEKLY_CLOSE_WEEKDAY or not is_trading_day(tomorrow):
-            if is_dealing_open(close_at - timedelta(minutes=1)):
+        if d.weekday() == cal["close_weekday"] or not is_trading_day(
+            tomorrow, calendar_id=cal["id"]
+        ):
+            if is_dealing_open(close_at - timedelta(minutes=1), calendar_id=cal["id"]):
                 return close_at
     return None
 
 
-def _closed_stretch_close_id(london: datetime) -> str:
-    """Stable id for the closed stretch containing ``london`` (must be closed)."""
+def _closed_stretch_close_id(london: datetime, *, calendar_id: str | None = None) -> str:
+    cal = _calendar_params(calendar_id)
     d = london.date()
     for _ in range(21):
-        close_at = datetime.combine(d, WEEKLY_CLOSE_TIME, tzinfo=SESSION_ZONE)
-        if close_at <= london and is_dealing_open(close_at - timedelta(seconds=1)):
+        close_at = datetime.combine(d, cal["close_time"], tzinfo=SESSION_ZONE)
+        if close_at <= london and is_dealing_open(
+            close_at - timedelta(seconds=1), calendar_id=cal["id"]
+        ):
             return close_at.strftime("%Y%m%d_%H%M")
         d -= timedelta(days=1)
     return london.strftime("%Y%m%d_%H%M")
 
 
-def _gap_reasons(from_day: date) -> list[str]:
-    """Reasons for the closed stretch starting at ``from_day`` (may be Sat/holiday)."""
+def _gap_reasons(from_day: date, *, calendar_id: str | None = None) -> list[str]:
+    cal = _calendar_params(calendar_id)
     reasons: list[str] = []
     probe = from_day
     for _ in range(14):
-        if is_trading_day(probe):
+        if is_trading_day(probe, calendar_id=cal["id"]):
             break
         if probe.weekday() >= 5 and "weekend" not in reasons:
             reasons.append("weekend")
-        closures = euronext_closures(probe.year)
-        if probe in closures:
-            label = f"holiday: {closures[probe]}"
-            if label not in reasons:
-                reasons.append(label)
+        if cal["use_euronext_holidays"]:
+            closures = euronext_closures(probe.year)
+            if probe in closures:
+                label = f"holiday: {closures[probe]}"
+                if label not in reasons:
+                    reasons.append(label)
         probe += timedelta(days=1)
     return reasons
 
@@ -167,40 +230,37 @@ def flatten_check(
     close_hhmm: str | None = None,
     lead_minutes: int = 30,
     tz: str | None = None,
+    calendar_id: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Detect the pre-close flatten window before a weekend / holiday gap.
-
-    Active when ``now`` is in ``[close - lead, close]`` on a trading day whose
-    **next calendar day** is a non-trading day, and dealing is still open.
-
-    Close clock is IG weekly close (22:00 Europe/London). ``close_hhmm`` / ``tz``
-    are accepted for backward-compatible call sites but ignored as SoT.
-    """
-    del close_hhmm, tz  # SoT is hardcoded London weekly close.
+    del close_hhmm, tz
+    cal = _calendar_params(calendar_id)
     london = _to_london(now)
     today = london.date()
     tomorrow = today + timedelta(days=1)
-    close_at = datetime.combine(today, WEEKLY_CLOSE_TIME, tzinfo=SESSION_ZONE)
+    close_at = datetime.combine(today, cal["close_time"], tzinfo=SESSION_ZONE)
     lead = max(0, int(lead_minutes))
     window_start = close_at - timedelta(minutes=lead)
 
-    reasons = _gap_reasons(tomorrow)
+    reasons = _gap_reasons(tomorrow, calendar_id=cal["id"])
     next_open_day = tomorrow
     probe = tomorrow
     for _ in range(14):
-        if is_trading_day(probe):
+        if is_trading_day(probe, calendar_id=cal["id"]):
             next_open_day = probe
             break
         probe += timedelta(days=1)
     else:
         next_open_day = probe
 
-    next_is_closed = not is_trading_day(tomorrow)
+    next_is_closed = not is_trading_day(tomorrow, calendar_id=cal["id"])
     in_window = window_start <= london <= close_at
-    dealing = is_dealing_open(london)
+    dealing = is_dealing_open(london, calendar_id=cal["id"])
     active = bool(
-        is_trading_day(today) and next_is_closed and in_window and reasons and dealing
+        is_trading_day(today, calendar_id=cal["id"])
+        and next_is_closed
+        and in_window
+        and reasons
+        and dealing
     )
 
     minutes_to_close = (close_at - london).total_seconds() / 60.0
@@ -224,16 +284,13 @@ def session_snapshot(
     *,
     flatten_lead_minutes: int = 30,
     flatten_enabled: bool = True,
+    calendar_id: str | None = None,
 ) -> dict[str, Any]:
-    """
-    Unified session view for idle gate + flatten + Live badge.
-
-    ``dealing_open`` drives scheduler idle. Flatten fields only apply while open.
-    """
+    cal = _calendar_params(calendar_id)
     london = _to_london(now)
-    dealing = is_dealing_open(london)
+    dealing = is_dealing_open(london, calendar_id=cal["id"])
     flatten = (
-        flatten_check(london, lead_minutes=flatten_lead_minutes)
+        flatten_check(london, lead_minutes=flatten_lead_minutes, calendar_id=cal["id"])
         if flatten_enabled
         else {
             "active": False,
@@ -249,18 +306,21 @@ def session_snapshot(
             "dealing_open": dealing,
         }
     )
-    next_open = None if dealing else _next_open_at(london)
-    next_close = _next_close_at(london) if dealing else None
-    close_id = None if dealing else _closed_stretch_close_id(london)
+    next_open = None if dealing else _next_open_at(london, calendar_id=cal["id"])
+    next_close = _next_close_at(london, calendar_id=cal["id"]) if dealing else None
+    close_id = (
+        None if dealing else _closed_stretch_close_id(london, calendar_id=cal["id"])
+    )
 
     return {
         "dealing_open": dealing,
         "now": london.isoformat(),
         "weekday": london.strftime("%A"),
         "tz": SESSION_TZ,
-        "source": SESSION_SOURCE,
-        "weekly_open": "Sun 23:02 Europe/London",
-        "weekly_close": "Fri 22:00 Europe/London",
+        "source": cal["source"],
+        "calendar_id": cal["id"],
+        "weekly_open": cal["weekly_open_label"],
+        "weekly_close": cal["weekly_close_label"],
         "next_open": next_open.isoformat() if next_open else None,
         "next_close": next_close.isoformat() if next_close else None,
         "close_id": close_id,

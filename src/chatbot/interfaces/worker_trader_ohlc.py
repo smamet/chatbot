@@ -5,7 +5,7 @@ import logging
 import time
 
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.application.cac40_backtest_service import run_due_ig_ohlc_syncs
+from chatbot.application.trader_backtest_service import run_due_ig_ohlc_syncs
 from chatbot.config.settings import get_settings
 
 logging.basicConfig(level=logging.INFO)
@@ -36,7 +36,7 @@ def main() -> None:
             logger.info("%s", line)
         return
 
-    interval = max(1, settings.cac40_ohlc_poll_seconds)
+    interval = max(1, settings.trader_ohlc_poll_seconds)
     logger.info("CAC40 OHLC worker started (poll every %ss)", interval)
     while True:
         try:

@@ -7,28 +7,29 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from chatbot.cac40.chart_renderer import pivot_history_pad, render_multi_timeframe
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.fundmanager_client import FundManagerClient
-from chatbot.cac40.ig_connector import IgApiError, IgConnector, compact_ig_error
-from chatbot.cac40.live_ohlc_feed import LiveOhlcFeed
-from chatbot.cac40.llm_decision import (
+from chatbot.trader.chart_renderer import pivot_history_pad, render_multi_timeframe
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.fundmanager_client import FundManagerClient
+from chatbot.trader.ig_connector import IgApiError, IgConnector, compact_ig_error
+from chatbot.trader.live_ohlc_feed import LiveOhlcFeed
+from chatbot.trader.llm_decision import (
     GeminiDecisionClient,
     SessionFactory,
     load_prompt,
     summarize_decision,
 )
-from chatbot.cac40.llm_trigger import LlmTrigger
-from chatbot.cac40.market_calendar import session_snapshot
-from chatbot.cac40.models import (
+from chatbot.trader.llm_trigger import LlmTrigger
+from chatbot.trader.market_calendar import session_snapshot
+from chatbot.trader.models import (
     LegRole,
+    LlmDecision,
     OrderPurpose,
     PositionLeg,
     Side,
     WorkingOrder,
     attached_deal_id,
 )
-from chatbot.cac40.risk_gate import GateResult, RiskGate
+from chatbot.trader.risk_gate import GateResult, RiskGate
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +37,7 @@ LiveOhlcProvider = Callable[[], LiveOhlcFeed]
 
 TRIGGER_PRE_CLOSE_FLATTEN = "pre_close_flatten"
 TRIGGER_MANUAL_FORCE = "manual_force"
+TRIGGER_MANUAL_REPLAY = "manual_replay"
 
 
 class LiveScheduler:
@@ -43,7 +45,7 @@ class LiveScheduler:
 
     def __init__(
         self,
-        config: Cac40Config,
+        config: TraderConfig,
         *,
         api_key: str,
         journal_dir: Path,
@@ -70,6 +72,7 @@ class LiveScheduler:
         self.orders_dir = orders_dir or (self.journal_dir / "order_books")
         self.orders_dir.mkdir(parents=True, exist_ok=True)
         self.ohlc_provider = ohlc_provider
+        self.stream_status_path: Path | None = None
         self.fm = FundManagerClient(config)
         self.llm = GeminiDecisionClient(
             api_key=api_key,
@@ -91,6 +94,7 @@ class LiveScheduler:
         self.last_auto_flatten: dict[str, Any] | None = None
         self._last_processed_bar_ts: str | None = None
         self.last_book_repair: dict[str, Any] | None = None
+        self._last_rest_book_sync_at: float | None = None
 
     def request_stop(self) -> None:
         self._stop = True
@@ -99,12 +103,21 @@ class LiveScheduler:
         """No-op: every live cycle already rebuilds the open book from IG."""
         return
 
+    @staticmethod
+    def _login_shared(conn: IgConnector) -> None:
+        from chatbot.trader.ig_session_cache import login_with_shared_cache
+
+        try:
+            login_with_shared_cache(conn)
+        except Exception:
+            conn.login()
+
     def run_forever(self) -> None:
-        self.ig.login()
+        self._login_shared(self.ig)
         for _cid, conn in self.order_connectors:
             if conn is not self.ig:
                 try:
-                    conn.login()
+                    self._login_shared(conn)
                 except Exception:
                     logger.exception("Secondary IG login failed (connector continues)")
         while not self._stop:
@@ -121,20 +134,28 @@ class LiveScheduler:
 
     def ensure_logged_in(self) -> None:
         if not self.ig._cst:
-            self.ig.login()
+            self._login_shared(self.ig)
         for _cid, conn in self.order_connectors:
             if conn is not self.ig and not conn._cst:
                 try:
-                    conn.login()
+                    self._login_shared(conn)
                 except Exception:
                     logger.exception("Secondary IG login failed")
 
-    def run_once(self, *, force_llm: bool = False) -> dict[str, Any]:
+    def run_once(
+        self,
+        *,
+        force_llm: bool = False,
+        replay_decision: LlmDecision | None = None,
+        replay_of: str | None = None,
+    ) -> dict[str, Any]:
         """
         One live/paper cycle.
 
         ``force_llm`` (manual Run cycle now): ignore Adaptive/Fixed schedule and
         call Gemini when OHLC is usable and the book is not in unresolved desync.
+
+        ``replay_decision``: skip Gemini and re-apply a stored decision (dev tool).
 
         When the FR40 session is closed, returns an idle heartbeat without IG
         login, OHLC, charts, or LLM — full path resumes on the next open poll.
@@ -142,6 +163,7 @@ class LiveScheduler:
         session = session_snapshot(
             flatten_lead_minutes=int(self.config.flatten_lead_minutes or 30),
             flatten_enabled=bool(self.config.flatten_before_close),
+            calendar_id=str(self.config.calendar_id or "") or None,
         )
         if not session.get("dealing_open"):
             return self._idle_market_closed(session)
@@ -247,6 +269,7 @@ class LiveScheduler:
         force_manual_llm = bool(
             force_llm and not skip_llm_feed and not skip_llm_desync
         )
+        replaying = replay_decision is not None
 
         images = {}
         decision = None
@@ -264,7 +287,14 @@ class LiveScheduler:
                 or (trig and trig.should_call)
             )
         )
-        if force_flatten_llm:
+        # Replay applies a stored decision on the *current* book — feed freshness
+        # is not required (Gemini is not called).
+        if replaying:
+            should_call = not skip_llm_desync
+            llm_trigger_reasons = [TRIGGER_MANUAL_REPLAY]
+            if replay_of:
+                llm_trigger_reasons.append(f"replay_of:{replay_of}")
+        elif force_flatten_llm:
             llm_trigger_reasons = [TRIGGER_PRE_CLOSE_FLATTEN]
             if trig and trig.reasons:
                 llm_trigger_reasons = list(
@@ -284,18 +314,25 @@ class LiveScheduler:
                 "LLM skipped — IG book desync unresolved (%s)",
                 reconcile.get("warnings"),
             )
-        elif skip_llm_feed and needs_flatten:
+        elif skip_llm_feed and needs_flatten and not replaying:
             logger.warning(
                 "LLM skipped during flatten window — OHLC feed stale; auto-flatten will run (%s)",
                 feed_meta.get("error") or feed_meta.get("warnings"),
             )
-        elif skip_llm_feed and trig and trig.should_call:
+        elif skip_llm_feed and trig and trig.should_call and not replaying:
             logger.warning(
                 "LLM skipped — OHLC feed not fresh enough (%s)",
                 feed_meta.get("error") or feed_meta.get("warnings"),
             )
 
-        if should_call:
+        if should_call and replaying:
+            decision = replay_decision
+            assert decision is not None
+            gate_result = gate.apply(decision)
+            self._mirror_orders_to_ig(gate_result)
+            self._last_decision_summary = summarize_decision(decision)
+            self.trigger.note_position_ids(set(self.ig.ledger.positions.keys()))
+        elif should_call:
             frames = {"15m": ohlc_15}
             if not ohlc_1h.empty:
                 frames["1H"] = ohlc_1h
@@ -314,6 +351,7 @@ class LiveScheduler:
                 show_rsi=bool(self.config.chart_show_rsi),
                 show_pivots=pivots_on,
                 pivot_period=pivot_period,
+                symbol=self.config.symbol,
             )
 
             if images:
@@ -322,7 +360,10 @@ class LiveScheduler:
                     images=images,
                     snapshot=snap,
                     phase=self.ig.ledger.phase,
-                    prompt=load_prompt(),
+                    prompt=load_prompt(
+                        override=self.config.system_prompt or None,
+                        profile_id=self.config.market_profile or None,
+                    ),
                     order_size=float(self.config.order_size),
                     max_open_positions=int(self.config.max_open_positions),
                     last_decision=self._last_decision_summary,
@@ -406,6 +447,8 @@ class LiveScheduler:
                 if gate_result
                 else (["llm_fail_closed"] if should_call and not decision else [])
             ),
+            "notes": list(gate_result.notes) if gate_result else [],
+            "replay_of": replay_of or None,
             "dry_run": self.dry_run,
             "skipped": not should_call,
             "mirror": list(self.last_mirror_results),
@@ -443,6 +486,7 @@ class LiveScheduler:
         snap = session or session_snapshot(
             flatten_lead_minutes=int(self.config.flatten_lead_minutes or 30),
             flatten_enabled=bool(self.config.flatten_before_close),
+            calendar_id=str(self.config.calendar_id or "") or None,
         )
         return {
             "enabled": bool(snap.get("flatten_enabled")),
@@ -519,14 +563,63 @@ class LiveScheduler:
             "error": None,
         }
 
+    def _live_state_path(self) -> Path | None:
+        """``data/trader/{slug}/live/state.json`` when journal lives under live/."""
+        parent = self.journal_dir.parent
+        if parent.name == "live" or (parent / "state.json").exists():
+            return parent / "state.json"
+        return None
+
+    def _reload_ledger_from_disk(self) -> bool:
+        """Load open book from state.json (stream reconcile may have updated it)."""
+        from chatbot.trader.hedge_ledger import HedgeLedger
+
+        path = self._live_state_path()
+        if path is None or not path.exists():
+            return False
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            logger.exception("Failed to reload live state from %s", path)
+            return False
+        if not isinstance(raw, dict) or not raw:
+            return False
+        self.ig.ledger = HedgeLedger.from_state_dict(self.config, raw)
+        return True
+
+    def _stream_book_sync_skip(self) -> bool:
+        """Skip REST book fetch when stream just reconciled (fresh + healthy)."""
+        from chatbot.application.trader_stream_service import (
+            STREAM_REST_RECONCILE_MINUTES,
+            stream_book_reconcile_is_fresh,
+        )
+
+        path = self.stream_status_path
+        if path is None or not path.exists():
+            return False
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return False
+        if not isinstance(raw, dict):
+            return False
+        if not stream_book_reconcile_is_fresh(raw):
+            return False
+        # Periodic safety REST reconcile even when stream is healthy.
+        if self._last_rest_book_sync_at is not None:
+            age_min = (time.time() - self._last_rest_book_sync_at) / 60.0
+            if age_min >= STREAM_REST_RECONCILE_MINUTES:
+                return False
+        return True
+
     def _sync_ledger_from_ig(self) -> dict[str, Any]:
         """
-        Live: rebuild open book from IG every cycle (same as dashboard Apply).
+        Live: rebuild open book from IG (same as dashboard Apply).
 
-        Fetches positions + working orders once, records vanished-leg closes,
-        then ``replace_open`` so LLM / journal / RiskGate share one IG ledger.
+        When Lightstreamer TRADE wake-up just reconciled, skip a redundant
+        REST list. Otherwise fetch positions + working orders and replace_open.
         """
-        from chatbot.application.cac40_live_service import sync_open_book_from_ig
+        from chatbot.application.trader_live_service import sync_open_book_from_ig
 
         local_net = float(self.ig.ledger.net_size())
         out: dict[str, Any] = {
@@ -547,9 +640,22 @@ class LiveScheduler:
             out["ig_net"] = local_net
             return out
 
+        if self._stream_book_sync_skip():
+            # Stream may have written a newer open book to disk — reload so this
+            # cycle does not overwrite nested attached TP/SL with a stale ledger.
+            reloaded = self._reload_ledger_from_disk()
+            out["ran"] = True
+            out["ig_net"] = float(self.ig.ledger.net_size())
+            out["local_net"] = out["ig_net"]
+            out["skipped_stream_fresh"] = True
+            out["reloaded_from_disk"] = reloaded
+            out["warnings"].append("book_sync_skipped:stream_reconcile_fresh")
+            return out
+
         try:
             ig_positions = self.ig.list_open_positions()
             ig_orders = self.ig.list_working_orders()
+            self._last_rest_book_sync_at = time.time()
         except Exception as exc:
             logger.exception("IG book sync failed")
             out["ran"] = True
@@ -1008,12 +1114,23 @@ class LiveScheduler:
                 if not level_drift:
                     continue
                 try:
-                    limit_level = None
-                    stop_level = None
-                    if remote.get("limitLevel") is not None:
-                        limit_level = float(remote["limitLevel"])
-                    if remote.get("stopLevel") is not None:
-                        stop_level = float(remote["stopLevel"])
+                    from chatbot.application.trader_live_service import (
+                        _attached_levels_from_wo_payload,
+                    )
+
+                    limit_level, stop_level = _attached_levels_from_wo_payload(
+                        remote,
+                        side=order.side,
+                        level=remote_level if remote_level > 0 else float(order.level),
+                    )
+                    # Prefer local TP child level when present (authoritative).
+                    for child in desired.values():
+                        if (
+                            child.parent_order_id == local_id
+                            and child.purpose == OrderPurpose.TP
+                        ):
+                            limit_level = float(child.level)
+                            break
                     conn.amend_working_order_by_deal_id(
                         deal_s,
                         order_type=order.type,
@@ -1043,14 +1160,78 @@ class LiveScheduler:
             for local_id, order in desired.items():
                 if local_id in book:
                     continue
-                # TP children of a still-working entry: attach via limitLevel on the
-                # entry (IG take-profit). Never attach stopLevel — that is a closing
-                # stop-loss, not our reverse-side hedge.
+                # TP children of a still-working entry: attach via limitLevel /
+                # limitDistance on the entry (IG take-profit). Never attach
+                # stopLevel — that is a closing stop-loss, not our reverse hedge.
                 if (
                     order.purpose == OrderPurpose.TP
                     and order.parent_order_id
                     and order.parent_order_id in desired
                 ):
+                    parent = desired[order.parent_order_id]
+                    parent_deal = str(
+                        book.get(order.parent_order_id)
+                        or (parent.deal_id or "")
+                        or ""
+                    ).strip()
+                    # Same-cycle: entry not booked yet — attach when entry pushes.
+                    if not parent_deal or parent_deal.startswith("attached:"):
+                        continue
+                    # Later cycle: entry already on IG — PUT limitDistance/Level.
+                    try:
+                        conn.amend_working_order_by_deal_id(
+                            parent_deal,
+                            order_type=parent.type,
+                            level=float(parent.level),
+                            limit_level=float(order.level),
+                            stop_level=None,
+                        )
+                        ig_res = conn.last_ig_result or {}
+                        attached = bool(
+                            ig_res.get("tp_attached")
+                            or ig_res.get("limit_level") is not None
+                            or ig_res.get("limit_distance") is not None
+                            or str(ig_res.get("deal_status") or "").upper()
+                            in ("ACCEPTED", "DRY_RUN")
+                        )
+                        if not attached:
+                            row["deferred"].append(
+                                {
+                                    "order_id": local_id,
+                                    "via": "tp_attach_amend_deferred",
+                                    "parent_deal_id": parent_deal,
+                                }
+                            )
+                            continue
+                        sentinel = attached_deal_id(parent_deal, OrderPurpose.TP)
+                        book[local_id] = sentinel
+                        if conn is self.ig:
+                            order.deal_id = sentinel
+                        via = (
+                            "entry_amend_limitDistance"
+                            if ig_res.get("limit_distance") is not None
+                            else "entry_amend_limitLevel"
+                        )
+                        row["placed"].append(
+                            {
+                                "order_id": local_id,
+                                "deal_id": sentinel,
+                                "via": via,
+                                "parent_deal_id": parent_deal,
+                                "limit_distance": ig_res.get("limit_distance"),
+                                "limit_level": ig_res.get("limit_level"),
+                                **self._ig_confirm_fields(conn),
+                            }
+                        )
+                    except Exception as exc:
+                        row["errors"].append(
+                            self._mirror_error_line("tp_attach_amend", local_id, exc)
+                        )
+                        logger.exception(
+                            "IG TP amend on entry failed connector=%s order=%s",
+                            connector_id,
+                            local_id,
+                        )
                     continue
                 if order.purpose == OrderPurpose.CLOSE and order.parent_order_id:
                     if order.parent_order_id in desired:
@@ -1068,6 +1249,19 @@ class LiveScheduler:
                             else None
                         )
                         deal_for_attach = (leg.deal_id or "").strip() if leg else ""
+                        # Entry filled: parent gone but TP still has parent_order_id.
+                        # Bind to the open leg on the same close side when possible.
+                        if not deal_for_attach and order.purpose == OrderPurpose.TP:
+                            for cand in self.ig.ledger.positions.values():
+                                close_side = (
+                                    Side.SELL if cand.side == Side.BUY else Side.BUY
+                                )
+                                if order.side == close_side and (cand.deal_id or "").strip():
+                                    leg = cand
+                                    deal_for_attach = (cand.deal_id or "").strip()
+                                    order.position_id = cand.id
+                                    order.parent_order_id = None
+                                    break
                         if deal_for_attach:
                             conn.update_position_protection(
                                 deal_for_attach,
@@ -1147,27 +1341,47 @@ class LiveScheduler:
                         }
                     )
                     if tp_child_id and tp_child_id not in book:
-                        # Only mark TP attached when IG actually received limitLevel.
-                        attached_lvl = (conn.last_ig_result or {}).get("limit_level")
-                        if attached_lvl is not None:
+                        # TP attach: FX sends limitDistance; indices may send limitLevel.
+                        # Do not treat missing limitLevel alone as "through market".
+                        ig_res = conn.last_ig_result or {}
+                        attached = bool(
+                            ig_res.get("tp_attached")
+                            or ig_res.get("limit_level") is not None
+                            or ig_res.get("limit_distance") is not None
+                        )
+                        if attached:
                             sentinel = attached_deal_id(deal_id, OrderPurpose.TP)
                             book[tp_child_id] = sentinel
                             child = desired.get(tp_child_id)
                             if child is not None and conn is self.ig:
                                 child.deal_id = sentinel
+                            via = (
+                                "entry_limitDistance"
+                                if ig_res.get("limit_distance") is not None
+                                else "entry_limitLevel"
+                            )
                             row["placed"].append(
                                 {
                                     "order_id": tp_child_id,
                                     "deal_id": sentinel,
-                                    "via": "entry_limitLevel",
+                                    "via": via,
+                                    "limit_distance": ig_res.get("limit_distance"),
+                                    "limit_level": ig_res.get("limit_level"),
                                 }
                             )
                         else:
+                            clearance = str(ig_res.get("clearance") or "")
+                            reason = (
+                                "omit_tp_attach"
+                                if "omit_tp_attach" in clearance
+                                else "tp_not_in_payload"
+                            )
                             row["deferred"].append(
                                 {
                                     "order_id": tp_child_id,
                                     "via": "tp_attach_deferred",
-                                    "reason": "limitLevel_through_market",
+                                    "reason": reason,
+                                    "clearance": clearance or None,
                                 }
                             )
                 except Exception as exc:

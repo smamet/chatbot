@@ -73,8 +73,8 @@ def _test_ig(config: dict) -> ConnectorTestResult:
     """Login to IG and fetch a couple of 15m bars for the configured epic."""
     import httpx
 
-    from chatbot.cac40.config import Cac40Config
-    from chatbot.cac40.ig_connector import IgAuthError, IgConnector, _IG_HOSTS, format_ig_http_error
+    from chatbot.trader.config import TraderConfig
+    from chatbot.trader.ig_connector import IgAuthError, IgConnector, _IG_HOSTS, format_ig_http_error
 
     api_key = str(config.get("api_key", "")).strip()
     username = str(config.get("username", "")).strip()
@@ -100,7 +100,7 @@ def _test_ig(config: dict) -> ConnectorTestResult:
         f"account_id={account_id or '(none)'}\n"
         f"epic={epic}"
     )
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         ig_api_key=api_key,
         ig_username=username,
         ig_password=password,
@@ -166,9 +166,12 @@ def _diagnose_ig_working_order_rejects(
 
     Returns ``{"accepted_deal_id": ...}`` if any probe was ACCEPTED (caller cancels).
     """
-    from chatbot.cac40.ig_connector import IgApiError
+    from chatbot.trader.ig_connector import IgApiError
 
     off = max(float(min_dist) * 2.0, 25.0)
+    if mid < 50:
+        off = max(float(min_dist) * 2.0, mid * 0.005)
+        off = min(off, mid * 0.1) if mid > 0 else off
     bid, offer = (0.0, 0.0)
     try:
         bid, offer = ig.dealable_quote()
@@ -176,7 +179,7 @@ def _diagnose_ig_working_order_rejects(
         pass
     lines.append("")
     lines.append(
-        f"DIAG quote bid={bid} offer={offer} mid={mid:.2f} probe_offset={off:.1f}"
+        f"DIAG quote bid={bid} offer={offer} mid={mid:.5f} probe_offset={off:.5f}"
     )
     # Existing positions with attached stop/limit are the prime suspect: IG
     # rejects new resting orders on the instrument with ATTACHED_ORDER_LEVEL_ERROR
@@ -511,20 +514,72 @@ def _diagnose_ig_working_order_rejects(
     return {"accepted_deal_id": accepted_deal_id}
 
 
-def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> ConnectorTestResult:
+def _mid_from_ig_market(ig: Any, epic: str | None = None) -> float:
+    """Live mid from GET /markets snapshot (no /prices allowance burn)."""
+    market = ig.get_market(epic) if epic else ig.get_market()
+    snap = (market.get("snapshot") or {}) if isinstance(market, dict) else {}
+    try:
+        bid = float(snap.get("bid") or 0)
+        offer = float(snap.get("offer") or snap.get("ask") or 0)
+    except (TypeError, ValueError):
+        bid, offer = 0.0, 0.0
+    if bid > 0 and offer > 0:
+        mid = (bid + offer) / 2.0
+    elif bid > 0:
+        mid = bid
+    elif offer > 0:
+        mid = offer
+    else:
+        mid = 0.0
+    if mid > 0 and hasattr(ig, "ledger"):
+        try:
+            ig.ledger.last_price = mid
+        except Exception:
+            pass
+    return mid
+
+
+def _run_ig_market_open_close_probe(ig: Any, *, size: float, currency: str, lines: list[str]) -> bool:
+    """Tiny DEMO market open + immediate close. Returns True on success."""
+    from chatbot.trader.ig_connector import IgApiError
+    from chatbot.trader.models import LegRole, Side
+
+    lines.append("")
+    lines.append(
+        "Market open/close probe (allow_market_orders=true) — DEMO fees/spread may apply."
+    )
+    try:
+        leg_id = ig.open_market_position(
+            Side.BUY, size, role=LegRole.HEDGE, currency=currency
+        )
+        lines.append(f"MARKET OPEN BUY size={size} · leg={leg_id}")
+        ig.market_close(leg_id)
+        lines.append(f"MARKET CLOSE leg={leg_id}")
+        return True
+    except (IgApiError, Exception) as exc:
+        lines.append(f"MARKET probe FAILED: {exc}")
+        return False
+
+
+def run_ig_working_order_test(
+    config: dict,
+    *,
+    hold_seconds: float = 5.0,
+    allow_market_orders: bool = False,
+) -> ConnectorTestResult:
     """
     DEMO-only smoke test: place far working orders, wait, cancel them.
 
-    No market open/close. LIMIT entries are submitted with an attached
-    ``limitLevel`` (take-profit) so IG arms TP the moment the entry fills —
-    same path as live bracket mirror.
+    By default no market open/close. Pass ``allow_market_orders=True`` to also
+    open and immediately close a tiny market position after the WO path.
+    LIMIT/STOP entries may include an attached ``limitLevel`` (take-profit).
     """
     import httpx
     import time
 
-    from chatbot.cac40.config import Cac40Config
-    from chatbot.cac40.ig_connector import IgAuthError, IgConnector, _IG_HOSTS, format_ig_http_error
-    from chatbot.cac40.models import OrderPurpose, OrderType, Side, WorkingOrder
+    from chatbot.trader.config import TraderConfig
+    from chatbot.trader.ig_connector import IgAuthError, IgConnector, _IG_HOSTS, format_ig_http_error
+    from chatbot.trader.models import OrderPurpose, OrderType, Side, WorkingOrder
 
     api_key = str(config.get("api_key", "")).strip()
     username = str(config.get("username", "")).strip()
@@ -557,7 +612,7 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         f"account_id={account_id or '(none)'}\n"
         f"hold_seconds={hold_seconds}"
     )
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         ig_api_key=api_key,
         ig_username=username,
         ig_password=password,
@@ -631,24 +686,52 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         instrument = (market.get("instrument") or {}) if isinstance(market, dict) else {}
         min_dist = ig.resolve_min_stop_or_limit_distance()
         max_dist = ig.resolve_max_stop_or_limit_distance()
-        # Prefer a mid-band offset inside IG min/max when known.
-        if max_dist > 0 and min_dist > 0:
+        # Prefer a mid-band offset inside IG min/max (price units).
+        # Indices: tens of points. FX (mid < 50): small price deltas — never
+        # floor at 20 index-points (that snaps EURUSD to nonsense levels).
+        fx = mid < 50
+        if fx:
+            floor = max(float(min_dist or 0) * 2.0, mid * 0.002)
+            cap = (max_dist * 0.4) if max_dist > 0 else mid * 0.05
+            offset = float(ig.snap_level(min(cap, max(floor, mid * 0.005))))
+            if offset <= 0:
+                offset = float(ig.snap_level(max(floor, mid * 0.005)))
+            tp_offset = float(ig.snap_level(max(offset * 0.5, float(min_dist or 0) * 2.0, mid * 0.002)))
+            probe_extras = (
+                offset,
+                max(offset * 0.5, mid * 0.003),
+                max(offset * 1.5, mid * 0.01),
+                max(offset * 2.0, mid * 0.02),
+                min(max_dist * 0.3, mid * 0.05) if max_dist > 0 else mid * 0.03,
+            )
+        elif max_dist > 0 and min_dist > 0:
             offset = float(ig.snap_level(min(max_dist * 0.5, max(min_dist * 2.0, 20.0))))
+            tp_offset = max(12.0, float(ig.snap_level(offset * 0.5)))
+            probe_extras = (15.0, 25.0, 40.0, 60.0, 80.0)
         elif max_dist > 0:
             offset = float(ig.snap_level(min(max_dist * 0.5, 40.0)))
+            tp_offset = max(12.0, float(ig.snap_level(offset * 0.5)))
+            probe_extras = (15.0, 25.0, 40.0, 60.0, 80.0)
         else:
             offset = max(20.0, float(ig.snap_level(mid * 0.005)))
-        tp_offset = max(12.0, float(ig.snap_level(offset * 0.5)))
+            tp_offset = max(12.0, float(ig.snap_level(offset * 0.5)))
+            probe_extras = (15.0, 25.0, 40.0, 60.0, 80.0)
         buy_entry = ig.snap_level(mid - offset)
         sell_entry = ig.snap_level(mid + offset)
+        buy_stop = ig.snap_level(mid + offset)
+        sell_stop = ig.snap_level(mid - offset)
         buy_tp = ig.snap_level(max(buy_entry + tp_offset, mid + tp_offset))
         sell_tp = ig.snap_level(min(sell_entry - tp_offset, mid - tp_offset))
+        buy_stop_tp = ig.snap_level(max(buy_stop + tp_offset, mid + tp_offset))
+        sell_stop_tp = ig.snap_level(min(sell_stop - tp_offset, mid - tp_offset))
         specs: list[tuple[OrderType, Side, float, str, float | None]] = [
             (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below (no TP)", None),
-            (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above", None),
             (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below + TP", buy_tp),
+            (OrderType.STOP, Side.BUY, buy_stop, "BUY STOP above (no TP)", None),
+            (OrderType.STOP, Side.BUY, buy_stop, "BUY STOP above + TP", buy_stop_tp),
             (OrderType.LIMIT, Side.SELL, sell_entry, "SELL LIMIT above + TP", sell_tp),
-            (OrderType.STOP, Side.SELL, ig.snap_level(mid - offset), "SELL STOP below", None),
+            (OrderType.STOP, Side.SELL, sell_stop, "SELL STOP below (no TP)", None),
+            (OrderType.STOP, Side.SELL, sell_stop, "SELL STOP below + TP", sell_stop_tp),
         ]
         # Only probe currencies the market actually lists (plus resolved pick).
         currency_candidates: list[str] = []
@@ -686,7 +769,7 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         if epic != configured_epic:
             lines.append(f"(configured epic was {configured_epic})")
         lines.append(
-            f"Account={account_type} {account_ccy} · Mid≈{mid:.2f} · offset={offset:.1f} · "
+            f"Account={account_type} {account_ccy} · Mid≈{mid:.5f} · offset={offset:.5f} · "
             f"size={size} · expiry={expiry} · market={market_status}"
         )
         lines.append(
@@ -701,12 +784,23 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
         working_currency = currency_candidates[0]
         probe_ok = False
         probe_offsets = [offset]
-        for extra in (15.0, 25.0, 40.0, 60.0, 80.0):
-            if all(abs(extra - o) > 0.5 for o in probe_offsets):
-                probe_offsets.append(extra)
+        for extra in probe_extras:
+            try:
+                extra_f = float(ig.snap_level(float(extra)))
+            except Exception:
+                extra_f = float(extra)
+            if extra_f <= 0:
+                continue
+            if all(abs(extra_f - o) > (mid * 1e-4 if fx else 0.5) for o in probe_offsets):
+                probe_offsets.append(extra_f)
         last_exc: Exception | None = None
         for off in probe_offsets:
             level = float(ig.snap_level(mid - off))
+            if level <= 0:
+                lines.append(
+                    f"SKIP BUY LIMIT below offset≈{off} → level={level} (<=0; FX scaling?)"
+                )
+                continue
             for ccy in currency_candidates:
                 try:
                     order = ig.place_order(
@@ -725,27 +819,33 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
                     working_currency = ccy
                     probe_ok = True
                     lines.append(
-                        f"ACCEPTED BUY LIMIT below (no TP) @ {order.level:.2f} "
-                        f"(offset≈{off:.1f}) · currency={ccy} "
+                        f"ACCEPTED BUY LIMIT below (no TP) @ {order.level:.5f} "
+                        f"(offset≈{off:.5f}) · currency={ccy} "
                         f"· dealId={order.deal_id or '—'} · ref={order.client_ref or '—'}"
                     )
                     # Rebuild remaining specs around the offset that worked.
                     offset = off
                     buy_entry = ig.snap_level(mid - offset)
                     sell_entry = ig.snap_level(mid + offset)
+                    buy_stop = ig.snap_level(mid + offset)
+                    sell_stop = ig.snap_level(mid - offset)
                     buy_tp = ig.snap_level(max(buy_entry + tp_offset, mid + tp_offset))
                     sell_tp = ig.snap_level(min(sell_entry - tp_offset, mid - tp_offset))
+                    buy_stop_tp = ig.snap_level(max(buy_stop + tp_offset, mid + tp_offset))
+                    sell_stop_tp = ig.snap_level(min(sell_stop - tp_offset, mid - tp_offset))
                     specs = [
-                        (OrderType.STOP, Side.BUY, ig.snap_level(mid + offset), "BUY STOP above", None),
                         (OrderType.LIMIT, Side.BUY, buy_entry, "BUY LIMIT below + TP", buy_tp),
+                        (OrderType.STOP, Side.BUY, buy_stop, "BUY STOP above (no TP)", None),
+                        (OrderType.STOP, Side.BUY, buy_stop, "BUY STOP above + TP", buy_stop_tp),
                         (OrderType.LIMIT, Side.SELL, sell_entry, "SELL LIMIT above + TP", sell_tp),
-                        (OrderType.STOP, Side.SELL, ig.snap_level(mid - offset), "SELL STOP below", None),
+                        (OrderType.STOP, Side.SELL, sell_stop, "SELL STOP below (no TP)", None),
+                        (OrderType.STOP, Side.SELL, sell_stop, "SELL STOP below + TP", sell_stop_tp),
                     ]
                     break
                 except IgAuthError as exc:
                     last_exc = exc
                     lines.append(
-                        f"REJECTED BUY LIMIT below (no TP) offset≈{off:.1f} "
+                        f"REJECTED BUY LIMIT below (no TP) offset≈{off:.5f} "
                         f"level={level} currency={ccy}: {exc}"
                     )
             if probe_ok:
@@ -867,11 +967,24 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
             f"cancelled={cancel_ok} · cancel_failed={cancel_fail} · "
             f"still_open={len(remaining)} · attached_tp_seen={attached_tp_seen}"
         )
+        market_ok = True
+        if allow_market_orders:
+            market_ok = _run_ig_market_open_close_probe(
+                ig, size=size, currency=working_currency, lines=lines
+            )
+        else:
+            lines.append("Market open/close skipped (allow_market_orders=false).")
         lines.append("")
         lines.append(context)
         # Soft-fail if IG accepted LIMIT+TP but list omitted limitLevel (some envs
         # hide it until fill). Hard-fail only when place/cancel themselves fail.
-        ok = accepted > 0 and rejected == 0 and cancel_fail == 0 and len(remaining) == 0
+        ok = (
+            accepted > 0
+            and rejected == 0
+            and cancel_fail == 0
+            and len(remaining) == 0
+            and market_ok
+        )
         if ok and attached_tp_expected > 0 and attached_tp_seen < 1:
             lines.append("")
             lines.append(
@@ -905,6 +1018,697 @@ def run_ig_working_order_test(config: dict, *, hold_seconds: float = 5.0) -> Con
                 except Exception:
                     pass
         return ConnectorTestResult(ok=False, message=f"Working-order test failed: {exc}", error=context)
+    finally:
+        ig.close()
+
+
+def run_ig_cac40_working_order_matrix(
+    config: dict,
+    *,
+    allow_market_orders: bool = False,
+    use_stream_confirms: bool = True,
+    stream_timeout: float = 20.0,
+) -> ConnectorTestResult:
+    """France CAC DEMO matrix: LIMIT±TP and STOP±TP; cancel each; market only if flagged.
+
+    When ``use_stream_confirms`` is True, also connects Lightstreamer TRADE and
+    records whether a WOU/CONFIRMS update arrived (REST confirm remains authoritative).
+    """
+    import json
+    import time
+
+    from chatbot.trader.config import TraderConfig
+    from chatbot.trader.ig_connector import IgApiError, IgAuthError, IgConnector
+    from chatbot.trader.models import OrderPurpose, OrderType, Side, WorkingOrder
+
+    api_key = str(config.get("api_key", "")).strip()
+    username = str(config.get("username", "")).strip()
+    password = str(config.get("password", "")).strip()
+    if not api_key or not username or not password:
+        return ConnectorTestResult(
+            ok=False,
+            message="IG API key, username, and password are required.",
+            error="missing_credentials",
+        )
+    acc_type = str(config.get("acc_type", "DEMO") or "DEMO").strip().upper()
+    if acc_type != "DEMO":
+        return ConnectorTestResult(
+            ok=False,
+            message="France CAC working-order matrix is DEMO-only.",
+            error="live_blocked",
+        )
+    epic = str(config.get("epic", "") or "IX.D.CAC.BMU.IP").strip() or "IX.D.CAC.BMU.IP"
+    account_id = str(config.get("account_id", "")).strip()
+    size = float(config.get("order_size") or 1.0) or 1.0
+    cfg = TraderConfig(
+        ig_api_key=api_key,
+        ig_username=username,
+        ig_password=password,
+        ig_account_id=account_id,
+        ig_acc_type=acc_type,
+        epic=epic,
+        order_size=size,
+    )
+    ig = IgConnector(cfg, dry_run=False)
+    lines: list[str] = []
+    ls_session = None
+    case_ok: dict[str, bool] = {}
+    try:
+        ig.login()
+        if not ig._cst:
+            return ConnectorTestResult(
+                ok=False, message="IG login failed (no session tokens).", error="no_session"
+            )
+        account = ig.get_active_account()
+        account_type = str(account.get("accountType") or "").strip().upper() or "—"
+        if not ig.epic_compatible_with_account(epic=epic, account_type=account_type):
+            alt, _seen = ig.find_compatible_epic(account_type=account_type)
+            if alt and alt != epic:
+                lines.append(f"Switching epic {epic} → {alt}")
+                epic = alt
+                ig.config.epic = alt
+                if hasattr(ig, "_market_cache"):
+                    ig._market_cache.clear()
+            else:
+                return ConnectorTestResult(
+                    ok=False,
+                    message="No compatible France 40 epic for this account.",
+                    error="epic_account_mismatch",
+                )
+        # Prefer market snapshot — avoids burning weekly /prices allowance.
+        mid = _mid_from_ig_market(ig)
+        if mid <= 0:
+            return ConnectorTestResult(
+                ok=False, message="Could not read mid price from market snapshot.", error="no_price"
+            )
+        currency = ig.resolve_order_currency()
+        size = max(size, ig.resolve_min_deal_size())
+        min_dist = float(ig.resolve_min_stop_or_limit_distance() or 12.0)
+        max_dist = float(ig.resolve_max_stop_or_limit_distance() or 0.0)
+        if max_dist > 0 and min_dist > 0:
+            offset = float(ig.snap_level(min(max_dist * 0.5, max(min_dist * 2.0, 20.0))))
+        else:
+            offset = max(20.0, float(ig.snap_level(mid * 0.005)))
+        tp_offset = max(12.0, float(ig.snap_level(offset * 0.5)))
+        buy_limit = float(ig.snap_level(mid - offset))
+        buy_stop = float(ig.snap_level(mid + offset))
+        buy_limit_tp = float(ig.snap_level(max(buy_limit + tp_offset, mid + tp_offset)))
+        buy_stop_tp = float(ig.snap_level(max(buy_stop + tp_offset, mid + tp_offset)))
+        matrix: list[tuple[str, OrderType, float, float | None]] = [
+            ("LIMIT_no_TP", OrderType.LIMIT, buy_limit, None),
+            ("LIMIT_with_TP", OrderType.LIMIT, buy_limit, buy_limit_tp),
+            ("STOP_no_TP", OrderType.STOP, buy_stop, None),
+            ("STOP_with_TP", OrderType.STOP, buy_stop, buy_stop_tp),
+        ]
+        if use_stream_confirms and ig.lightstreamer_endpoint and (
+            ig.current_account_id or account_id
+        ):
+            try:
+                from chatbot.trader.ig_stream_probe import IgLightstreamerSession
+
+                ls_session = IgLightstreamerSession(
+                    endpoint=ig.lightstreamer_endpoint,
+                    account_id=(ig.current_account_id or account_id).strip(),
+                    cst=ig._cst or "",
+                    xst=ig._security or "",
+                )
+                if ls_session.connect(timeout=15.0):
+                    ls_session.subscribe_trade()
+                    lines.append(f"Lightstreamer TRADE subscribed · status={ls_session.status}")
+                else:
+                    lines.append("Lightstreamer connect failed — REST confirms only.")
+                    ls_session.disconnect()
+                    ls_session = None
+            except Exception as exc:
+                lines.append(f"Lightstreamer unavailable ({exc}) — REST confirms only.")
+                ls_session = None
+
+        lines.append(f"France CAC working-order matrix · {epic}")
+        lines.append(
+            f"Account={account_type} · Mid≈{mid:.2f} · offset={offset:.2f} · "
+            f"size={size} · currency={currency}"
+        )
+        lines.append("")
+
+        for case_id, otype, level, tp in matrix:
+            stream_hit = "n/a"
+            try:
+                before_trade = ls_session.trade.count if ls_session else 0
+                order = ig.place_order(
+                    WorkingOrder(
+                        id="",
+                        type=otype,
+                        side=Side.BUY,
+                        level=level,
+                        size=size,
+                        purpose=OrderPurpose.ENTRY,
+                    ),
+                    currency=currency,
+                    limit_level=tp,
+                )
+                deal_id = order.deal_id or ""
+                if ls_session and deal_id:
+                    hit = ls_session.trade.wait_for(
+                        lambda row, did=deal_id: did in json.dumps(row, default=str),
+                        timeout=stream_timeout,
+                    )
+                    stream_hit = "yes" if hit or ls_session.trade.count > before_trade else "no"
+                tp_bit = f" TP@{tp:.2f}" if tp is not None else ""
+                lines.append(
+                    f"PASS {case_id} BUY {otype.value} @ {order.level:.2f}{tp_bit} "
+                    f"dealId={deal_id or '—'} stream={stream_hit}"
+                )
+                if deal_id:
+                    ig.cancel_working_order(deal_id)
+                    lines.append(f"  cancelled {deal_id}")
+                case_ok[case_id] = True
+            except (IgAuthError, IgApiError, Exception) as exc:
+                case_ok[case_id] = False
+                lines.append(f"FAIL {case_id}: {exc}")
+            time.sleep(0.2)
+
+        market_ok = True
+        if allow_market_orders:
+            market_ok = _run_ig_market_open_close_probe(
+                ig, size=size, currency=currency, lines=lines
+            )
+        else:
+            lines.append("Market open/close skipped (allow_market_orders=false).")
+
+        all_cases = all(case_ok.get(c[0], False) for c in matrix)
+        ok = all_cases and market_ok
+        lines.append("")
+        lines.append(
+            f"Summary · cases={case_ok} · market_ok={market_ok} · "
+            f"allow_market_orders={allow_market_orders}"
+        )
+        return ConnectorTestResult(
+            ok=ok,
+            message="\n".join(lines),
+            error=None if ok else "matrix_failed",
+        )
+    except Exception as exc:
+        return ConnectorTestResult(
+            ok=False, message=f"CAC matrix failed: {exc}", error="exception"
+        )
+    finally:
+        if ls_session is not None:
+            try:
+                ls_session.disconnect()
+            except Exception:
+                pass
+        ig.close()
+
+
+def run_ig_stream_order_probe(
+    config: dict,
+    *,
+    allow_market_orders: bool = False,
+) -> ConnectorTestResult:
+    """Orchestrate CAC matrix (+ optional EURUSD smoke) over Lightstreamer TRADE."""
+    from chatbot.trader.config import TraderConfig
+    from chatbot.trader.ig_connector import IgConnector
+    from chatbot.trader.models import OrderPurpose, OrderType, Side, WorkingOrder
+
+    cac = run_ig_cac40_working_order_matrix(
+        config,
+        allow_market_orders=allow_market_orders,
+        use_stream_confirms=True,
+    )
+    lines = [cac.message, "", "--- EURUSD Mini smoke (LIMIT/STOP bare) ---"]
+    # Still probe FX when CAC is rejected by IG DEMO (common ATTACHED_ORDER_LEVEL_ERROR).
+
+    api_key = str(config.get("api_key", "")).strip()
+    username = str(config.get("username", "")).strip()
+    password = str(config.get("password", "")).strip()
+    account_id = str(config.get("account_id", "")).strip()
+    fx_epic = "CS.D.EURUSD.MINI.IP"
+    cfg = TraderConfig(
+        ig_api_key=api_key,
+        ig_username=username,
+        ig_password=password,
+        ig_account_id=account_id,
+        ig_acc_type="DEMO",
+        epic=fx_epic,
+        order_size=float(config.get("order_size") or 1.0) or 1.0,
+    )
+    ig = IgConnector(cfg, dry_run=False)
+    fx_ok = True
+    try:
+        ig.login()
+        mid = _mid_from_ig_market(ig)
+        if mid <= 0:
+            lines.append("SKIP EURUSD — no mid from market snapshot")
+            fx_ok = False
+        else:
+            currency = ig.resolve_order_currency()
+            size = max(float(cfg.order_size), ig.resolve_min_deal_size())
+            min_d = float(ig.resolve_min_stop_or_limit_distance() or 0) or mid * 0.001
+            offset = max(min_d * 2.0, mid * 0.005)
+            for label, otype, level in (
+                ("FX LIMIT bare", OrderType.LIMIT, mid - offset),
+                ("FX STOP bare", OrderType.STOP, mid + offset),
+            ):
+                try:
+                    order = ig.place_order(
+                        WorkingOrder(
+                            id="",
+                            type=otype,
+                            side=Side.BUY,
+                            level=float(ig.snap_level(level)),
+                            size=size,
+                            purpose=OrderPurpose.ENTRY,
+                        ),
+                        currency=currency,
+                        limit_level=None,
+                    )
+                    lines.append(
+                        f"PASS {label} @ {order.level:.5f} dealId={order.deal_id or '—'}"
+                    )
+                    if order.deal_id:
+                        ig.cancel_working_order(order.deal_id)
+                except Exception as exc:
+                    fx_ok = False
+                    lines.append(f"FAIL {label}: {exc}")
+    except Exception as exc:
+        fx_ok = False
+        lines.append(f"FAIL EURUSD smoke: {exc}")
+    finally:
+        ig.close()
+
+    ok = cac.ok and fx_ok
+    return ConnectorTestResult(
+        ok=ok, message="\n".join(lines), error=None if ok else "stream_order_probe_failed"
+    )
+
+
+def run_ig_cross_market_working_order_probe(
+    config: dict,
+    *,
+    allow_market_orders: bool = False,
+) -> ConnectorTestResult:
+    """DEMO-only: bare LIMIT on configured epic + alternate TRADEABLE markets.
+
+    Separate from ``run_ig_working_order_test`` (no attached TP, no France-40-only
+    diagnostics). Used to check whether ``ATTACHED_ORDER_LEVEL_ERROR`` is
+    instrument-specific or account/API-wide.
+    """
+    import httpx
+
+    from chatbot.trader.config import TraderConfig
+    from chatbot.trader.ig_connector import IgApiError, IgAuthError, IgConnector, _IG_HOSTS, format_ig_http_error
+
+    api_key = str(config.get("api_key", "")).strip()
+    username = str(config.get("username", "")).strip()
+    password = str(config.get("password", "")).strip()
+    if not api_key or not username or not password:
+        return ConnectorTestResult(
+            ok=False,
+            message="IG API key, username, and password are required.",
+            error="missing_credentials",
+        )
+    acc_type = str(config.get("acc_type", "DEMO") or "DEMO").strip().upper()
+    if acc_type != "DEMO":
+        return ConnectorTestResult(
+            ok=False,
+            message="Cross-market working-order probe is DEMO-only.",
+            error="live_blocked",
+        )
+    configured_epic = str(config.get("epic", "") or "IX.D.CAC.BMU.IP").strip()
+    account_id = str(config.get("account_id", "")).strip()
+    size_override = float(config.get("order_size") or 0) or None
+    cfg = TraderConfig(
+        ig_api_key=api_key,
+        ig_username=username,
+        ig_password=password,
+        ig_account_id=account_id,
+        ig_acc_type=acc_type,
+        epic=configured_epic,
+        order_size=float(size_override or 1.0),
+    )
+    ig = IgConnector(cfg, dry_run=False)
+    lines: list[str] = []
+    accepted_any = False
+    context = (
+        f"env={acc_type}\n"
+        f"host={_IG_HOSTS.get(acc_type)}\n"
+        f"account_id={account_id or '(none)'}\n"
+        f"configured_epic={configured_epic}"
+    )
+
+    def _mid_from_market(market: dict[str, Any]) -> tuple[float, float, float, str]:
+        snap = (market.get("snapshot") or {}) if isinstance(market, dict) else {}
+        bid = float(snap.get("bid") or 0)
+        offer = float(snap.get("offer") or snap.get("ask") or 0)
+        mid = (bid + offer) / 2.0 if bid > 0 and offer > 0 else float(snap.get("netChange") or 0)
+        if mid <= 0 and bid > 0:
+            mid = bid
+        status = str(snap.get("marketStatus") or "—")
+        return bid, offer, mid, status
+
+    def _min_dist(market: dict[str, Any], mid: float) -> float:
+        rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
+        row = rules.get("minNormalStopOrLimitDistance") or {}
+        try:
+            value = float(row.get("value") or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        unit = str(row.get("unit") or "POINTS").upper()
+        if value <= 0:
+            return 12.0
+        if unit == "PERCENTAGE" and mid > 0:
+            return mid * value / 100.0
+        return value
+
+    def _min_size(market: dict[str, Any]) -> float:
+        rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
+        row = rules.get("minDealSize") or {}
+        try:
+            value = float(row.get("value") or 0)
+        except (TypeError, ValueError):
+            value = 0.0
+        if size_override and size_override > 0:
+            return max(size_override, value or size_override)
+        return value if value > 0 else 1.0
+
+    def _pick_currency(market: dict[str, Any], account_ccy: str) -> str:
+        instrument = (market.get("instrument") or {}) if isinstance(market, dict) else {}
+        codes: list[str] = []
+        for row in instrument.get("currencies") or []:
+            if isinstance(row, dict) and row.get("code"):
+                code = str(row["code"]).strip().upper()
+                if code and code not in codes:
+                    codes.append(code)
+        if account_ccy and account_ccy in codes:
+            return account_ccy
+        for prefer in ("EUR", "USD", "GBP"):
+            if prefer in codes:
+                return prefer
+        return codes[0] if codes else (account_ccy or "EUR")
+
+    def _expiry(market: dict[str, Any], epic: str) -> str:
+        instrument = (market.get("instrument") or {}) if isinstance(market, dict) else {}
+        expiry = str(instrument.get("expiry") or "").strip()
+        if expiry and expiry not in ("null", "None"):
+            return expiry
+        return "DFB" if ig.epic_product_hint(epic, market=market) == "SPREADBET" else "-"
+
+    def _price_decimals(mid: float) -> int:
+        if mid < 10:
+            return 5
+        if mid < 500:
+            return 2
+        return 1
+
+    def _entry_offset(mid: float, min_d: float) -> float:
+        # Keep level on the correct side of market and above zero for FX.
+        if mid < 50:
+            return max(min(min_d, mid * 0.05) * 2.0, mid * 0.005)
+        return max(min_d * 2.0, 25.0)
+
+    def _try_wo(
+        *,
+        epic: str,
+        label: str,
+        order_type: str,
+        with_tp: bool,
+    ) -> None:
+        """Place one BUY working order (LIMIT below / STOP above), optional attached TP."""
+        nonlocal accepted_any
+        order_type = order_type.upper()
+        shape = f"BUY {order_type}{' +TP' if with_tp else ''}"
+        try:
+            if hasattr(ig, "_market_cache"):
+                ig._market_cache.pop(epic, None)
+            prev = ig.config.epic
+            ig.config.epic = epic
+            market = ig.get_market(epic)
+            bid, offer, mid, status = _mid_from_market(market)
+            if mid <= 0 or status != "TRADEABLE":
+                lines.append(
+                    f"  SKIP {label} {shape} epic={epic} status={status} mid={mid:.4f}"
+                )
+                ig.config.epic = prev
+                return
+            min_d = _min_dist(market, mid)
+            size = _min_size(market)
+            ccy = _pick_currency(market, account_ccy)
+            expiry = _expiry(market, epic)
+            offset = _entry_offset(mid, min_d)
+            decimals = _price_decimals(mid)
+            if order_type == "LIMIT":
+                level = round(mid - offset, decimals)
+            else:
+                level = round(mid + offset, decimals)
+            if level <= 0:
+                lines.append(
+                    f"  SKIP {label} {shape} epic={epic} level={level} <= 0 "
+                    f"(mid={mid}, minDist={min_d})"
+                )
+                ig.config.epic = prev
+                return
+            # BUY TP: FX CFD with maxStop in POINTS → limitDistance (capped).
+            # Otherwise absolute limitLevel cleared above live offer.
+            if with_tp:
+                rules = (market.get("dealingRules") or {}) if isinstance(market, dict) else {}
+                mx = rules.get("maxStopOrLimitDistance") or {}
+                mn = rules.get("minNormalStopOrLimitDistance") or {}
+                try:
+                    max_v = float(mx.get("value") or 0)
+                except (TypeError, ValueError):
+                    max_v = 0.0
+                try:
+                    raw_min = float(mn.get("value") or 0)
+                except (TypeError, ValueError):
+                    raw_min = 0.0
+                max_u = str(mx.get("unit") or "POINTS").upper()
+                if mid < 50 and max_u == "POINTS" and max_v > 0:
+                    lo = max(raw_min * 2.0 if raw_min > 0 else 10.0, 10.0)
+                    hi = max_v * 0.8 if max_v > lo else max_v
+                    dist = min(max(lo, 20.0), hi) if hi > 0 else 20.0
+                    limit_level = None
+                    limit_distance: float | None = float(round(dist, 2))
+                else:
+                    if mid < 50:
+                        clear = max(offset, mid * 0.01)
+                    elif mid < 1000:
+                        clear = max(offset, min_d * 2.0, mid * 0.02)
+                    else:
+                        clear = max(offset, min_d * 2.0, 25.0)
+                    live_ref = offer if offer > 0 else mid
+                    limit_level = round(max(level + clear, live_ref + clear), decimals)
+                    limit_distance = None
+            else:
+                limit_level = None
+                limit_distance = None
+            name = str(
+                ((market.get("instrument") or {}) if isinstance(market, dict) else {}).get("name")
+                or ""
+            )
+            body: dict[str, Any] = {
+                "epic": epic,
+                "expiry": expiry,
+                "direction": "BUY",
+                "size": size,
+                "level": level,
+                "type": order_type,
+                "currencyCode": ccy,
+                "timeInForce": "GOOD_TILL_CANCELLED",
+                "guaranteedStop": False,
+                "forceOpen": True,
+            }
+            if limit_level is not None:
+                body["limitLevel"] = limit_level
+            if limit_distance is not None:
+                body["limitDistance"] = limit_distance
+            lines.append(
+                f"  TRY {label} {shape} {name or epic} mid={mid:.4f} "
+                f"level={level} tp={limit_level if limit_level is not None else '—'} "
+                f"tpDist={limit_distance if limit_distance is not None else '—'} "
+                f"size={size} ccy={ccy} expiry={expiry} minDist≈{min_d:.4f}"
+            )
+            conf = ig.submit_working_order_raw(body, version="2")
+            status_c = str(conf.get("dealStatus") or "").upper()
+            reason = str(conf.get("reason") or "")
+            did = str(conf.get("dealId") or "")
+            ref = str(conf.get("dealReference") or "")
+            if status_c == "ACCEPTED":
+                accepted_any = True
+                lines.append(f"  ACCEPTED {label} {shape} dealId={did} dealReference={ref}")
+                if did:
+                    try:
+                        ig.cancel_working_order(did)
+                        lines.append(f"  cancelled {did}")
+                    except Exception as cancel_exc:
+                        lines.append(f"  cancel FAILED {did}: {cancel_exc}")
+            else:
+                lines.append(
+                    f"  REJECTED {label} {shape} reason={reason or '—'} "
+                    f"dealStatus={status_c or '—'} dealId={did or '—'} "
+                    f"dealReference={ref or '—'}"
+                )
+            ig.config.epic = prev
+        except IgApiError as exc:
+            lines.append(f"  ERROR {label} {shape} epic={epic}: {exc}")
+            try:
+                ig.config.epic = configured_epic
+            except Exception:
+                pass
+        except Exception as exc:
+            lines.append(f"  ERROR {label} {shape} epic={epic}: {type(exc).__name__}: {exc}")
+            try:
+                ig.config.epic = configured_epic
+            except Exception:
+                pass
+
+    def _probe_shapes(*, epic: str, label: str) -> None:
+        for order_type in ("LIMIT", "STOP"):
+            for with_tp in (False, True):
+                _try_wo(epic=epic, label=label, order_type=order_type, with_tp=with_tp)
+
+    def _resolve_search_epic(term: str, *, account_type: str) -> tuple[str, str] | None:
+        try:
+            rows = ig.search_markets(term)
+        except Exception as exc:
+            lines.append(f"  search '{term}' failed: {exc}")
+            return None
+
+        def _rank(row: dict[str, Any]) -> tuple[int, str]:
+            epic = str(row.get("epic") or "")
+            name = str(row.get("instrumentName") or row.get("instrument") or "").upper()
+            # Prefer US cash share CFD over ITA listings / knock-outs.
+            score = 50
+            if "ITA" in name:
+                score += 100
+            if "BULL" in epic.upper() or "BEAR" in epic.upper() or "KO" in name:
+                score += 80
+            if epic.upper().startswith("UD.D.") or epic.upper().startswith("UA.D."):
+                score -= 20
+            if "CASH" in epic.upper():
+                score -= 10
+            return (score, epic)
+
+        eligible: list[dict[str, Any]] = []
+        for row in rows:
+            epic = str(row.get("epic") or "").strip()
+            if not epic:
+                continue
+            status = str(row.get("marketStatus") or "").upper()
+            if status and status != "TRADEABLE":
+                continue
+            hint = ig.epic_product_hint(epic)
+            if account_type == "CFD" and hint == "SPREADBET":
+                continue
+            if account_type == "SPREADBET" and hint == "CFD":
+                continue
+            eligible.append(row)
+        if not eligible:
+            for row in rows:
+                epic = str(row.get("epic") or "").strip()
+                status = str(row.get("marketStatus") or "").upper()
+                if epic and (not status or status == "TRADEABLE"):
+                    eligible.append(row)
+        if not eligible:
+            return None
+        best = sorted(eligible, key=_rank)[0]
+        epic = str(best.get("epic") or "").strip()
+        name = str(best.get("instrumentName") or best.get("instrument") or epic)
+        return epic, name
+
+    account_ccy = "—"
+    try:
+        ig.login()
+        if not ig._cst:
+            return ConnectorTestResult(
+                ok=False, message="IG login failed (no session tokens).", error="no_session"
+            )
+        account = ig.get_active_account()
+        account_type = str(account.get("accountType") or "").strip().upper() or "—"
+        account_ccy = str(
+            account.get("currency") or account.get("preferredCurrency") or ""
+        ).strip().upper() or "—"
+        lines.append("IG DEMO cross-market working-order probe")
+        lines.append(
+            f"Account={account_type} {account_ccy} · configured_epic={configured_epic}"
+        )
+        try:
+            n_pos = len(ig.list_open_positions(epic=""))
+            n_wo = len(ig.list_working_orders())
+            lines.append(f"Book: open_positions={n_pos} open_working_orders={n_wo}")
+        except Exception as exc:
+            lines.append(f"Book: unavailable ({exc})")
+
+        lines.append("")
+        lines.append("1) Configured epic — BUY LIMIT / STOP ± TP:")
+        _probe_shapes(epic=configured_epic, label="configured")
+
+        lines.append("")
+        lines.append("2) Forex / Tesla / Gold — BUY LIMIT / STOP ± TP:")
+        targets: list[tuple[str, str]] = []
+        for term, fallbacks in (
+            ("EUR/USD", ("CS.D.EURUSD.MINI.IP", "CS.D.EURUSD.CFD.IP")),
+            ("Tesla", ("UD.D.TSLA.CASH.IP", "UA.D.TSLA.CASH.IP")),
+            ("Gold", ("CS.D.IN_GOLD.MFI.IP", "CS.D.CFDGOLD.BMU.IP")),
+        ):
+            resolved = _resolve_search_epic(term, account_type=account_type)
+            if resolved:
+                targets.append((resolved[0], f"'{term}'"))
+            else:
+                for fb in fallbacks:
+                    targets.append((fb, f"{term} (fallback)"))
+                    break
+
+        seen_epics = {configured_epic}
+        for epic, label in targets:
+            if epic in seen_epics:
+                continue
+            seen_epics.add(epic)
+            lines.append(f"--- {label} epic={epic} ---")
+            _probe_shapes(epic=epic, label=label)
+
+        lines.append("")
+        if accepted_any:
+            lines.append(
+                "RESULT: at least one working order was ACCEPTED — "
+                "compare shapes/markets above (not a total API ban)."
+            )
+        else:
+            lines.append(
+                "RESULT: every LIMIT/STOP (±TP) rejected/skipped on probed markets."
+            )
+        market_ok = True
+        if allow_market_orders:
+            ig.config.epic = configured_epic
+            try:
+                size = max(float(size_override or 1.0), ig.resolve_min_deal_size())
+                ccy = ig.resolve_order_currency()
+            except Exception:
+                size = float(size_override or 1.0) or 1.0
+                ccy = account_ccy if account_ccy != "—" else "EUR"
+            market_ok = _run_ig_market_open_close_probe(
+                ig, size=size, currency=ccy, lines=lines
+            )
+        else:
+            lines.append("Market open/close skipped (allow_market_orders=false).")
+        lines.append("")
+        lines.append(context)
+        ok = accepted_any and market_ok
+        return ConnectorTestResult(
+            ok=ok,
+            message="\n".join(lines),
+            error=None if ok else context,
+        )
+    except IgAuthError as exc:
+        return ConnectorTestResult(ok=False, message=str(exc), error=context)
+    except httpx.HTTPStatusError as exc:
+        detail = format_ig_http_error(exc.response, action="request", url=str(exc.request.url))
+        return ConnectorTestResult(ok=False, message=detail, error=context)
+    except httpx.RequestError as exc:
+        return ConnectorTestResult(ok=False, message=f"IG network error: {exc}", error=context)
+    except Exception as exc:
+        return ConnectorTestResult(
+            ok=False, message=f"Cross-market probe failed: {exc}", error=context
+        )
     finally:
         ig.close()
 

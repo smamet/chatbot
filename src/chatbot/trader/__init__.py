@@ -1,5 +1,5 @@
-"""CAC40 mean-reversion bot: IG live, multimodal LLM, HedgeLedger backtest."""
+"""Trader engine: IG live, multimodal LLM, HedgeLedger backtest."""
 
-from chatbot.cac40.config import Cac40Config
+from chatbot.trader.config import TraderConfig
 
-__all__ = ["Cac40Config"]
+__all__ = ["TraderConfig"]

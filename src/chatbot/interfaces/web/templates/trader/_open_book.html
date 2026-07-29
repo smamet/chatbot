@@ -2,7 +2,10 @@
 {% macro _deal_cell(deal_id, live_mode) %}
   {% set did = deal_id or '' %}
   {% if did.startswith('attached:') %}
-    <code title="{{ did }}">att:{{ did.split(':')[1][:8] }}{% if did.split(':')|length > 2 %}:{{ did.split(':')[2] }}{% endif %}</code>
+    {% set parts = did.split(':') %}
+    {% set parent = parts[1] if parts|length > 1 else '' %}
+    {% set purpose = parts[2] if parts|length > 2 else 'tp' %}
+    <span class="badge done" title="{{ did }} — IG attached {{ purpose }} on {{ parent }}">IG {{ purpose }}</span>
   {% elif did %}
     <code title="{{ did }}">{{ did[:12] }}{% if did|length > 12 %}…{% endif %}</code>
   {% elif live_mode == 'live' %}
@@ -26,15 +29,15 @@
 {% endmacro %}
 
 {% macro _book_row(row, child=false, live_mode='off', show_status=false) %}
-  <tr class="{% if child %}cac40-book__child{% else %}cac40-book__parent{% endif %}{% if row.status == 'remove' %} cac40-book__row--remove{% elif row.status == 'new' %} cac40-book__row--new{% endif %}">
-    <td class="cac40-book__kind">
-      {% if child %}<span class="cac40-book__nest">└</span>{% endif %}
+  <tr class="{% if child %}trader-book__child{% else %}trader-book__parent{% endif %}{% if row.status == 'remove' %} trader-book__row--remove{% elif row.status == 'new' %} trader-book__row--new{% endif %}">
+    <td class="trader-book__kind">
+      {% if child %}<span class="trader-book__nest">└</span>{% endif %}
       {% if row.row_kind == 'position' %}
         Position{% if row.purpose and row.purpose != 'primary' %} <span class="text-muted">({{ row.purpose }})</span>{% endif %}
       {% else %}
         {% if row.purpose == 'entry' %}Entry
         {% elif row.purpose == 'tp' %}TP
-        {% elif row.purpose == 'hedge_cover' %}Hedge
+        {% elif row.purpose == 'hedge_cover' %}{% if row.deal_id and row.deal_id.startswith('attached:') %}SL{% else %}Hedge{% endif %}
         {% elif row.purpose == 'close' %}Close
         {% else %}{{ row.purpose or 'Order' }}{% endif %}
         {% if row.order_type %}<span class="text-muted"> {{ row.order_type }}</span>{% endif %}
@@ -42,10 +45,10 @@
     </td>
     <td>{{ row.side }}</td>
     <td>{{ row.size if row.size is not none else '—' }}</td>
-    <td>{% if row.level is number %}{{ '%.2f'|format(row.level) }}{% else %}{{ row.level or '—' }}{% endif %}</td>
+    <td>{% if row.level is number %}{% if row.level < 50 %}{{ '%.5f'|format(row.level) }}{% else %}{{ '%.2f'|format(row.level) }}{% endif %}{% else %}{{ row.level or '—' }}{% endif %}</td>
     <td>
       {% if row.upl is number %}
-        <span class="{% if row.upl > 0 %}cac40-decision__pnl--pos{% elif row.upl < 0 %}cac40-decision__pnl--neg{% endif %}">
+        <span class="{% if row.upl > 0 %}trader-decision__pnl--pos{% elif row.upl < 0 %}trader-decision__pnl--neg{% endif %}">
           {{ '%+.2f'|format(row.upl) }}
         </span>
       {% else %}—{% endif %}
@@ -61,13 +64,13 @@
 {% macro open_book_table(book, live_mode='off', heading='Open book', embedded=false, sync_href='') %}
 {% set groups = book.groups if book else [] %}
 {% if embedded %}
-<div class="cac40-book cac40-book--embedded">
+<div class="trader-book trader-book--embedded">
   <h3 class="card-title" style="font-size:1rem;margin-top:1rem;">{{ heading }}</h3>
 {% else %}
-<section class="card cac40-book">
+<section class="card trader-book">
   <h2>{{ heading }}</h2>
 {% endif %}
-  <p class="field-hint cac40-book__caption">
+  <p class="field-hint trader-book__caption">
     Local book
     {% if book and book.as_of %}
       as of <time class="js-local-datetime" datetime="{{ book.as_of }}">{{ book.as_of }}</time>
@@ -82,7 +85,7 @@
     — use <strong>Review &amp; sync book</strong> to refresh from the broker.
     {% endif %}
   </p>
-  <table class="data-table data-table--compact cac40-book__table">
+  <table class="data-table data-table--compact trader-book__table">
     <thead>
       <tr>
         <th>Kind</th>
@@ -115,7 +118,7 @@
 {% endmacro %}
 
 {% macro open_book_diff_table(groups, live_mode='off') %}
-  <table class="data-table data-table--compact cac40-book__table">
+  <table class="data-table data-table--compact trader-book__table">
     <thead>
       <tr>
         <th>Kind</th>

@@ -7,15 +7,18 @@ services:
     volumes:
       - ./src:/app/src
       - ./migrations:/app/migrations
+      - ./prompts:/app/prompts
     command: sh -c "alembic upgrade head && uvicorn chatbot.interfaces.api.main:app --host 0.0.0.0 --port 8000 --reload"
 
   worker-automation:
     volumes:
       - ./src:/app/src
+      - ./prompts:/app/prompts
 
   worker-mail:
     volumes:
       - ./src:/app/src
+      - ./prompts:/app/prompts
     environment:
       MAIL_POLL_SECONDS: ${MAIL_POLL_SECONDS:-30}
     depends_on:
@@ -26,20 +29,30 @@ services:
   worker-catalog:
     volumes:
       - ./src:/app/src
+      - ./prompts:/app/prompts
     environment:
       CATALOG_POLL_SECONDS: ${CATALOG_POLL_SECONDS:-60}
 
-  worker-cac40-ohlc:
+  worker-trader-ohlc:
     volumes:
       - ./src:/app/src
+      - ./prompts:/app/prompts
     environment:
-      CAC40_OHLC_POLL_SECONDS: ${CAC40_OHLC_POLL_SECONDS:-900}
+      TRADER_OHLC_POLL_SECONDS: ${TRADER_OHLC_POLL_SECONDS:-900}
 
-  worker-cac40-live:
+  worker-trader-live:
     volumes:
       - ./src:/app/src
+      - ./prompts:/app/prompts
     environment:
-      CAC40_LIVE_POLL_SECONDS: ${CAC40_LIVE_POLL_SECONDS:-60}
+      TRADER_LIVE_POLL_SECONDS: ${TRADER_LIVE_POLL_SECONDS:-60}
+
+  worker-trader-stream:
+    volumes:
+      - ./src:/app/src
+      - ./prompts:/app/prompts
+    environment:
+      TRADER_STREAM_LOOP_SECONDS: ${TRADER_STREAM_LOOP_SECONDS:-5}
 
   greenmail:
     profiles: [dev]

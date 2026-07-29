@@ -11,7 +11,7 @@ from decimal import Decimal
 from chatbot.config.settings import Settings
 from chatbot.domain.constants import DEFAULT_HOOK_INSTRUCTIONS
 from chatbot.domain.contracts.tenant_repository import TenantRepository
-from chatbot.domain.models.tenant import Tenant, TenantConfig, TenantCreateResult
+from chatbot.domain.models.tenant import BotType, Tenant, TenantConfig, TenantCreateResult
 
 
 def hash_token(token: str) -> str:
@@ -50,6 +50,7 @@ class TenantService:
         config: TenantConfig | None = None,
         hook_instructions: str | None = None,
         gemini_api_key: str | None = None,
+        bot_type: BotType | str = BotType.ASSISTANT,
     ) -> TenantCreateResult:
         base_slug = slugify(slug or name)
         candidate = base_slug
@@ -58,14 +59,26 @@ class TenantService:
             n += 1
             candidate = f"{base_slug}-{n}"[:64]
         token = secrets.token_urlsafe(32)
+        parsed = (
+            bot_type
+            if isinstance(bot_type, BotType)
+            else BotType(str(bot_type).strip().lower() or BotType.ASSISTANT.value)
+        )
+        cfg = config or TenantConfig()
+        if parsed == BotType.TRADER and not cfg.allowed_connectors:
+            # Default trader bots to IG-only connectors.
+            from dataclasses import replace
+
+            cfg = replace(cfg, allowed_connectors=("ig",), allowed_integrations=("__none__",))
         tenant = self._repo.create(
             slug=candidate,
             name=name.strip(),
             token_hash=hash_token(token),
             prompt=prompt.strip(),
-            config=config or TenantConfig(),
+            config=cfg,
             hook_instructions=hook_instructions,
             gemini_api_key=gemini_api_key,
+            bot_type=parsed,
         )
         return TenantCreateResult(tenant=tenant, token=token)
 
@@ -81,6 +94,7 @@ class TenantService:
         update_hook_instructions: bool = False,
         gemini_api_key: str | None = None,
         update_gemini_api_key: bool = False,
+        bot_type: BotType | str | None = None,
     ) -> Tenant | None:
         return self._repo.update(
             tenant_id,
@@ -92,6 +106,7 @@ class TenantService:
             update_hook_instructions=update_hook_instructions,
             gemini_api_key=gemini_api_key,
             update_gemini_api_key=update_gemini_api_key,
+            bot_type=bot_type,
         )
 
     def regenerate_token(self, tenant_id: int) -> tuple[Tenant, str] | None:

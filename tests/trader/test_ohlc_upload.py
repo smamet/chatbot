@@ -1,13 +1,13 @@
 from pathlib import Path
 
-from chatbot.application.cac40_backtest_service import (
+from chatbot.application.trader_backtest_service import (
     default_ohlc_path,
     ohlc_info,
     save_ohlc_upload,
 )
 import pandas as pd
 
-from chatbot.cac40.ohlc_store import load_ohlc_csv, slice_ohlc_period
+from chatbot.trader.ohlc_store import load_ohlc_csv, slice_ohlc_period
 from chatbot.config.settings import Settings
 
 
@@ -32,7 +32,7 @@ def test_default_ohlc_path_prefers_legacy_when_present(tmp_path: Path):
     legacy = default_ohlc_path(settings, "old-bot")
     # No file yet → preferred name
     assert legacy.name == "ohlc_15m.csv"
-    legacy_file = settings.data_root / "cac40" / "old-bot" / "ohlc" / "cac40_15m.csv"
+    legacy_file = settings.data_root / "trader" / "old-bot" / "ohlc" / "cac40_15m.csv"
     legacy_file.parent.mkdir(parents=True, exist_ok=True)
     legacy_file.write_text("Date,Open,High,Low,Close\n2024-01-02,1,1,1,1\n")
     assert default_ohlc_path(settings, "old-bot").name == "cac40_15m.csv"

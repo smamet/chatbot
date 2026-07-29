@@ -7,16 +7,16 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 import pytest
 
-from chatbot.application.cac40_backtest_service import default_ohlc_path, run_due_ig_ohlc_syncs
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.ig_connector import IgApiError, IgConnector, _extract_price_allowance
-from chatbot.cac40.live_ohlc_feed import (
+from chatbot.application.trader_backtest_service import default_ohlc_path, run_due_ig_ohlc_syncs
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.ig_connector import IgApiError, IgConnector, _extract_price_allowance
+from chatbot.trader.live_ohlc_feed import (
     build_live_frames,
     prepare_live_ohlc_feed,
     top_up_csv_from_connector,
 )
-from chatbot.cac40.ohlc_store import load_ohlc_csv
-from chatbot.cac40.scheduler import LiveScheduler
+from chatbot.trader.ohlc_store import load_ohlc_csv
+from chatbot.trader.scheduler import LiveScheduler
 from chatbot.config.settings import Settings
 
 
@@ -61,7 +61,7 @@ def test_extract_price_allowance() -> None:
 
 
 def test_present_ig_price_allowance_countdown() -> None:
-    from chatbot.cac40.ig_allowance import present_ig_price_allowance
+    from chatbot.trader.ig_allowance import present_ig_price_allowance
 
     now = datetime(2024, 6, 1, 12, 0, tzinfo=UTC)
     view = present_ig_price_allowance(
@@ -90,7 +90,7 @@ def test_top_up_appends_newer_bars(tmp_path: Path) -> None:
 
     # Force fetch by making expected closed bar ahead of CSV last.
     with patch(
-        "chatbot.cac40.live_ohlc_feed.expected_last_closed_15m",
+        "chatbot.trader.live_ohlc_feed.expected_last_closed_15m",
         return_value=pd.Timestamp("2024-06-01 10:00:00", tz="Europe/Paris"),
     ):
         result = top_up_csv_from_connector(path, connector, max_bars=8)
@@ -117,7 +117,7 @@ def test_top_up_cheap_discontinuous_falls_back_to_range(tmp_path: Path) -> None:
     connector.last_price_allowance = {"remaining": 9000}
 
     with patch(
-        "chatbot.cac40.live_ohlc_feed.expected_last_closed_15m",
+        "chatbot.trader.live_ohlc_feed.expected_last_closed_15m",
         return_value=pd.Timestamp("2024-06-03 12:00:00", tz="Europe/Paris"),
     ):
         result = top_up_csv_from_connector(
@@ -137,7 +137,7 @@ def test_top_up_cheap_discontinuous_falls_back_to_range(tmp_path: Path) -> None:
 
 
 def test_find_intrasession_gaps_detects_mid_session_hole() -> None:
-    from chatbot.cac40.ohlc_store import find_intrasession_gaps, summarize_ohlc_gaps
+    from chatbot.trader.ohlc_store import find_intrasession_gaps, summarize_ohlc_gaps
 
     a = _sample_bars("2024-06-03 10:00:00", n=2)  # 10:00, 10:15
     b = _sample_bars("2024-06-03 11:00:00", n=2)  # hole 10:30, 10:45
@@ -172,12 +172,12 @@ def test_prepare_feed_skips_llm_on_chart_gap(tmp_path: Path) -> None:
     _write_csv(path, pd.concat([a, b]))
     # CSV already "fresh" vs expected → no top-up, but chart window gapped.
     with patch(
-        "chatbot.cac40.live_ohlc_feed.expected_last_closed_15m",
+        "chatbot.trader.live_ohlc_feed.expected_last_closed_15m",
         return_value=pd.Timestamp(b.index[-1]),
     ):
         feed = prepare_live_ohlc_feed(
             path,
-            config=Cac40Config(
+            config=TraderConfig(
                 lookback_15m=80,
                 warmup_bars=14,
                 chart_show_pivots=False,
@@ -200,7 +200,7 @@ def test_top_up_range_catchup_fills_large_gap(tmp_path: Path) -> None:
     connector.last_price_allowance = {"remaining": 8000, "total": 10000}
 
     with patch(
-        "chatbot.cac40.live_ohlc_feed.expected_last_closed_15m",
+        "chatbot.trader.live_ohlc_feed.expected_last_closed_15m",
         return_value=pd.Timestamp("2024-06-03 12:00:00", tz="Europe/Paris"),
     ):
         result = top_up_csv_from_connector(
@@ -226,7 +226,7 @@ def test_top_up_skips_fetch_when_csv_fresh(tmp_path: Path) -> None:
     _write_csv(path, existing)
     connector = MagicMock(spec=IgConnector)
     with patch(
-        "chatbot.cac40.live_ohlc_feed.expected_last_closed_15m",
+        "chatbot.trader.live_ohlc_feed.expected_last_closed_15m",
         return_value=expected,
     ):
         result = top_up_csv_from_connector(path, connector)
@@ -237,7 +237,7 @@ def test_top_up_skips_fetch_when_csv_fresh(tmp_path: Path) -> None:
 
 def test_build_live_frames_resamples_without_ig() -> None:
     df = _sample_bars("2024-06-03 08:00:00", n=96)  # 24h of 15m
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         lookback_15m=20,
         lookback_1h=10,
         lookback_1d=5,
@@ -253,7 +253,7 @@ def test_build_live_frames_resamples_without_ig() -> None:
 
 
 def test_prepare_feed_missing_csv(tmp_path: Path) -> None:
-    feed = prepare_live_ohlc_feed(tmp_path / "missing.csv", config=Cac40Config())
+    feed = prepare_live_ohlc_feed(tmp_path / "missing.csv", config=TraderConfig())
     assert feed.skip_llm is True
     assert feed.error and "missing" in feed.error.lower()
 
@@ -270,11 +270,11 @@ def test_prepare_feed_stale_ok_on_top_up_fail(tmp_path: Path) -> None:
     connector.fetch_ohlc_range.side_effect = err
 
     with patch(
-        "chatbot.cac40.live_ohlc_feed.expected_last_closed_15m",
+        "chatbot.trader.live_ohlc_feed.expected_last_closed_15m",
         return_value=pd.Timestamp("2024-06-01 12:00:00", tz="Europe/Paris"),
     ):
         feed = prepare_live_ohlc_feed(
-            path, config=Cac40Config(), connector=connector, now=now
+            path, config=TraderConfig(), connector=connector, now=now
         )
     assert feed.top_up_ok is False
     assert feed.stale is True
@@ -294,11 +294,11 @@ def test_prepare_feed_too_old_skips_llm(tmp_path: Path) -> None:
     connector.fetch_ohlc_range.side_effect = err
 
     with patch(
-        "chatbot.cac40.live_ohlc_feed.expected_last_closed_15m",
+        "chatbot.trader.live_ohlc_feed.expected_last_closed_15m",
         return_value=pd.Timestamp("2024-06-01 19:45:00", tz="Europe/Paris"),
     ):
         feed = prepare_live_ohlc_feed(
-            path, config=Cac40Config(), connector=connector, now=now
+            path, config=TraderConfig(), connector=connector, now=now
         )
     assert feed.skip_llm is True
     assert feed.error
@@ -307,7 +307,7 @@ def test_prepare_feed_too_old_skips_llm(tmp_path: Path) -> None:
 def test_scheduler_uses_provider_not_full_ig_lookbacks(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    cfg = Cac40Config(
+    cfg = TraderConfig(
         lookback_15m=20,
         lookback_1h=10,
         lookback_1d=5,
@@ -319,7 +319,7 @@ def test_scheduler_uses_provider_not_full_ig_lookbacks(
     df = _sample_bars("2024-06-03 08:00:00", n=96)
     w15, w1h, w1d = build_live_frames(df, cfg)
 
-    from chatbot.cac40.live_ohlc_feed import LiveOhlcFeed
+    from chatbot.trader.live_ohlc_feed import LiveOhlcFeed
 
     feed = LiveOhlcFeed(
         ohlc_15=w15,
@@ -347,7 +347,7 @@ def test_scheduler_uses_provider_not_full_ig_lookbacks(
     quiet.reasons = ["quiet"]
     sched.trigger.evaluate = MagicMock(return_value=quiet)
     monkeypatch.setattr(
-        "chatbot.cac40.scheduler.session_snapshot",
+        "chatbot.trader.scheduler.session_snapshot",
         lambda *a, **k: {
             "dealing_open": True,
             "flatten_enabled": False,
@@ -379,15 +379,13 @@ def test_scheduler_uses_provider_not_full_ig_lookbacks(
     sched.llm.decide.assert_not_called()
 
 
-@patch("chatbot.application.cac40_backtest_service.sync_ohlc_from_ig")
+@patch("chatbot.application.trader_backtest_service.sync_ohlc_from_ig")
 def test_run_due_skips_armed_bots(mock_sync, tmp_path: Path) -> None:
     settings = Settings(data_root=tmp_path)
     session = MagicMock()
     tenant = MagicMock()
     tenant.id = 1
     tenant.slug = "armed-bot"
-    integration = MagicMock()
-    integration.tenant_id = 1
 
     # Seed CSV so missing-csv isn't the skip reason.
     path = default_ohlc_path(settings, "armed-bot")
@@ -395,27 +393,23 @@ def test_run_due_skips_armed_bots(mock_sync, tmp_path: Path) -> None:
 
     with (
         patch(
-            "chatbot.adapters.persistence.integration_repository.SqlAlchemyIntegrationRepository"
-        ) as mock_int_repo,
-        patch(
             "chatbot.adapters.persistence.tenant_repository.SqlAlchemyTenantRepository"
-        ),
-        patch("chatbot.application.tenant_service.TenantService") as mock_tenant_svc,
+        ) as mock_tenant_repo,
+        patch("chatbot.application.tenant_service.TenantService"),
         patch(
             "chatbot.adapters.persistence.connector_repository.SqlAlchemyConnectorRepository"
         ),
         patch("chatbot.application.connector_service.ConnectorService"),
         patch(
-            "chatbot.application.cac40_live_service.load_live_config",
+            "chatbot.application.trader_live_service.load_live_config",
             return_value={"mode": "live", "ig_connector_ids": [1]},
         ),
         patch(
-            "chatbot.application.cac40_live_service.resolve_primary_ig_config",
+            "chatbot.application.trader_live_service.resolve_primary_ig_config",
             return_value={"api_key": "k", "username": "u", "password": "p"},
         ),
     ):
-        mock_int_repo.return_value.list_active_by_type.return_value = [integration]
-        mock_tenant_svc.return_value.get_by_id.return_value = tenant
+        mock_tenant_repo.return_value.list_active_traders.return_value = [tenant]
         logs = run_due_ig_ohlc_syncs(session, settings)
 
     assert any("armed (live)" in line for line in logs)

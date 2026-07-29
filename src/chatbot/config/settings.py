@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Lock
 
-from pydantic import Field
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -34,11 +34,21 @@ class Settings(BaseSettings):
     hook_poll_seconds: int = Field(default=5, validation_alias="HOOK_POLL_SECONDS")
     mail_poll_seconds: int = Field(default=60, validation_alias="MAIL_POLL_SECONDS")
     catalog_poll_seconds: int = Field(default=300, validation_alias="CATALOG_POLL_SECONDS")
-    cac40_ohlc_poll_seconds: int = Field(
-        default=900, validation_alias="CAC40_OHLC_POLL_SECONDS"
+    trader_ohlc_poll_seconds: int = Field(
+        default=900,
+        validation_alias=AliasChoices("TRADER_OHLC_POLL_SECONDS", "CAC40_OHLC_POLL_SECONDS"),
     )
-    cac40_live_poll_seconds: int = Field(
-        default=60, validation_alias="CAC40_LIVE_POLL_SECONDS"
+    trader_live_poll_seconds: int = Field(
+        default=60,
+        validation_alias=AliasChoices("TRADER_LIVE_POLL_SECONDS", "CAC40_LIVE_POLL_SECONDS"),
+    )
+    trader_stream_loop_seconds: float = Field(
+        default=5.0,
+        validation_alias="TRADER_STREAM_LOOP_SECONDS",
+    )
+    trader_stream_tick_stale_seconds: float = Field(
+        default=120.0,
+        validation_alias="STREAM_TICK_STALE_SECONDS",
     )
 
     gemini_api_key: str = Field(default="", validation_alias="GEMINI_API_KEY")

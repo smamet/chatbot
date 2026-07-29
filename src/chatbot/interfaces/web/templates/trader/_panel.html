@@ -1,16 +1,10 @@
-{% extends "base.html" %}
-{% block body %}
-<section class="page-header">
-  <div>
-    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}">{{ tenant.name }}</a> · Integrations</p>
-    <h1>{{ bot_symbol or 'CAC40' }} Backtest</h1>
-    <p class="subtitle">
-      Mean-reversion hedge-mode simulation (HedgeLedger). One bot = one symbol
-      (<code>{{ bot_symbol or 'CAC40' }}</code> · epic <code>{{ bot_epic or '—' }}</code>).
-      Change symbol/epic on the Integrations tab; use another bot for a different market.
-    </p>
-  </div>
-  <a class="btn-secondary" href="/dashboard/bots/{{ tenant.slug }}?tab=integrations">← Back</a>
+<section class="trading-panel-header">
+  <h2 class="card-title" style="margin-bottom:0.25rem;">Trading — {{ bot_symbol or '—' }}</h2>
+  <p class="text-muted">
+    Hedge-mode (HedgeLedger). Symbol <code>{{ bot_symbol or '—' }}</code>
+    · epic <code>{{ bot_epic or '—' }}</code>.
+    Change symbol/epic/profile under <a href="/dashboard/bots/{{ tenant.slug }}?tab=config">Config</a>.
+  </p>
 </section>
 
 {% if upload_error %}
@@ -35,13 +29,13 @@
 {% endif %}
 
 
-<nav class="tabs" id="cac40-page-tabs" data-slug="{{ tenant.slug }}" aria-label="CAC40 sections">
+<nav class="tabs" id="trading-page-tabs" data-slug="{{ tenant.slug }}" aria-label="Trading sections">
   <button type="button" class="tabs__btn" data-tab="data">Data</button>
   <button type="button" class="tabs__btn" data-tab="live">Live</button>
   <button type="button" class="tabs__btn" data-tab="backtest">Backtest</button>
 </nav>
 
-<div id="cac40-tab-data" class="tab-panel" data-tab-panel="data" hidden>
+<div id="trading-tab-data" class="tab-panel" data-tab-panel="data" hidden>
 <section class="card">
   <h2>OHLC dataset (15m)</h2>
   <p class="text-muted">
@@ -144,7 +138,7 @@
     <p class="field-hint">No sync yet.</p>
     {% endif %}
     <p class="text-muted">
-      Worker poll: every <code>{{ cac40_ohlc_poll_seconds }}</code>s
+      Worker poll: every <code>{{ trader_ohlc_poll_seconds }}</code>s
       {% if ohlc_worker_status %}
         · last cycle
         {% if ohlc_worker_status.ok %}<span class="badge done">ok</span>{% else %}<span class="badge failed">had failures</span>{% endif %}
@@ -157,8 +151,8 @@
     </p>
     <p class="field-hint">
       Test worker:
-      <code>./sail exec worker-cac40-ohlc python -m chatbot.interfaces.worker_cac40_ohlc --once</code>
-      · logs: <code>./sail logs worker-cac40-ohlc</code>
+      <code>./sail exec worker-trader-ohlc python -m chatbot.interfaces.worker_trader_ohlc --once</code>
+      · logs: <code>./sail logs worker-trader-ohlc</code>
     </p>
     <p class="field-hint">
       Long history:
@@ -167,7 +161,7 @@
   </details>
 
   <div class="form-grid" style="align-items:end; margin-bottom:1rem;">
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/ohlc/sync-ig" class="stack-form">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/ohlc/sync-ig" class="stack-form">
       <button type="submit" class="btn-primary" {% if not ig_connector_ready %}disabled{% endif %}>
         Sync from IG
       </button>
@@ -177,7 +171,7 @@
     </form>
   </div>
 
-  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/ohlc" enctype="multipart/form-data" class="stack-form">
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/ohlc" enctype="multipart/form-data" class="stack-form">
     <div class="form-grid">
       <label>CSV source
         <select name="source" id="ohlc-source">
@@ -213,7 +207,7 @@
 </section>
 </div>
 
-<div id="cac40-tab-live" class="tab-panel" data-tab-panel="live" hidden>
+<div id="trading-tab-live" class="tab-panel" data-tab-panel="live" hidden>
 {% if live_ok %}
 <section class="card">
   <div class="callout">{{ live_ok }}</div>
@@ -225,12 +219,12 @@
 </section>
 {% endif %}
 
-{% from "cac40/_strategy_fields.html" import strategy_fields %}
+{% from "trader/_strategy_fields.html" import strategy_fields %}
 
-<section class="card" id="cac40-live">
-  <div class="cac40-live-heading">
+<section class="card" id="trader-live">
+  <div class="trader-live-heading">
     <h2>Live trading</h2>
-    <details class="cac40-mode-help">
+    <details class="trader-mode-help">
       <summary title="Off = worker skips this bot · Live = real working orders on selected IG accounts (DEMO or LIVE env from each connector). Use an IG DEMO connector to practice. Disarming stops new cycles but leaves existing IG working orders untouched. Automatic cycles run at :00:15, :15:15, :30:15, :45:15 Europe/Paris (15s after each 15m candle close).">How modes work</summary>
       <p class="field-hint">
         Off = worker skips this bot ·
@@ -241,7 +235,7 @@
       </p>
     </details>
   </div>
-  <p class="text-muted cac40-live-status">
+  <p class="text-muted trader-live-status">
     Mode
     {% if live_mode == 'live' %}<span class="badge failed">LIVE</span>
     {% else %}<span class="badge off">OFF</span>{% endif %}
@@ -268,8 +262,21 @@
       failed {{ live_worker_status.tenants_failed or 0 }} /
       skipped {{ live_worker_status.tenants_skipped or 0 }})
     {% endif %}
+    {% if live_mode != 'off' %}
+      · stream
+      {% if stream_badge == 'ok' %}<span class="badge done" title="Lightstreamer connected; ticks flowing">ok</span>
+      {% elif stream_badge == 'stale' %}<span class="badge failed" title="{{ stream_status.stale_reason or stream_status.error or 'stale or disconnected' }}">stale</span>
+      {% elif stream_badge == 'down' %}<span class="badge failed" title="stream worker heartbeat missing">down</span>
+      {% else %}<span class="badge off">off</span>{% endif %}
+      {% if stream_quote and stream_quote.mid %}
+        · mid <code>{{ '%.5f'|format(stream_quote.mid) }}</code>
+      {% endif %}
+      {% if stream_status.last_tick_at %}
+        · last tick <time class="js-local-datetime" datetime="{{ stream_status.last_tick_at }}">{{ stream_status.last_tick_at }}</time>
+      {% endif %}
+    {% endif %}
     {% if sync_log_count %}
-      · <a href="/dashboard/bots/{{ tenant.slug }}/cac40/live/book-sync#desync-log">Sync log ({{ sync_log_count }})</a>
+      · <a href="/dashboard/bots/{{ tenant.slug }}/trader/live/book-sync#desync-log">Sync log ({{ sync_log_count }})</a>
     {% endif %}
   </p>
   {% if market_session %}
@@ -285,7 +292,7 @@
   <div class="callout">Market closed — bot is idle (no OHLC, charts, or LLM). Resumes automatically at the next open.</div>
   {% endif %}
   {% if live_stale and live_mode != 'off' %}
-  <div class="callout callout--danger">Live worker heartbeat is stale — is <code>worker-cac40-live</code> running? Check <code>./sail logs worker-cac40-live</code>.</div>
+  <div class="callout callout--danger">Live worker heartbeat is stale — is <code>worker-trader-live</code> running? Check <code>./sail logs worker-trader-live</code>.</div>
   {% elif live_awaiting_first_cycle and live_mode != 'off' %}
   <div class="callout">Armed — waiting for the next 15m candle slot (:00/:15/:30/:45 +15s, Paris). Arming does not call Gemini by itself; the next slot (or <strong>Run cycle now</strong>) does. Adaptive still needs a trigger on auto slots; Run cycle now forces the LLM by default.</div>
   {% endif %}
@@ -308,12 +315,12 @@
   {% endif %}
 
   <div class="form-actions form-actions--compact" style="margin:0.75rem 0;">
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/mode" class="no-loader" style="display:inline;">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/mode" class="no-loader" style="display:inline;">
       <input type="hidden" name="mode" value="off">
       <button type="submit" class="btn-secondary btn-sm" {% if live_mode == 'off' %}disabled{% endif %}>Off</button>
     </form>
-    <button type="button" class="btn-primary btn-sm" id="cac40-live-arm-btn" {% if live_mode == 'live' %}disabled{% endif %}>Arm Live…</button>
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/run-once" class="no-loader" style="display:inline;">
+    <button type="button" class="btn-primary btn-sm" id="trader-live-arm-btn" {% if live_mode == 'live' %}disabled{% endif %}>Arm Live…</button>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/run-once" class="no-loader" style="display:inline;">
       <label class="checkbox-row" style="display:inline-flex;align-items:center;gap:0.35rem;margin-right:0.35rem;font-size:0.85rem;" title="Bypass Adaptive/Fixed LLM schedule for this cycle">
         <input type="checkbox" name="force_llm" value="1" checked>
         Force LLM
@@ -323,59 +330,55 @@
         Run cycle now
       </button>
     </form>
-    <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/book-sync"
+    {% if dev_mode %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/replay-decision" class="no-loader" style="display:inline;"
+          onsubmit="return confirm('Replay the last stored LLM decision on the current book?\n\nGemini will NOT be called — RiskGate + IG mirror only.');">
+      <button type="submit" class="btn-secondary btn-sm" {% if live_mode == 'off' %}disabled{% endif %}
+              data-loading="Replaying…"
+              title="DEV_MODE: re-apply last journal decision without calling Gemini">
+        Replay last LLM…
+      </button>
+    </form>
+    {% endif %}
+    <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/trader/live/book-sync"
        {% if live_mode == 'off' %}aria-disabled="true" style="pointer-events:none;opacity:0.5;"{% endif %}>
       Review &amp; sync book…
     </a>
-    <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report">View results</a>
+    <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/trader/live/report">View results</a>
     {% if live_mode != 'live' %}
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/clear" class="no-loader" style="display:inline;"
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/clear" class="no-loader" style="display:inline;"
           onsubmit="return confirm('Clear journal, decisions, and ledger snapshot?');">
       <button type="submit" class="btn-secondary btn-sm">Clear history</button>
     </form>
     {% endif %}
   </div>
 
-  {% from "cac40/_open_book.html" import open_book_table %}
-  {{ open_book_table(live_book, live_mode=live_mode, heading='Open book', embedded=true, sync_href='/dashboard/bots/' ~ tenant.slug ~ '/cac40/live/book-sync') }}
+  <div
+    id="trader-live-poll"
+    class="trader-live-poll"
+    data-snapshot-url="/dashboard/bots/{{ tenant.slug }}/trader/live/snapshot.json"
+    data-mode="{{ live_mode }}"
+    {% if live_mode == 'live' %}data-poll-active="1"{% endif %}
+  >
+    <p class="field-hint trader-live-poll__meta">
+      {% if live_mode == 'live' %}
+        Open book &amp; cycles refresh every 5s while this page is open
+      {% else %}
+        Auto-refresh runs when mode is Live
+      {% endif %}
+      · <span id="trader-live-poll-updated">Updated <time class="js-local-datetime" datetime="{{ live_book.as_of or live_status.last_cycle_at or '' }}">{{ live_book.as_of or live_status.last_cycle_at or '—' }}</time></span>
+    </p>
+    <div id="trader-live-poll-book">
+      {% from "trader/_open_book.html" import open_book_table %}
+      {{ open_book_table(live_book, live_mode=live_mode, heading='Open book', embedded=true, sync_href='/dashboard/bots/' ~ tenant.slug ~ '/trader/live/book-sync') }}
+    </div>
+    <div id="trader-live-poll-cycles">
+      {% from "trader/_live_poll_parts.html" import live_cycles_list %}
+      {{ live_cycles_list(live_cycles, tenant.slug) }}
+    </div>
+  </div>
 
-  {% if live_cycles %}
-  <h3 class="card-title" style="font-size:1rem;margin-top:1rem;">Live cycles</h3>
-  <p class="field-hint">Latest 3 cycles — open <a href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report">View results</a> for full history.</p>
-  <ul class="cac40-runs__list cac40-runs__list--compact" style="margin-bottom:1rem;">
-    {% for c in live_cycles %}
-    <li class="cac40-run cac40-run--compact">
-      <div class="cac40-run__main">
-        <a class="cac40-run__id" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report#cycle-{{ c.cycle_id }}" title="{{ c.cycle_id }}">{{ c.cycle_id }}</a>
-        {% if c.skipped %}<span class="badge off">skipped</span>
-        {% elif c.bias %}<span class="badge">{{ c.bias }}</span>
-        {% else %}<span class="badge">decision</span>{% endif %}
-        {% if c.has_charts %}<span class="badge done">charts</span>{% endif %}
-        {% if c.ts %}
-        <time class="text-muted js-local-datetime" datetime="{{ c.ts }}">{{ c.ts }}</time>
-        {% else %}
-        <span class="text-muted">—</span>
-        {% endif %}
-      </div>
-      <div class="cac40-run__metrics">
-        <span class="cac40-run__metric">
-          <b>{{ c.executed_count }}</b>
-          <small>Accepted</small>
-        </span>
-        <span class="cac40-run__metric">
-          <b>{{ c.rejected_count }}</b>
-          <small>Rejected</small>
-        </span>
-      </div>
-      <div class="cac40-run__actions">
-        <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/cac40/live/report#cycle-{{ c.cycle_id }}">Open</a>
-      </div>
-    </li>
-    {% endfor %}
-  </ul>
-  {% endif %}
-
-  <form id="cac40-live-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/config" class="stack-form">
+  <form id="trader-live-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/config" class="stack-form">
     <h3 class="card-title" style="font-size:1rem;">IG accounts</h3>
     <p class="field-hint">First checked account is the primary price feed. Orders are mirrored to every selected account in Live mode.</p>
     {% if ig_connectors %}
@@ -399,11 +402,11 @@
 
     <div style="display:flex;align-items:center;justify-content:space-between;gap:0.75rem;flex-wrap:wrap;margin-top:1rem;">
       <h3 class="card-title" style="font-size:1rem;margin:0;">Strategy</h3>
-      <button type="button" class="btn-secondary btn-sm" id="cac40-copy-from-backtest">
+      <button type="button" class="btn-secondary btn-sm" id="trader-copy-from-backtest">
         Copy from backtest
       </button>
     </div>
-    <p class="field-hint" id="cac40-copy-from-backtest-note" hidden></p>
+    <p class="field-hint" id="trader-copy-from-backtest-note" hidden></p>
     <p class="field-hint">Copies knobs from the Backtest tab form (not period / LLM mode). Save to persist.</p>
     <div class="form-grid">
       {{ strategy_fields(live_strategy, prefix='live-', include_period=false, include_llm_mode=false) }}
@@ -413,12 +416,12 @@
     </div>
   </form>
 
-  <dialog id="cac40-live-arm-dialog" class="confirm-dialog" aria-labelledby="cac40-live-arm-title">
-    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/live/mode" class="confirm-dialog__form">
+  <dialog id="trader-live-arm-dialog" class="confirm-dialog" aria-labelledby="trader-live-arm-title">
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/mode" class="confirm-dialog__form">
       <input type="hidden" name="mode" value="live">
       <header class="confirm-dialog__header">
         <p class="confirm-dialog__eyebrow"><span class="badge failed">Live orders</span></p>
-        <h3 id="cac40-live-arm-title">Arm Live mode?</h3>
+        <h3 id="trader-live-arm-title">Arm Live mode?</h3>
         <p class="confirm-dialog__lead">
           Working orders will be placed on the selected IG accounts below.
           Each account uses its own Environment (DEMO / LIVE) from the connector.
@@ -426,10 +429,10 @@
         </p>
       </header>
       <div class="confirm-dialog__body">
-        <ul id="cac40-live-arm-accounts"></ul>
+        <ul id="trader-live-arm-accounts"></ul>
       </div>
       <div class="confirm-dialog__actions">
-        <button type="button" class="btn-secondary" id="cac40-live-arm-cancel">Cancel</button>
+        <button type="button" class="btn-secondary" id="trader-live-arm-cancel">Cancel</button>
         <button type="submit" class="btn-primary">Arm Live</button>
       </div>
     </form>
@@ -448,11 +451,11 @@
         triggerSel.addEventListener('change', syncLiveTrigger);
         syncLiveTrigger();
       }
-      const armBtn = document.getElementById('cac40-live-arm-btn');
-      const dialog = document.getElementById('cac40-live-arm-dialog');
-      const cancel = document.getElementById('cac40-live-arm-cancel');
-      const list = document.getElementById('cac40-live-arm-accounts');
-      const form = document.getElementById('cac40-live-form');
+      const armBtn = document.getElementById('trader-live-arm-btn');
+      const dialog = document.getElementById('trader-live-arm-dialog');
+      const cancel = document.getElementById('trader-live-arm-cancel');
+      const list = document.getElementById('trader-live-arm-accounts');
+      const form = document.getElementById('trader-live-form');
       if (armBtn && dialog && form) {
         const armForm = dialog.querySelector('form');
         armBtn.addEventListener('click', () => {
@@ -488,10 +491,10 @@
 </section>
 </div>
 
-<div id="cac40-tab-backtest" class="tab-panel" data-tab-panel="backtest" hidden>
+<div id="trading-tab-backtest" class="tab-panel" data-tab-panel="backtest" hidden>
 <section class="card">
   <h2>New simulation</h2>
-  <form id="cac40-run-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs"
+  <form id="trader-run-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/runs"
         class="stack-form" data-tenant="{{ tenant.slug }}">
     <div class="form-grid">
       {{ strategy_fields(default_config, prefix='', include_period=true, include_llm_mode=true) }}
@@ -503,7 +506,7 @@
       <strong>Adaptive</strong> calls Gemini only on bootstrap, S/R approach/break, or a fill.
       <strong>Fixed rate</strong> calls on a regular every-N cadence.
     </p>
-    <div class="form-actions form-actions--compact cac40-run-actions">
+    <div class="form-actions form-actions--compact trader-run-actions">
       <button type="submit" class="btn-primary" {% if not ohlc_exists %}disabled{% endif %}>Start backtest</button>
     </div>
     {% if not ohlc_exists %}
@@ -512,9 +515,9 @@
   </form>
   <script>
     (function () {
-      const form = document.getElementById('cac40-run-form');
+      const form = document.getElementById('trader-run-form');
       if (!form) return;
-      const key = 'cac40-run-form:' + (form.dataset.tenant || 'default');
+      const key = 'trader-run-form:' + (form.dataset.tenant || 'default');
       const fields = form.querySelectorAll('input[name], select[name]');
       const triggerSel = document.getElementById('llm-trigger-mode');
       const bandWrap = document.getElementById('llm-band-wrap');
@@ -584,16 +587,16 @@
     {% set ns.has_active = true %}
   {% endif %}
 {% endfor %}
-<section class="card cac40-runs-card" id="cac40-runs-card"
-         data-poll-url="/dashboard/bots/{{ tenant.slug }}/cac40/runs.json"
+<section class="card trader-runs-card" id="trader-runs-card"
+         data-poll-url="/dashboard/bots/{{ tenant.slug }}/trader/runs.json"
          data-slug="{{ tenant.slug }}"
          {% if ns.has_active %}data-poll-active="1"{% endif %}>
   <h2>Previous runs</h2>
   {% if runs %}
-  <div class="cac40-runs">
-    <div class="cac40-runs__head" aria-hidden="true">
+  <div class="trader-runs">
+    <div class="trader-runs__head" aria-hidden="true">
       <span>Run</span>
-      <span class="cac40-runs__head-metrics">
+      <span class="trader-runs__head-metrics">
         <span>Equity</span>
         <span>Max DD</span>
         <span>Trades</span>
@@ -602,53 +605,53 @@
       </span>
       <span></span>
     </div>
-    <ul class="cac40-runs__list" id="cac40-runs-list">
+    <ul class="trader-runs__list" id="trader-runs-list">
       {% for r in runs %}
-      <li class="cac40-run {% if r.status == 'failed' %}cac40-run--failed{% elif r.status in ('running', 'stopping') %}cac40-run--running{% endif %}"
+      <li class="trader-run {% if r.status == 'failed' %}trader-run--failed{% elif r.status in ('running', 'stopping') %}trader-run--running{% endif %}"
           data-run-id="{{ r.run_id }}">
-        <div class="cac40-run__main">
-          <a class="cac40-run__id" href="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ r.run_id }}" title="{{ r.run_id }}">{{ r.run_id | replace('run_', '') }}</a>
-          <span class="cac40-run__status cac40-run__status--{{ r.status }}" data-field="status">{{ r.status }}</span>
-          <span class="cac40-run__period">{{ r.period }}</span>
-          <span class="cac40-run__progress" data-field="progress" {% if r.status not in ('running', 'stopping') %}hidden{% endif %}>
+        <div class="trader-run__main">
+          <a class="trader-run__id" href="/dashboard/bots/{{ tenant.slug }}/trader/runs/{{ r.run_id }}" title="{{ r.run_id }}">{{ r.run_id | replace('run_', '') }}</a>
+          <span class="trader-run__status trader-run__status--{{ r.status }}" data-field="status">{{ r.status }}</span>
+          <span class="trader-run__period">{{ r.period }}</span>
+          <span class="trader-run__progress" data-field="progress" {% if r.status not in ('running', 'stopping') %}hidden{% endif %}>
             {% if r.status in ('running', 'stopping') %}{{ '%.0f'|format((r.progress or 0) * 100) }}%{% endif %}
           </span>
-          <span class="cac40-run__flags">
+          <span class="trader-run__flags">
             <span class="{% if r.chart_show_rsi %}is-on{% else %}is-off{% endif %}" title="RSI {% if r.chart_show_rsi %}on{% else %}off{% endif %}">RSI</span>
             <span class="{% if r.chart_show_pivots %}is-on{% else %}is-off{% endif %}" title="Pivots {% if r.chart_show_pivots %}on ({{ r.chart_pivot_period }}){% else %}off{% endif %}">
               {% if r.chart_show_pivots %}Pivots {{ r.chart_pivot_period }}{% else %}Pivots{% endif %}
             </span>
           </span>
         </div>
-        <div class="cac40-run__metrics">
-          <span class="cac40-run__metric">
+        <div class="trader-run__metrics">
+          <span class="trader-run__metric">
             <b data-field="final_equity">{% if r.final_equity is not none %}{{ '%.2f'|format(r.final_equity) }}{% else %}—{% endif %}</b>
             <small>Equity</small>
           </span>
-          <span class="cac40-run__metric">
+          <span class="trader-run__metric">
             <b data-field="max_drawdown">{% if r.max_drawdown is not none %}{{ '%.2f'|format(r.max_drawdown) }}{% else %}—{% endif %}</b>
             <small>Max DD</small>
           </span>
-          <span class="cac40-run__metric">
+          <span class="trader-run__metric">
             <b data-field="trades">{{ r.trades if r.trades is not none else '—' }}</b>
             <small>Trades</small>
           </span>
-          <span class="cac40-run__metric">
+          <span class="trader-run__metric">
             <b data-field="winrate">{% if r.trades and r.winrate is not none %}{{ '%.0f'|format(r.winrate * 100) }}%{% else %}—{% endif %}</b>
             <small>Win rate</small>
           </span>
-          <span class="cac40-run__metric">
+          <span class="trader-run__metric">
             <b data-field="llm_calls_total">{{ r.llm_calls_total if r.llm_calls_total is not none else '—' }}</b>
             <small>LLM calls</small>
           </span>
         </div>
-        <div class="cac40-run__actions">
+        <div class="trader-run__actions">
           {% if r.config %}
-          <span class="cac40-run-config" tabindex="0">
-            <span class="cac40-run-config__label">config</span>
-            <dl class="cac40-run-config__list" role="tooltip">
+          <span class="trader-run-config" tabindex="0">
+            <span class="trader-run-config__label">config</span>
+            <dl class="trader-run-config__list" role="tooltip">
               {% for key, value in r.config.items() %}
-              <div class="cac40-run-config__row">
+              <div class="trader-run-config__row">
                 <dt>{{ key }}</dt>
                 <dd><code>{{ value }}</code></dd>
               </div>
@@ -657,21 +660,21 @@
           </span>
           {% endif %}
           {% if r.status in ('running', 'stopping') %}
-          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ r.run_id }}/stop"
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/runs/{{ r.run_id }}/stop"
                 class="no-loader" data-field="stop-form">
-            <button type="submit" class="cac40-run__del" title="Stop run">⏹</button>
+            <button type="submit" class="trader-run__del" title="Stop run">⏹</button>
           </form>
           {% endif %}
-          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/cac40/runs/{{ r.run_id }}/delete"
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/runs/{{ r.run_id }}/delete"
                 class="no-loader" onsubmit="return confirm('{% if r.status in ('running', 'stopping') %}Force-delete this running backtest and all charts?{% else %}Delete this backtest and all charts?{% endif %}');">
-            <button type="submit" class="cac40-run__del" title="{% if r.status in ('running', 'stopping') %}Force delete{% else %}Delete run{% endif %}">×</button>
+            <button type="submit" class="trader-run__del" title="{% if r.status in ('running', 'stopping') %}Force delete{% else %}Delete run{% endif %}">×</button>
           </form>
         </div>
       </li>
       {% endfor %}
     </ul>
   </div>
-  <p class="text-muted" id="cac40-runs-poll-hint" style="margin-top: 0.75rem;{% if not ns.has_active %} display:none;{% endif %}">
+  <p class="text-muted" id="trader-runs-poll-hint" style="margin-top: 0.75rem;{% if not ns.has_active %} display:none;{% endif %}">
     Updating run progress… (page stays put)
   </p>
   {% else %}
@@ -682,20 +685,20 @@
 
 <script>
   (function () {
-    const nav = document.getElementById('cac40-page-tabs');
+    const nav = document.getElementById('trading-page-tabs');
     if (!nav) return;
     const slug = nav.dataset.slug || 'default';
-    const storageKey = 'cac40-page-tab:' + slug;
+    const storageKey = 'trading-page-ttab:' + slug;
     const buttons = [...nav.querySelectorAll('[data-tab]')];
     const panels = {
-      data: document.getElementById('cac40-tab-data'),
-      live: document.getElementById('cac40-tab-live'),
-      backtest: document.getElementById('cac40-tab-backtest'),
+      data: document.getElementById('trading-tab-data'),
+      live: document.getElementById('trading-tab-live'),
+      backtest: document.getElementById('trading-tab-backtest'),
     };
     const valid = new Set(Object.keys(panels));
 
     function showTab(name, { persist } = { persist: true }) {
-      const tab = valid.has(name) ? name : 'backtest';
+      const tab = valid.has(name) ? name : 'live';
       buttons.forEach((btn) => btn.classList.toggle('active', btn.dataset.tab === tab));
       Object.entries(panels).forEach(([key, el]) => {
         if (!el) return;
@@ -707,8 +710,8 @@
       }
       try {
         const url = new URL(window.location.href);
-        if (url.searchParams.get('tab') !== tab) {
-          url.searchParams.set('tab', tab);
+        if (url.searchParams.get('ttab') !== tab) {
+          url.searchParams.set('ttab', tab);
           history.replaceState(null, '', url.pathname + url.search + url.hash);
         }
       } catch (_) {}
@@ -716,14 +719,14 @@
 
     function initialTab() {
       try {
-        const q = new URLSearchParams(window.location.search).get('tab');
+        const q = new URLSearchParams(window.location.search).get('ttab');
         if (q && valid.has(q)) return q;
       } catch (_) {}
       try {
         const stored = localStorage.getItem(storageKey);
         if (stored && valid.has(stored)) return stored;
       } catch (_) {}
-      return 'backtest';
+      return 'live';
     }
 
     buttons.forEach((btn) => {
@@ -732,10 +735,10 @@
     showTab(initialTab(), { persist: true });
 
     // Copy strategy fields from backtest form → live form (shared input names).
-    const copyBtn = document.getElementById('cac40-copy-from-backtest');
-    const runForm = document.getElementById('cac40-run-form');
-    const liveForm = document.getElementById('cac40-live-form');
-    const copyNote = document.getElementById('cac40-copy-from-backtest-note');
+    const copyBtn = document.getElementById('trader-copy-from-backtest');
+    const runForm = document.getElementById('trader-run-form');
+    const liveForm = document.getElementById('trader-live-form');
+    const copyNote = document.getElementById('trader-copy-from-backtest-note');
     if (copyBtn && runForm && liveForm) {
       copyBtn.addEventListener('click', () => {
         const skip = new Set(['period', 'llm_mode', 'file', 'source']);
@@ -763,11 +766,11 @@
 
   // Local backtest progress poll — no full page reload / scroll jump.
   (function () {
-    const card = document.getElementById('cac40-runs-card');
+    const card = document.getElementById('trader-runs-card');
     if (!card) return;
     const url = card.dataset.pollUrl;
     if (!url) return;
-    const hint = document.getElementById('cac40-runs-poll-hint');
+    const hint = document.getElementById('trader-runs-poll-hint');
     const activeStatuses = new Set(['running', 'stopping', 'pending']);
     let timer = null;
 
@@ -783,10 +786,10 @@
       const statusEl = row.querySelector('[data-field="status"]');
       if (statusEl) {
         statusEl.textContent = status;
-        statusEl.className = 'cac40-run__status cac40-run__status--' + status;
+        statusEl.className = 'trader-run__status trader-run__status--' + status;
       }
-      row.classList.toggle('cac40-run--failed', status === 'failed');
-      row.classList.toggle('cac40-run--running', activeStatuses.has(status));
+      row.classList.toggle('trader-run--failed', status === 'failed');
+      row.classList.toggle('trader-run--running', activeStatuses.has(status));
 
       const progressEl = row.querySelector('[data-field="progress"]');
       if (progressEl) {
@@ -848,4 +851,97 @@
     }
   })();
 </script>
-{% endblock %}
+<script>
+(function () {
+  const root = document.getElementById('trader-live-poll');
+  if (!root || root.dataset.pollActive !== '1') return;
+  const url = root.dataset.snapshotUrl;
+  if (!url) return;
+  const bookEl = document.getElementById('trader-live-poll-book');
+  const cyclesEl = document.getElementById('trader-live-poll-cycles');
+  const updatedEl = document.getElementById('trader-live-poll-updated');
+  let fingerprint = root.dataset.fingerprint || '';
+  let timer = null;
+
+  function formatLocal(iso) {
+    if (!iso) return '—';
+    const dt = new Date(iso);
+    if (Number.isNaN(dt.getTime())) return iso;
+    try {
+      return new Intl.DateTimeFormat(undefined, {
+        dateStyle: 'medium',
+        timeStyle: 'medium',
+      }).format(dt);
+    } catch (_) {
+      return iso;
+    }
+  }
+
+  function flash(el) {
+    if (!el) return;
+    el.classList.remove('trader-live-poll__flash');
+    void el.offsetWidth;
+    el.classList.add('trader-live-poll__flash');
+  }
+
+  function applyLocalTimes(scope) {
+    (scope || root).querySelectorAll('time.js-local-datetime[datetime]').forEach((el) => {
+      const dt = new Date(el.dateTime);
+      if (!Number.isNaN(dt.getTime())) {
+        el.textContent = formatLocal(el.dateTime);
+      }
+    });
+  }
+
+  function setUpdated(iso) {
+    if (!updatedEl) return;
+    const stamp = iso || new Date().toISOString();
+    updatedEl.innerHTML =
+      'Updated <time class="js-local-datetime" datetime="' +
+      stamp.replace(/"/g, '') +
+      '">' +
+      formatLocal(stamp) +
+      '</time>';
+  }
+
+  async function tick() {
+    if (document.hidden) return;
+    try {
+      const res = await fetch(url, { headers: { Accept: 'application/json' } });
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.mode && data.mode !== 'live') {
+        if (timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+        root.dataset.pollActive = '0';
+        return;
+      }
+      const fp = data.fingerprint || '';
+      if (fp && fp !== fingerprint) {
+        fingerprint = fp;
+        root.dataset.fingerprint = fp;
+        if (bookEl && typeof data.book_html === 'string') {
+          bookEl.innerHTML = data.book_html;
+          flash(bookEl);
+        }
+        if (cyclesEl && typeof data.cycles_html === 'string') {
+          cyclesEl.innerHTML = data.cycles_html;
+          flash(cyclesEl);
+        }
+        applyLocalTimes(root);
+      }
+      setUpdated(data.as_of || data.book_as_of || data.last_cycle_at);
+    } catch (_) {
+      /* keep polling */
+    }
+  }
+
+  timer = setInterval(tick, 5000);
+  tick();
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && root.dataset.pollActive === '1') tick();
+  });
+})();
+</script>

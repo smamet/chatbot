@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from chatbot.application.cac40_live_service import (
+from chatbot.application.trader_live_service import (
     SYNC_LOG_MAX,
     append_sync_log,
     append_sync_log_from_payload,
@@ -19,9 +19,9 @@ from chatbot.application.cac40_live_service import (
     save_live_config,
     set_live_mode,
 )
-from chatbot.cac40.config import Cac40Config
-from chatbot.cac40.hedge_ledger import HedgeLedger
-from chatbot.cac40.models import (
+from chatbot.trader.config import TraderConfig
+from chatbot.trader.hedge_ledger import HedgeLedger
+from chatbot.trader.models import (
     ClosedTrade,
     LegRole,
     OrderPurpose,
@@ -69,7 +69,7 @@ def test_live_config_roundtrip(settings: Settings) -> None:
 
 
 def test_legacy_paper_mode_coerces_to_off(settings: Settings) -> None:
-    from chatbot.application.cac40_live_service import live_config_path, _write_json
+    from chatbot.application.trader_live_service import live_config_path, _write_json
 
     _write_json(
         live_config_path(settings, "demo-bot"),
@@ -95,25 +95,27 @@ def test_set_live_mode_requires_connectors(settings: Settings) -> None:
 
 
 def test_run_cycle_now_rejects_off(settings: Settings) -> None:
-    from chatbot.application.cac40_live_service import run_live_cycle_now
+    from chatbot.application.trader_live_service import run_live_cycle_now
 
     save_live_config(settings, "demo-bot", default_live_config())
-    # Minimal fake session/tenant path is heavy; just assert mode_off via load path
-    # by calling set_live_mode off and checking message through the guard in function
-    # without DB: exercise message construction via mode check by patching tenant lookup.
     from unittest.mock import MagicMock, patch
 
     session = MagicMock()
-    with (
-        patch("chatbot.application.cac40_live_service.TenantService") as mock_ts,
-        patch("chatbot.application.cac40_live_service.IntegrationService") as mock_is,
-    ):
+    with patch("chatbot.application.trader_live_service.TenantService") as mock_ts:
         tenant = MagicMock()
         tenant.id = 1
         tenant.slug = "demo-bot"
+        tenant.is_trader = True
         tenant.config.chat_model = "gemini-2.5-flash"
+        tenant.config.trader = MagicMock(
+            symbol="CAC40",
+            epic="IX.D.CAC.BMU.IP",
+            fundmanager_url="",
+            fundmanager_token="",
+            max_open_positions=4,
+            market_profile="cac40",
+        )
         mock_ts.return_value.get_by_slug.return_value = tenant
-        mock_is.return_value.find_active.return_value = MagicMock(config={})
         result = run_live_cycle_now(session, settings, "demo-bot")
     assert result["ok"] is False
     assert result["error"] == "mode_off"
@@ -121,49 +123,66 @@ def test_run_cycle_now_rejects_off(settings: Settings) -> None:
 
 
 def test_trading_banner_none_when_inactive(settings: Settings) -> None:
-    from unittest.mock import MagicMock, patch
+    from unittest.mock import MagicMock
 
-    from chatbot.application.cac40_live_service import resolve_cac40_trading_banner
+    from chatbot.application.trader_live_service import resolve_trader_trading_banner
 
     session = MagicMock()
-    with patch("chatbot.application.cac40_live_service.IntegrationService") as mock_is:
-        mock_is.return_value.find_active.return_value = None
-        assert (
-            resolve_cac40_trading_banner(
-                session,
-                settings,
-                tenant_id=1,
-                slug="demo-bot",
-                allowed_integrations=None,
-            )
-            is None
-        )
-
-
-def test_trading_banner_shows_mode_when_active(settings: Settings) -> None:
-    from unittest.mock import MagicMock, patch
-
-    from chatbot.application.cac40_live_service import resolve_cac40_trading_banner
-
-    save_live_config(settings, "demo-bot", {"mode": "live", "ig_connector_ids": [1], "strategy": {}})
-    session = MagicMock()
-    with patch("chatbot.application.cac40_live_service.IntegrationService") as mock_is:
-        mock_is.return_value.find_active.return_value = MagicMock()
-        banner = resolve_cac40_trading_banner(
+    assert (
+        resolve_trader_trading_banner(
             session,
             settings,
             tenant_id=1,
             slug="demo-bot",
-            allowed_integrations=None,
+            bot_type="assistant",
         )
-    assert banner == {"active": True, "mode": "live", "slug": "demo-bot"}
+        is None
+    )
+
+
+def test_trading_banner_shows_mode_when_active(settings: Settings) -> None:
+    from unittest.mock import MagicMock
+
+    from chatbot.application.trader_live_service import resolve_trader_trading_banner
+
+    save_live_config(settings, "demo-bot", {"mode": "live", "ig_connector_ids": [1], "strategy": {}})
+    session = MagicMock()
+    banner = resolve_trader_trading_banner(
+        session,
+        settings,
+        tenant_id=1,
+        slug="demo-bot",
+        bot_type="trader",
+    )
+    assert banner is not None
+    assert banner["active"] is True
+    assert banner["mode"] == "live"
+    assert banner["slug"] == "demo-bot"
+    # No stream worker heartbeat in tests → down (or stale/ok if files exist).
+    assert banner["stream"] in {"ok", "stale", "down"}
+
+
+def test_trading_banner_stream_off_when_mode_off(settings: Settings) -> None:
+    from unittest.mock import MagicMock
+
+    from chatbot.application.trader_live_service import resolve_trader_trading_banner
+
+    save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [], "strategy": {}})
+    banner = resolve_trader_trading_banner(
+        MagicMock(),
+        settings,
+        tenant_id=1,
+        slug="demo-bot",
+        bot_type="trader",
+    )
+    assert banner == {"active": True, "mode": "off", "slug": "demo-bot", "stream": "off"}
 
 
 def test_live_cycle_slot_key_aligns_to_candle_close() -> None:
     from datetime import datetime
     from zoneinfo import ZoneInfo
 
-    from chatbot.application.cac40_live_service import live_cycle_slot_key
+    from chatbot.application.trader_live_service import live_cycle_slot_key
 
     paris = ZoneInfo("Europe/Paris")
     # Before :00:15 → still previous quarter (11:45 close).
@@ -183,7 +202,7 @@ def test_live_cycle_slot_key_aligns_to_candle_close() -> None:
 
 
 def test_clear_history_removes_order_books(settings: Settings) -> None:
-    from chatbot.application.cac40_live_service import clear_live_history, live_dir
+    from chatbot.application.trader_live_service import clear_live_history, live_dir
 
     save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [], "strategy": {}})
     books = live_dir(settings, "demo-bot") / "order_books"
@@ -196,7 +215,7 @@ def test_clear_history_removes_order_books(settings: Settings) -> None:
 def test_resolve_selected_ig_requires_selection(settings: Settings) -> None:
     from unittest.mock import MagicMock
 
-    from chatbot.application.cac40_live_service import _resolve_selected_ig_connectors
+    from chatbot.application.trader_live_service import _resolve_selected_ig_connectors
 
     conn_svc = MagicMock()
     connectors, warnings, err = _resolve_selected_ig_connectors(
@@ -218,7 +237,7 @@ def test_clear_history_blocked_when_live(settings: Settings) -> None:
 
 
 def test_ledger_state_roundtrip() -> None:
-    cfg = Cac40Config(order_size=1.0)
+    cfg = TraderConfig(order_size=1.0)
     ledger = HedgeLedger(config=cfg, symbol="CAC40")
     ledger.last_price = 8000.0
     ledger.place_order(
@@ -241,7 +260,7 @@ def test_ledger_state_roundtrip() -> None:
 
 
 def test_normalize_decision_pnl_adds_realized() -> None:
-    from chatbot.application.cac40_live_service import _normalize_decision_pnl
+    from chatbot.application.trader_live_service import _normalize_decision_pnl
 
     out = _normalize_decision_pnl(
         {"net_upl": 1.5, "realized_session": 12.0, "legs_count": 0}
@@ -251,7 +270,7 @@ def test_normalize_decision_pnl_adds_realized() -> None:
 
 
 def test_get_live_report_from_journal_cycle(settings: Settings, tmp_path: Path) -> None:
-    from chatbot.application.cac40_live_service import (
+    from chatbot.application.trader_live_service import (
         get_live_report,
         list_live_cycles,
         live_journal_dir,
@@ -323,7 +342,7 @@ def test_get_live_report_from_journal_cycle(settings: Settings, tmp_path: Path) 
 
 
 def test_get_live_report_merges_decisions_log(settings: Settings) -> None:
-    from chatbot.application.cac40_live_service import (
+    from chatbot.application.trader_live_service import (
         _write_json,
         get_live_report,
         live_decisions_path,
@@ -387,7 +406,7 @@ def test_get_live_report_merges_decisions_log(settings: Settings) -> None:
 def test_llm_schedule_persists_and_seeds(settings: Settings) -> None:
     from datetime import datetime, timezone
 
-    from chatbot.application.cac40_live_service import (
+    from chatbot.application.trader_live_service import (
         _write_json,
         live_journal_dir,
         load_llm_schedule,
@@ -432,11 +451,11 @@ def test_live_report_render_with_realized_session_only(settings: Settings) -> No
     """Regression: run.html must not 500 when pnl only has realized_session."""
     from jinja2 import Environment, FileSystemLoader, select_autoescape
 
-    from chatbot.application.cac40_live_service import get_live_report, save_live_config
+    from chatbot.application.trader_live_service import get_live_report, save_live_config
     from chatbot.interfaces.web.templates import dumps_json
 
     save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [], "strategy": {}})
-    from chatbot.application.cac40_live_service import live_decisions_path, _write_json
+    from chatbot.application.trader_live_service import live_decisions_path, _write_json
 
     _write_json(
         live_decisions_path(settings, "demo-bot"),
@@ -464,9 +483,9 @@ def test_live_report_render_with_realized_session_only(settings: Settings) -> No
 
     class _Req:
         url = type("U", (), {"path": "/x"})()
-        state = type("S", (), {"cac40_trading": None})()
+        state = type("S", (), {"trader_trading": None})()
 
-    html = env.get_template("cac40/run.html").render(
+    html = env.get_template("trader/run.html").render(
         request=_Req(),
         user=type("U", (), {"role": "admin"})(),
         tenant=type("T", (), {"slug": "demo-bot", "name": "Demo"})(),
@@ -559,7 +578,7 @@ def test_group_open_book_empty() -> None:
 
 
 def test_read_live_book_includes_groups(settings: Settings) -> None:
-    from chatbot.application.cac40_live_service import (
+    from chatbot.application.trader_live_service import (
         live_state_path,
         write_live_status,
         _write_json,
@@ -632,9 +651,9 @@ def test_closed_trade_ig_confirmed_roundtrip() -> None:
 
 
 def test_close_position_ig_confirmed_flag() -> None:
-    from chatbot.cac40.models import PositionLeg
+    from chatbot.trader.models import PositionLeg
 
-    ledger = HedgeLedger(Cac40Config())
+    ledger = HedgeLedger(TraderConfig())
     leg = PositionLeg(
         id="p1",
         side=Side.BUY,
@@ -757,7 +776,7 @@ def test_append_sync_log_from_payload_logs_true_opened_delta(settings: Settings)
 
 
 def test_preview_ig_book_diff_statuses(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
-    from chatbot.application.cac40_live_service import live_state_path, _write_json
+    from chatbot.application.trader_live_service import live_state_path, _write_json
 
     save_live_config(
         settings,
@@ -813,7 +832,7 @@ def test_preview_ig_book_diff_statuses(settings: Settings, monkeypatch: pytest.M
     def fake_fetch(session, settings_arg, slug):
         return {
             "ok": True,
-            "cfg": Cac40Config(),
+            "cfg": TraderConfig(),
             "connectors": [(1, {})],
             "primary_id": 1,
             "live_cfg": {"mode": "live"},
@@ -841,7 +860,7 @@ def test_preview_ig_book_diff_statuses(settings: Settings, monkeypatch: pytest.M
         }
 
     monkeypatch.setattr(
-        "chatbot.application.cac40_live_service._fetch_ig_snapshot",
+        "chatbot.application.trader_live_service._fetch_ig_snapshot",
         fake_fetch,
     )
     preview = preview_ig_book(None, settings, "demo-bot")  # type: ignore[arg-type]
@@ -858,6 +877,176 @@ def test_preview_ig_book_diff_statuses(settings: Settings, monkeypatch: pytest.M
     # State file untouched (local still has DI_LOCAL).
     book = read_live_book(settings, "demo-bot")
     assert any(p.get("deal_id") == "DI_LOCAL" for p in book["positions"])
+
+
+def test_preview_keeps_wo_attached_tp_in_sync(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Attached TP on a pending WO must not show as remove when IG still has it."""
+    from chatbot.application.trader_live_service import live_state_path, _write_json
+
+    epic = "CS.D.EURUSD.MINI.IP"
+    save_live_config(
+        settings,
+        "demo-bot",
+        {"mode": "live", "ig_connector_ids": [1], "strategy": {}},
+    )
+    _write_json(
+        live_state_path(settings, "demo-bot"),
+        {
+            "phase": "Flat",
+            "positions": [],
+            "working_orders": [
+                {
+                    "id": "o174",
+                    "type": "LIMIT",
+                    "side": "SELL",
+                    "level": 1.14,
+                    "size": 1.0,
+                    "purpose": "entry",
+                    "deal_id": "DIAAAAX7C24B",
+                },
+                {
+                    "id": "o_tp",
+                    "type": "LIMIT",
+                    "side": "BUY",
+                    "level": 1.1385,
+                    "size": 1.0,
+                    "purpose": "tp",
+                    "parent_order_id": "o174",
+                    "deal_id": "attached:DIAAAAX7C24B:tp",
+                },
+            ],
+            "closed_trades": [],
+        },
+    )
+
+    def fake_fetch(session, settings_arg, slug):
+        return {
+            "ok": True,
+            "cfg": TraderConfig(epic=epic),
+            "connectors": [(1, {})],
+            "primary_id": 1,
+            "live_cfg": {"mode": "live"},
+            "positions": [],
+            "raw_orders": [
+                {
+                    "dealId": "DIAAAAX7C24B",
+                    "epic": epic,
+                    "direction": "SELL",
+                    "orderType": "LIMIT",
+                    "orderLevel": 1.14,
+                    "orderSize": 1.0,
+                    "limitDistance": 15.0,
+                }
+            ],
+        }
+
+    monkeypatch.setattr(
+        "chatbot.application.trader_live_service._fetch_ig_snapshot",
+        fake_fetch,
+    )
+    preview = preview_ig_book(None, settings, "demo-bot")  # type: ignore[arg-type]
+    assert preview["ok"] is True
+    assert preview["counts"]["remove"] == 0
+    assert preview["counts"]["in_sync"] == 2
+    by_deal = {}
+    for g in preview["groups"]:
+        by_deal[g["parent"].get("deal_id")] = g["parent"]["status"]
+        for c in g.get("children") or []:
+            by_deal[c.get("deal_id")] = c["status"]
+    assert by_deal["DIAAAAX7C24B"] == "in_sync"
+    assert by_deal["attached:DIAAAAX7C24B:tp"] == "in_sync"
+
+
+def test_build_live_panel_snapshot_fingerprint(settings: Settings) -> None:
+    from chatbot.application.trader_live_service import (
+        build_live_panel_snapshot,
+        live_journal_dir,
+        live_state_path,
+        write_live_status,
+        _write_json,
+    )
+
+    save_live_config(
+        settings,
+        "demo-bot",
+        {"mode": "live", "ig_connector_ids": [1], "strategy": {}},
+    )
+    write_live_status(settings, "demo-bot", {"last_cycle_at": "2026-07-29T06:00:00+00:00"})
+    _write_json(
+        live_state_path(settings, "demo-bot"),
+        {
+            "phase": "Flat",
+            "last_price": 1.14,
+            "positions": [],
+            "working_orders": [
+                {
+                    "id": "o1",
+                    "type": "LIMIT",
+                    "side": "SELL",
+                    "level": 1.14,
+                    "size": 1.0,
+                    "purpose": "entry",
+                    "deal_id": "DI1",
+                }
+            ],
+        },
+    )
+    cycle_dir = live_journal_dir(settings, "demo-bot") / "20260729T060000Z"
+    cycle_dir.mkdir(parents=True)
+    _write_json(
+        cycle_dir / "cycle.json",
+        {
+            "ts": "2026-07-29T06:00:15+00:00",
+            "decision": {"analysis": {"bias": "bearish"}},
+            "executed": [{}],
+            "rejected": [],
+            "chart_files": ["chart_15m.png"],
+        },
+    )
+
+    first = build_live_panel_snapshot(settings, "demo-bot", cycle_limit=3)
+    assert first["mode"] == "live"
+    assert first["fingerprint"]
+    assert len(first["cycles"]) == 1
+    assert first["cycles"][0]["cycle_id"] == "20260729T060000Z"
+    assert first["book"]["groups"]
+
+    second = build_live_panel_snapshot(settings, "demo-bot", cycle_limit=3)
+    assert second["fingerprint"] == first["fingerprint"]
+
+    _write_json(
+        live_state_path(settings, "demo-bot"),
+        {
+            "phase": "Flat",
+            "last_price": 1.141,
+            "positions": [],
+            "working_orders": [
+                {
+                    "id": "o1",
+                    "type": "LIMIT",
+                    "side": "SELL",
+                    "level": 1.14,
+                    "size": 1.0,
+                    "purpose": "entry",
+                    "deal_id": "DI1",
+                },
+                {
+                    "id": "o_tp",
+                    "type": "LIMIT",
+                    "side": "BUY",
+                    "level": 1.1385,
+                    "size": 1.0,
+                    "purpose": "tp",
+                    "parent_order_id": "o1",
+                    "deal_id": "attached:DI1:tp",
+                },
+            ],
+        },
+    )
+    third = build_live_panel_snapshot(settings, "demo-bot", cycle_limit=3)
+    assert third["fingerprint"] != first["fingerprint"]
 
 
 def test_clear_live_history_clears_sync_log(settings: Settings) -> None:

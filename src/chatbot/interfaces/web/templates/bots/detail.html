@@ -16,15 +16,22 @@
 
 {% if not validation_only %}
 <nav class="tabs">
+  {% if tenant.is_trader or trader_active %}
+  <a href="?tab=trading&amp;ttab=live" class="{% if tab=='trading' %}active{% endif %}">Trading</a>
+  <a href="?tab=config" class="{% if tab=='config' %}active{% endif %}">Config</a>
+  {% if show_connectors_tab %}
+  <a href="?tab=connectors" class="{% if tab=='connectors' %}active{% endif %}">Connectors</a>
+  {% endif %}
+  {% if can_edit %}
+  <a href="?tab=monitoring" class="{% if tab=='monitoring' %}active{% endif %}">Monitoring</a>
+  {% endif %}
+  {% else %}
   <a href="?tab=config" class="{% if tab=='config' %}active{% endif %}">Config</a>
   <a href="?tab=documents" class="{% if tab=='documents' %}active{% endif %}">Documents</a>
   {% if show_connectors_tab %}
   <a href="?tab=connectors" class="{% if tab=='connectors' %}active{% endif %}">Connectors</a>
   {% endif %}
   <a href="?tab=integrations" class="{% if tab=='integrations' %}active{% endif %}">Integrations</a>
-  {% if cac40_active %}
-  <a href="/dashboard/bots/{{ tenant.slug }}/cac40">CAC40 Backtest</a>
-  {% endif %}
   {% if has_validation_connectors or pending_count %}
   <a href="?tab=validation" class="{% if tab=='validation' %}active{% endif %}">Validation{% if pending_count %} <span class="tab-badge">{{ pending_count }}</span>{% endif %}</a>
   {% endif %}
@@ -37,10 +44,13 @@
   {% if can_edit %}
   <a href="?tab=monitoring" class="{% if tab=='monitoring' %}active{% endif %}">Monitoring</a>
   {% endif %}
+  {% endif %}
 </nav>
 {% endif %}
 
-{% if tab == 'config' %}
+{% if tab == 'trading' and (tenant.is_trader or trader_active) %}
+  {% include "trader/_panel.html" %}
+{% elif tab == 'config' %}
   {% if can_edit %}
   <div class="card">
     <h2 class="card-title">Bot settings</h2>
@@ -52,23 +62,69 @@
           <label for="bot-active">Active</label>
         </div>
       </div>
+      <p class="field-hint">Type: <strong>{{ bot_type|default(tenant.bot_type.value) }}</strong></p>
       <div class="form-actions form-actions--compact">
         <button type="submit" class="btn-primary" data-loading="Saving…">Save settings</button>
       </div>
     </form>
   </div>
 
+  {% if tenant.is_trader or trader_active %}
   <div class="card">
-    <h2 class="card-title">Prompt</h2>
+    <h2 class="card-title">Trading settings</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/trader-settings">
+      <label>Market profile
+        <select name="market_profile" id="trader-market-profile">
+          {% for p in market_profiles|default([]) %}
+          <option value="{{ p.id }}"
+                  data-symbol="{{ p.default_symbol }}"
+                  data-epic="{{ p.default_epic }}"
+                  {% if tenant.config.trader.market_profile == p.id %}selected{% endif %}>{{ p.label }}</option>
+          {% else %}
+          <option value="cac40" {% if tenant.config.trader.market_profile == 'cac40' %}selected{% endif %}>CAC40 (France 40)</option>
+          <option value="eurusd" {% if tenant.config.trader.market_profile == 'eurusd' %}selected{% endif %}>EURUSD (FX)</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Symbol <input type="text" name="symbol" id="trader-symbol" value="{{ tenant.config.trader.symbol }}" required></label>
+      <label>IG epic <input type="text" name="epic" id="trader-epic" value="{{ tenant.config.trader.epic }}" required>
+        <span class="field-hint">Confirm the epic on your IG account (Demo/Live). Default EURUSD epic is a starting guess.</span>
+      </label>
+      <label>Max open legs <input type="number" name="max_open_positions" min="1" value="{{ tenant.config.trader.max_open_positions }}"></label>
+      <label>Fund Manager URL <input type="url" name="fundmanager_url" value="{{ tenant.config.trader.fundmanager_url }}" placeholder="https://…"></label>
+      <label>Notify token <input type="password" name="fundmanager_token" placeholder="Leave blank to keep"></label>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save trading settings</button>
+        <a class="btn-secondary" href="?tab=trading&amp;ttab=live">Open Trading</a>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <h2 class="card-title">{% if tenant.is_trader or trader_active %}Trading system prompt{% else %}Prompt{% endif %}</h2>
+    {% if tenant.is_trader or trader_active %}
+    <p class="text-muted">
+      Used by Gemini for live/backtest decisions. Live/Backtest panels do <strong>not</strong> override this.
+      Empty → profile default. <strong>Load default</strong> fills the textarea (save to apply).
+    </p>
+    {% endif %}
     <form method="post" action="/dashboard/bots/{{ tenant.slug }}/config">
-      <label>System prompt<textarea name="prompt" rows="12">{{ tenant.prompt }}</textarea></label>
+      <label>{% if tenant.is_trader or trader_active %}System prompt{% else %}System prompt{% endif %}
+        <textarea name="prompt" id="bot-system-prompt" rows="12">{{ tenant.prompt }}</textarea>
+      </label>
       <label>Gemini API key override<input type="password" name="gemini_api_key" placeholder="Leave blank to keep"></label>
       <div class="form-actions">
+        {% if tenant.is_trader or trader_active %}
+        <button type="button" class="btn-secondary" id="load-default-trader-prompt"
+                data-url="/dashboard/bots/{{ tenant.slug }}/trader-default-prompt">Load default prompt</button>
+        {% endif %}
         <button type="submit" class="btn-primary" data-loading="Saving…">Save prompt</button>
       </div>
     </form>
   </div>
 
+  {% if not (tenant.is_trader or trader_active) %}
   <div class="card">
     <h2 class="card-title">Automation modules</h2>
     <p class="text-muted">Choose which actions the bot may trigger via <code>===HOOK===</code> blocks. Each module adds its own instructions to the composed hook prompt below.</p>
@@ -179,6 +235,7 @@
       </div>
     </form>
   </div>
+  {% endif %}
 
   {% if can_edit %}
   <div class="card">
@@ -186,6 +243,9 @@
     <p class="text-muted">Export includes prompts, RAG settings, connectors (with secrets), and documents. Store the ZIP securely. After import elsewhere, run <strong>Sync documents</strong>.</p>
     <div class="form-actions form-actions--compact">
       <a href="/dashboard/bots/{{ tenant.slug }}/export" class="btn btn-secondary">Export bot (ZIP)</a>
+      {% if is_admin %}
+      <a href="/dashboard/bots/{{ tenant.slug }}/duplicate" class="btn btn-secondary">Duplicate bot</a>
+      {% endif %}
     </div>
   </div>
   {% endif %}
@@ -683,7 +743,7 @@
             <button type="button" class="btn-secondary btn-sm" id="connector-test-orders-btn" data-slug="{{ tenant.slug }}" hidden>Test working orders</button>
           </div>
           <p class="field-hint" id="connector-test-orders-hint" hidden>
-            Places BUY/SELL LIMIT + BUY/SELL STOP far from market on <strong>DEMO</strong>, waits 15s (watch IG Working Orders), then cancels them. No market open/close.
+            Places France CAC LIMIT/STOP (± attached TP) far from market on <strong>DEMO</strong>, waits 15s, then cancels. Market open/close only if you enable the checkbox in the dialog.
           </p>
           <pre class="connector-test-result integration-test-result" hidden></pre>
         </div>
@@ -701,18 +761,22 @@
           <ol class="confirm-dialog__steps">
             <li>
               <span class="confirm-dialog__step-num">1</span>
-              <span>Place BUY/SELL LIMIT far from mid with attached take-profit (IG <code>limitLevel</code> — TP arms when the entry fills), plus BUY/SELL STOP</span>
+              <span>Place LIMIT and STOP (with and without attached TP) far from mid on France CAC</span>
             </li>
             <li>
               <span class="confirm-dialog__step-num">2</span>
-              <span>Wait 15 seconds — no market open, close, or fills</span>
+              <span>Wait 15 seconds — working orders only (unless market checkbox below)</span>
             </li>
             <li>
               <span class="confirm-dialog__step-num">3</span>
               <span>Cancel all orders and report deal IDs + attached TP levels here</span>
             </li>
           </ol>
-          <p class="confirm-dialog__note">LIVE is blocked. Confirm Environment = DEMO and the Demo API key before continuing. Leave the Working Orders tab open on IG while the test runs — LIMIT tickets should show an attached profit level.</p>
+          <label class="confirm-dialog__note" style="display:flex;gap:.5rem;align-items:flex-start;margin-top:.75rem">
+            <input type="checkbox" id="ig-order-test-allow-market" name="allow_market_orders" value="1">
+            <span>Also open and immediately close a tiny <strong>market</strong> position (DEMO fees/spread may apply). Off by default.</span>
+          </label>
+          <p class="confirm-dialog__note">LIVE is blocked. Confirm Environment = DEMO and the Demo API key before continuing.</p>
         </div>
         <div class="confirm-dialog__actions">
           <button type="button" class="btn-secondary" id="ig-order-test-cancel">Cancel</button>
@@ -2129,4 +2193,43 @@
 })();
 </script>
 {% endif %}
+<script>
+(function () {
+  const btn = document.getElementById("load-default-trader-prompt");
+  const ta = document.getElementById("bot-system-prompt");
+  if (btn && ta) {
+    btn.addEventListener("click", async () => {
+      const url = btn.getAttribute("data-url");
+      if (!url) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          throw new Error(data.detail || ("HTTP " + res.status));
+        }
+        if (!data.prompt) {
+          throw new Error("Empty prompt for profile " + (data.profile || "?"));
+        }
+        ta.value = data.prompt;
+      } catch (err) {
+        alert("Could not load default prompt: " + err);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  }
+  const profileSel = document.getElementById("trader-market-profile");
+  const sym = document.getElementById("trader-symbol");
+  const epic = document.getElementById("trader-epic");
+  if (profileSel && sym && epic) {
+    profileSel.addEventListener("change", () => {
+      const opt = profileSel.selectedOptions[0];
+      if (!opt) return;
+      if (opt.dataset.symbol) sym.value = opt.dataset.symbol;
+      if (opt.dataset.epic) epic.value = opt.dataset.epic;
+    });
+  }
+})();
+</script>
 {% endblock %}

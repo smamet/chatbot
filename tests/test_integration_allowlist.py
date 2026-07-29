@@ -15,10 +15,9 @@ def test_is_integration_allowed_empty_means_all() -> None:
 
 
 def test_is_integration_allowed_partial_deny() -> None:
-    allowed = ("erpnext", "cac40_backtest")
+    allowed = ("erpnext",)
     assert is_integration_allowed(allowed, "erpnext") is True
     assert is_integration_allowed(allowed, "quickbooks") is False
-    assert is_integration_allowed(allowed, "cac40_backtest") is True
 
 
 def test_is_integration_allowed_none_sentinel() -> None:
@@ -29,10 +28,8 @@ def test_normalize_allowed_integrations_round_trips() -> None:
     all_keys = list(all_integration_types())
     assert normalize_allowed_integrations(all_keys) == ()
     assert normalize_allowed_integrations([]) == (INTEGRATION_ALLOWLIST_NONE,)
-    assert normalize_allowed_integrations(["erpnext", "quickbooks"]) == (
-        "erpnext",
-        "quickbooks",
-    )
+    # Subset of known types stays explicit (not collapsed to empty).
+    assert normalize_allowed_integrations(["erpnext"]) == ("erpnext",)
 
 
 def test_filter_integration_types_respects_allowlist() -> None:

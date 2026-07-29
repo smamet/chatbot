@@ -3,9 +3,9 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass, field
 
-from chatbot.cac40.config import Cac40Config, LastLevels
-from chatbot.cac40.fill_engine import evaluate_order_fill, resolve_intrabar_conflict
-from chatbot.cac40.models import (
+from chatbot.trader.config import TraderConfig, LastLevels
+from chatbot.trader.fill_engine import evaluate_order_fill, resolve_intrabar_conflict
+from chatbot.trader.models import (
     ClosedTrade,
     LegRole,
     MarketSnapshot,
@@ -31,7 +31,7 @@ def exit_would_lose(leg: PositionLeg, exit_price: float, point_value: float = 1.
 class HedgeLedger:
     """Individual hedge-mode position book. Never nets opposing legs."""
 
-    config: Cac40Config
+    config: TraderConfig
     symbol: str = "CAC40"
     cash: float = 0.0
     realized_session: float = 0.0
@@ -478,7 +478,7 @@ class HedgeLedger:
         }
 
     @classmethod
-    def from_state_dict(cls, config: Cac40Config, data: dict | None) -> HedgeLedger:
+    def from_state_dict(cls, config: TraderConfig, data: dict | None) -> HedgeLedger:
         raw = dict(data or {})
         ledger = cls(config=config, symbol=str(raw.get("symbol") or config.symbol or "CAC40"))
         ledger.cash = float(raw.get("cash") or 0.0)
