@@ -70,6 +70,16 @@ def test_rejects_duplicate_entry_working_order():
     assert len(ledger.working_orders) == 1
 
 
+def test_rejects_cancel_of_unknown_order_id():
+    cfg = TraderConfig(order_size=1.0, spread_points=0)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 100
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(_decision(LlmAction(op="cancel_order", order_id="o404")))
+    assert any("cancel_order:unknown:o404" in r for r in result.rejected)
+    assert not any(e.startswith("cancel_order:o404") for e in result.executed)
+
+
 def test_rejects_hedge_cover_without_primary():
     cfg = TraderConfig(order_size=1.0, spread_points=0)
     ledger = HedgeLedger(config=cfg)

@@ -6,6 +6,7 @@ import pytest
 
 from chatbot.application.trader_live_service import (
     SYNC_LOG_MAX,
+    adapt_decision_for_replay,
     append_sync_log,
     append_sync_log_from_payload,
     clear_live_history,
@@ -1055,3 +1056,81 @@ def test_clear_live_history_clears_sync_log(settings: Settings) -> None:
     assert read_sync_log(settings, "demo-bot")
     clear_live_history(settings, "demo-bot")
     assert read_sync_log(settings, "demo-bot") == []
+
+
+def test_adapt_decision_for_replay_clears_resting_brackets() -> None:
+    """Stale cancel ids must not block re-place — clear current entry/hedge first."""
+    from chatbot.trader.models import LlmAction, LlmAnalysis, LlmDecision
+
+    ledger = HedgeLedger(config=TraderConfig(symbol="EURUSD"), symbol="EURUSD")
+    ledger.last_price = 1.145
+    entry = WorkingOrder(
+        id="o436",
+        type=OrderType.LIMIT,
+        side=Side.BUY,
+        level=1.13763,
+        size=1.0,
+        purpose=OrderPurpose.ENTRY,
+        deal_id="DIAAAAX7LU5QZAF",
+    )
+    tp = WorkingOrder(
+        id="o437",
+        type=OrderType.LIMIT,
+        side=Side.SELL,
+        level=1.1465,
+        size=1.0,
+        purpose=OrderPurpose.TP,
+        parent_order_id="o436",
+        deal_id="attached:DIAAAAX7LU5QZAF:tp",
+    )
+    hedge = WorkingOrder(
+        id="o438",
+        type=OrderType.STOP,
+        side=Side.SELL,
+        level=1.13763,
+        size=1.0,
+        purpose=OrderPurpose.ENTRY,
+        deal_id="DIAAAAX7LT7KQA5",
+    )
+    ledger.place_order(entry)
+    ledger.place_order(tp)
+    ledger.place_order(hedge)
+
+    stored = LlmDecision(
+        analysis=LlmAnalysis(support=1.14, resistance=1.147, bias="long"),
+        actions=[
+            LlmAction(op="cancel_order", order_id="o404", reason="stale"),
+            LlmAction(op="cancel_order", order_id="o405", reason="stale tp"),
+            LlmAction(
+                op="place_limit",
+                side="BUY",
+                level=1.1405,
+                size=1.0,
+                purpose="entry",
+            ),
+            LlmAction(
+                op="place_limit",
+                side="SELL",
+                level=1.1465,
+                size=1.0,
+                purpose="tp",
+            ),
+            LlmAction(
+                op="place_stop",
+                side="SELL",
+                level=1.139,
+                size=1.0,
+                purpose="hedge_cover",
+            ),
+        ],
+    )
+    adapted = adapt_decision_for_replay(stored, ledger)
+    cancel_ids = [
+        a.order_id for a in adapted.actions if a.op == "cancel_order"
+    ]
+    assert "o404" not in cancel_ids
+    assert "o405" not in cancel_ids
+    assert "o436" in cancel_ids
+    assert "o438" in cancel_ids
+    assert "o437" not in cancel_ids  # cascaded from parent
+    assert any(a.op == "place_limit" and a.level == 1.1405 for a in adapted.actions)

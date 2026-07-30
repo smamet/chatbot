@@ -328,6 +328,11 @@ class LiveScheduler:
         if should_call and replaying:
             decision = replay_decision
             assert decision is not None
+            # After IG book sync, local ids differ from the source cycle — rewrite
+            # stale cancels and clear resting brackets so re-place can land.
+            from chatbot.application.trader_live_service import adapt_decision_for_replay
+
+            decision = adapt_decision_for_replay(decision, self.ig.ledger)
             gate_result = gate.apply(decision)
             self._mirror_orders_to_ig(gate_result)
             self._last_decision_summary = summarize_decision(decision)

@@ -2989,6 +2989,65 @@ def run_live_cycle_now(
             }
 
 
+def adapt_decision_for_replay(decision: Any, ledger: Any) -> Any:
+    """Rewrite a stored decision so replay can land on the *current* book.
+
+    Stored cancels reference order ids from the source cycle (often remapped by
+    book sync). Phantom cancels left muted IG working orders in place, then
+    ``duplicate_entry`` blocked the intended re-place. When the decision places
+    entry/hedge/tp, clear those resting purposes first.
+    """
+    from chatbot.trader.models import LlmAction, LlmDecision, OrderPurpose
+
+    if not isinstance(decision, LlmDecision):
+        decision = LlmDecision.from_dict(
+            decision if isinstance(decision, dict) else {}
+        )
+    working = getattr(ledger, "working_orders", None) or {}
+    places_bracket = any(
+        (a.op or "") in ("place_limit", "place_stop")
+        and str(a.purpose or "").strip().lower()
+        in ("entry", "hedge_cover", "hedge", "tp")
+        for a in decision.actions
+    )
+    new_actions: list[LlmAction] = []
+    cleared: set[str] = set()
+    if places_bracket:
+        for wo in list(working.values()):
+            purpose = wo.purpose
+            purpose_s = (
+                purpose.value if isinstance(purpose, OrderPurpose) else str(purpose or "")
+            ).strip().lower()
+            # Parents cascade-cancel TP children; skip attached TPs here.
+            if purpose_s == "tp" and getattr(wo, "parent_order_id", None):
+                continue
+            if purpose_s not in ("entry", "hedge_cover", "tp"):
+                continue
+            oid = str(wo.id)
+            new_actions.append(
+                LlmAction(
+                    op="cancel_order",
+                    order_id=oid,
+                    reason="replay: clear resting order before re-place",
+                )
+            )
+            cleared.add(oid)
+    for action in decision.actions:
+        if (action.op or "") == "cancel_order":
+            oid = str(action.order_id or "")
+            if not oid or oid not in working or oid in cleared:
+                continue
+            new_actions.append(action)
+            cleared.add(oid)
+            continue
+        new_actions.append(action)
+    return LlmDecision(
+        analysis=decision.analysis,
+        actions=new_actions,
+        raw=dict(decision.raw or {}),
+    )
+
+
 def find_replayable_cycle(
     settings: Settings,
     slug: str,

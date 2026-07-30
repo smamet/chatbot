@@ -3,7 +3,7 @@
 from unittest.mock import MagicMock
 
 from chatbot.trader.config import TraderConfig
-from chatbot.trader.ig_connector import IgConnector
+from chatbot.trader.ig_connector import IgApiError, IgConnector
 from chatbot.trader.models import OrderPurpose, OrderType, Side, WorkingOrder
 
 
@@ -101,15 +101,93 @@ def test_eurusd_sell_entry_keeps_tp_below_bid() -> None:
     assert not any("omit_tp_attach" in n for n in notes)
 
 
-def test_eurusd_attach_uses_limit_distance_like_ig_ui() -> None:
-    """IG web UI sends Limit Distance in POINTS; bot must match."""
+def test_eurusd_mean_reversion_entry_not_muted_to_maxstop_distance() -> None:
+    """Regression: maxStop value 75 must not mute BUY LIMIT 1.1405→~1.1376."""
     ig = IgConnector(TraderConfig(epic="CS.D.EURUSD.MINI.IP"), dry_run=True)
     ig._cst = "cst"
-    ig.ledger.last_price = 1.1365
+    ig.ledger.last_price = 1.14518
+    ig.last_dealable_bid = 1.14512
+    ig.last_dealable_offer = 1.14518
+    # Corrupt minNormal mimicking a maxStop "75" leak as POINTS.
+    bad = _fx_market()
+    bad["dealingRules"] = {
+        **bad["dealingRules"],
+        "minNormalStopOrLimitDistance": {"unit": "POINTS", "value": 75.0},
+    }
+    ig.get_market = MagicMock(return_value=bad)  # type: ignore[method-assign]
+
+    min_c, _max_c = ig.working_order_clearance_points(OrderType.LIMIT)
+    assert min_c <= 0.003 + 1e-12  # ≤30pts @ 0.0001
+
+    order = WorkingOrder(
+        id="o407",
+        type=OrderType.LIMIT,
+        side=Side.BUY,
+        level=1.1405,
+        size=1.0,
+        purpose=OrderPurpose.ENTRY,
+    )
+    ig.ledger.place_order(order)
+    level, tp, notes = ig.apply_working_order_clearance(order, limit_level=1.1465)
+    assert abs(level - 1.1405) < 1e-9, (level, notes)
+    assert tp is not None
+    assert not any("too close" in n for n in notes)
+
+
+def test_eurusd_push_refuses_large_silent_rewrite() -> None:
+    """Fail closed if clearance would still move FX levels by >5 points."""
+    ig = IgConnector(TraderConfig(epic="CS.D.EURUSD.MINI.IP"), dry_run=True)
+    ig._cst = "cst"
+    ig.ledger.last_price = 1.14518
+    ig.last_dealable_bid = 1.14512
+    ig.last_dealable_offer = 1.14518
     ig.get_market = MagicMock(return_value=_fx_market())  # type: ignore[method-assign]
-    body: dict = {}
-    ig._attach_working_order_tp(body, level=1.1385, limit_level=1.13648)
-    assert "limitDistance" in body
-    assert "limitLevel" not in body
-    # 1.1385 - 1.13648 ≈ 20 points @ 0.0001 (IG UI showed ~19.7)
-    assert 19.0 <= body["limitDistance"] <= 21.0
+
+    order = WorkingOrder(
+        id="o1",
+        type=OrderType.LIMIT,
+        side=Side.BUY,
+        level=1.1405,
+        size=1.0,
+        purpose=OrderPurpose.ENTRY,
+    )
+    ig.ledger.place_order(order)
+
+    # Force a huge widen after normal clearance math.
+    def _huge_clearance(order, limit_level=None):  # noqa: ANN001
+        order.level = 1.13763
+        if order.id in ig.ledger.working_orders:
+            ig.ledger.working_orders[order.id].level = 1.13763
+        return 1.13763, limit_level, ["BUY LIMIT 1.1405->1.13763 (too close)"]
+
+    ig.apply_working_order_clearance = _huge_clearance  # type: ignore[method-assign]
+    try:
+        ig.push_working_order(order, limit_level=1.1465)
+        raise AssertionError("expected IgApiError")
+    except IgApiError as exc:
+        assert "refused silent rewrite" in str(exc)
+    assert abs(float(order.level) - 1.1405) < 1e-9
+
+
+def test_eurusd_clearance_uses_dealable_when_last_price_unset() -> None:
+    """Index floors must not apply when last_price=0 but dealable is FX."""
+    ig = IgConnector(TraderConfig(epic="CS.D.EURUSD.MINI.IP"), dry_run=True)
+    ig._cst = "cst"
+    ig.ledger.last_price = 0.0
+    ig.last_dealable_bid = 1.14512
+    ig.last_dealable_offer = 1.14518
+    ig.get_market = MagicMock(return_value=_fx_market())  # type: ignore[method-assign]
+
+    min_c, max_c = ig.working_order_clearance_points(OrderType.LIMIT)
+    assert min_c < 0.01
+    assert max_c < 1.0
+    order = WorkingOrder(
+        id="o1",
+        type=OrderType.LIMIT,
+        side=Side.BUY,
+        level=1.1405,
+        size=1.0,
+        purpose=OrderPurpose.ENTRY,
+    )
+    level, _tp, notes = ig.apply_working_order_clearance(order)
+    assert abs(level - 1.1405) < 1e-9, (level, notes)

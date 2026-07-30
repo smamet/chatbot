@@ -691,6 +691,10 @@ class RiskGate:
             if not action.order_id:
                 result.rejected.append("cancel_order:invalid")
                 return
+            if action.order_id not in self.ledger.working_orders:
+                # Stale LLM / replay ids must not look like a successful cancel.
+                result.rejected.append(f"cancel_order:unknown:{action.order_id}")
+                return
             self.ledger.cancel_order(action.order_id)
             result.executed.append(f"cancel_order:{action.order_id}")
             return

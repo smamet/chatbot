@@ -33,6 +33,12 @@ _IG_HOSTS = {
 _DEFAULT_STOP_CLEARANCE_POINTS = 12.0
 _DEFAULT_LIMIT_CLEARANCE_POINTS = 12.0
 _DEFAULT_MAX_CLEARANCE_POINTS = 100.0
+# FX: IG EURUSD Mini minNormalStopOrLimitDistance is 2 POINTS. A raw "75" is the
+# maxStopOrLimitDistance *value* (often unit=PERCENTAGE). Never treat > this many
+# POINTS as a minimum clearance — that silently muted mean-reversion entries.
+_FX_MIN_CLEARANCE_POINTS_CAP = 30.0
+# Fail closed if clearance would rewrite an FX level by more than this (points).
+_FX_MAX_SILENT_WIDEN_POINTS = 5.0
 
 
 class IgApiError(RuntimeError):
@@ -496,6 +502,28 @@ class IgConnector:
         """maxStopOrLimitDistance converted to **price** units (0 if unknown)."""
         return self._dealing_distance_points("maxStopOrLimitDistance", epic=epic)
 
+    def _reference_mid(self) -> float:
+        """Best mid for FX vs index detection (ledger, else dealable quote)."""
+        mid = float(self.ledger.last_price or 0.0)
+        if mid > 0:
+            return mid
+        bid, offer = self.dealable_quote()
+        if bid > 0 and offer > 0:
+            return (bid + offer) / 2.0
+        return 0.0
+
+    def _fx_market_context(self) -> bool:
+        """True for FX-like prices (EURUSD ~1.x). Prefer dealable when last_price unset."""
+        mid = self._reference_mid()
+        if 0 < mid < 50:
+            return True
+        bid, offer = self.dealable_quote()
+        return 0 < bid < 50 and 0 < offer < 50
+
+    @staticmethod
+    def _fmt_px(value: float, *, fx: bool) -> str:
+        return f"{value:.5f}" if fx else f"{value:.1f}"
+
     def _dealing_distance_points(self, key: str, *, epic: str | None = None) -> float:
         market = self.get_market(epic) if self._cst else {}
         if not market:
@@ -512,23 +540,52 @@ class IgConnector:
         if value <= 0:
             return 0.0
         unit = str(row.get("unit") or "POINTS").strip().upper()
+        mid = self._reference_mid()
         if unit == "PERCENTAGE":
-            mid = float(self.ledger.last_price or 0)
             return (mid * value / 100.0) if mid > 0 else 0.0
         # POINTS → price (FX: 2 pts @ 0.0001 = 0.0002; indices: 2 pts = 2.0)
-        return value * self.resolve_point_size(epic=epic)
+        point = self.resolve_point_size(epic=epic)
+        # FX safety: minNormal is typically 2–10 POINTS. A raw 75 is the
+        # maxStopOrLimitDistance *value* (often PERCENTAGE) — never use it as min.
+        if (
+            key.startswith("min")
+            and 0 < mid < 50
+            and value > _FX_MIN_CLEARANCE_POINTS_CAP
+        ):
+            logger.warning(
+                "Ignoring absurd FX %s value=%s POINTS (cap=%s); using 0",
+                key,
+                value,
+                _FX_MIN_CLEARANCE_POINTS_CAP,
+            )
+            return 0.0
+        return value * point
 
     def working_order_clearance_points(self, order_type: OrderType) -> tuple[float, float]:
         """Return (min_clearance, max_clearance) in **price** units vs dealable quote."""
         rules_min = self.resolve_min_stop_or_limit_distance()
         rules_max = self.resolve_max_stop_or_limit_distance()
-        mid = float(self.ledger.last_price or 0.0)
-        if 0 < mid < 50:
+        mid = self._reference_mid()
+        fx = self._fx_market_context()
+        if fx:
             # FX: use IG min (POINTS→price). Do not invent a large mid% floor —
             # that deferred mean-reversion TPs as "through market" (e.g. SELL
             # entry above mid with TP a few pips below bid).
-            min_c = max(rules_min, self.resolve_point_size() * 2.0)
-            max_c = rules_max if rules_max > 0 else mid * 0.5
+            pip = self.resolve_point_size()
+            floor = pip * 2.0
+            # Belt-and-suspenders: never require >30pts min on FX even if a
+            # bad rule parse slipped through.
+            cap = pip * _FX_MIN_CLEARANCE_POINTS_CAP
+            if rules_min > cap > 0:
+                logger.warning(
+                    "FX min clearance %s > cap %s — using floor %s",
+                    rules_min,
+                    cap,
+                    floor,
+                )
+                rules_min = floor
+            min_c = max(rules_min, floor)
+            max_c = rules_max if rules_max > 0 else (mid * 0.5 if mid > 0 else pip * 5000)
         else:
             floor = (
                 _DEFAULT_STOP_CLEARANCE_POINTS
@@ -557,16 +614,24 @@ class IgConnector:
             return float(order.level), limit_level, notes
         min_c, max_c = self.working_order_clearance_points(order.type)
         level = float(order.level)
+        fx = self._fx_market_context()
 
         def _clamp_below(anchor: float, raw: float, label: str) -> float:
             """Resting level must sit in [anchor-max_c, anchor-min_c]."""
             lo, hi = anchor - max_c, anchor - min_c
             out = raw
             if out > hi:
-                notes.append(f"{label} {raw}->{hi:.1f} (too close to {anchor:.1f})")
+                notes.append(
+                    f"{label} {self._fmt_px(raw, fx=fx)}->"
+                    f"{self._fmt_px(hi, fx=fx)} (too close to {self._fmt_px(anchor, fx=fx)}; "
+                    f"min_c={self._fmt_px(min_c, fx=fx)})"
+                )
                 out = hi
             elif out < lo:
-                notes.append(f"{label} {raw}->{lo:.1f} (beyond max {max_c:.1f})")
+                notes.append(
+                    f"{label} {self._fmt_px(raw, fx=fx)}->"
+                    f"{self._fmt_px(lo, fx=fx)} (beyond max {self._fmt_px(max_c, fx=fx)})"
+                )
                 out = lo
             return out
 
@@ -575,10 +640,17 @@ class IgConnector:
             lo, hi = anchor + min_c, anchor + max_c
             out = raw
             if out < lo:
-                notes.append(f"{label} {raw}->{lo:.1f} (too close to {anchor:.1f})")
+                notes.append(
+                    f"{label} {self._fmt_px(raw, fx=fx)}->"
+                    f"{self._fmt_px(lo, fx=fx)} (too close to {self._fmt_px(anchor, fx=fx)}; "
+                    f"min_c={self._fmt_px(min_c, fx=fx)})"
+                )
                 out = lo
             elif out > hi:
-                notes.append(f"{label} {raw}->{hi:.1f} (beyond max {max_c:.1f})")
+                notes.append(
+                    f"{label} {self._fmt_px(raw, fx=fx)}->"
+                    f"{self._fmt_px(hi, fx=fx)} (beyond max {self._fmt_px(max_c, fx=fx)})"
+                )
                 out = hi
             return out
 
@@ -922,6 +994,7 @@ class IgConnector:
         stop_level: float | None = None,
     ) -> WorkingOrder:
         """Submit an already-ledgered working order to IG (no second ledger place)."""
+        level_before = float(order.level)
         level, limit_level, clearance_notes = self.apply_working_order_clearance(
             order, limit_level=limit_level
         )
@@ -931,6 +1004,23 @@ class IgConnector:
                 order.id or "—",
                 "; ".join(clearance_notes),
             )
+        # Safe engine: never silently rewrite FX levels by tens of pips.
+        # (A bad min clearance once muted 1.1405→1.13763 using maxStop's "75".)
+        if self._fx_market_context():
+            pip = self.resolve_point_size() or 0.0001
+            move_pts = abs(float(level) - level_before) / pip
+            if move_pts > _FX_MAX_SILENT_WIDEN_POINTS + 1e-9:
+                order.level = level_before
+                if order.id and order.id in self.ledger.working_orders:
+                    self.ledger.working_orders[order.id].level = level_before
+                raise IgApiError(
+                    "FX clearance refused silent rewrite: "
+                    f"{order.side.value} {order.type.value} "
+                    f"{level_before:.5f}→{float(level):.5f} "
+                    f"({move_pts:.1f} pts > max {_FX_MAX_SILENT_WIDEN_POINTS:g}). "
+                    f"notes={'; '.join(clearance_notes) or '—'}; "
+                    "fix dealingRules min or place further from market."
+                )
         if self.dry_run or not self._cst:
             logger.info(
                 "IG dry-run push %s limit_level=%s stop_level=%s clearance=%s",
