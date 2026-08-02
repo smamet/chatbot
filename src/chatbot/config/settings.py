@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from threading import Lock
 
-from pydantic import AliasChoices, Field
+from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,11 +36,11 @@ class Settings(BaseSettings):
     catalog_poll_seconds: int = Field(default=300, validation_alias="CATALOG_POLL_SECONDS")
     trader_ohlc_poll_seconds: int = Field(
         default=900,
-        validation_alias=AliasChoices("TRADER_OHLC_POLL_SECONDS", "CAC40_OHLC_POLL_SECONDS"),
+        validation_alias="TRADER_OHLC_POLL_SECONDS",
     )
     trader_live_poll_seconds: int = Field(
         default=60,
-        validation_alias=AliasChoices("TRADER_LIVE_POLL_SECONDS", "CAC40_LIVE_POLL_SECONDS"),
+        validation_alias="TRADER_LIVE_POLL_SECONDS",
     )
     trader_stream_loop_seconds: float = Field(
         default=5.0,

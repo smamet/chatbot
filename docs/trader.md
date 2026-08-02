@@ -15,11 +15,11 @@ Bots are typed: `tenants.bot_type = trader` (not an Integrations row). One bot =
 | `worker-trader-ohlc` | Background OHLC top-up from IG REST `/prices` (off bots / gaps) |
 | `worker-trader-live` | Background live cycles |
 | `worker-trader-stream` | Lightstreamer: live ticks → CSV bars + TRADE wake-up book sync |
-| `data/trader/{slug}/` | OHLC, backtests, live journal (auto-migrates from `data/cac40/{slug}/`) |
+| `data/trader/{slug}/` | OHLC, backtests, live journal |
 
 ## Bot type + config
 
-1. Create bot with type **Trader**, or migrate via Alembic `026` (active `cac40_backtest` → `bot_type=trader` + `config.trader`).
+1. Create bot with type **Trader** (Alembic `026` migrated older integration rows once).
 2. **Config → Trading settings**: market profile, symbol, epic, Fund Manager, max legs.
 3. **Config → Trading system prompt**: used by Gemini. Live/Backtest do **not** override it. **Load default prompt** fills from the profile file; save to apply.
 4. Empty prompt → profile default file.
@@ -54,7 +54,6 @@ Weekend/holiday flatten uses the bot’s **calendar_id** from its market profile
 # CLI
 PYTHONPATH=src python -m chatbot trader backtest path/to.csv --llm-mode replay
 PYTHONPATH=src python -m chatbot trader live --once --dry-run
-PYTHONPATH=src python -m chatbot trader migrate-data   # data/cac40 → data/trader
 
 # DEMO Lightstreamer probe / order matrix
 PYTHONPATH=src python -m chatbot trader stream-probe --from-db-slug my-trader --seconds 45
@@ -74,11 +73,7 @@ While mode is **Live**, `worker-trader-stream` keeps a Lightstreamer session on 
 
 Pin `lightstreamer-client-lib==1.0.3`. Orders are never placed over Lightstreamer.
 
-Poll: `TRADER_OHLC_POLL_SECONDS` (900), `TRADER_LIVE_POLL_SECONDS` (60), `TRADER_STREAM_LOOP_SECONDS` (5), `STREAM_TICK_STALE_SECONDS` (120). Legacy `CAC40_*` env names still accepted.
-
-## Legacy URLs
-
-`/dashboard/bots/{slug}/cac40…` redirects to `/trader…` or `?tab=trading`.
+Poll: `TRADER_OHLC_POLL_SECONDS` (900), `TRADER_LIVE_POLL_SECONDS` (60), `TRADER_STREAM_LOOP_SECONDS` (5), `STREAM_TICK_STALE_SECONDS` (120).
 
 ## Fund Manager
 

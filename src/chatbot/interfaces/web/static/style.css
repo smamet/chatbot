@@ -2085,6 +2085,54 @@ textarea {
   white-space: nowrap;
 }
 
+.trader-book__id code {
+  font-size: 0.8em;
+}
+
+.trader-orders__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: var(--space-sm);
+}
+
+.trader-orders__search {
+  flex: 1 1 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.trader-orders__search-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.trader-orders__count {
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.trader-orders__scroll {
+  height: 22rem;
+  overflow: auto;
+}
+
+.trader-cycles-scroll {
+  height: 22rem;
+  overflow: auto;
+  margin-bottom: 1rem;
+}
+
+.trader-orders__table th {
+  position: sticky;
+  top: 0;
+  background: var(--surface, #fff);
+  z-index: 1;
+}
+
 .trader-book__row--remove td {
   background: rgba(153, 27, 27, 0.06);
 }
@@ -2215,6 +2263,10 @@ textarea {
   display: flex;
   flex-direction: column;
   gap: var(--space-md);
+  /* Tall enough to show one fully expanded cycle (charts + actions + mirror). */
+  height: min(70vh, 56rem);
+  overflow: auto;
+  padding-right: 0.25rem;
 }
 
 .trader-decision {
@@ -2279,10 +2331,12 @@ textarea {
 
 .trader-decision__pnl--pos {
   color: #166534;
+  font-weight: 700;
 }
 
 .trader-decision__pnl--neg {
   color: #991b1b;
+  font-weight: 700;
 }
 
 .trader-decision__body {

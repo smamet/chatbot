@@ -18,7 +18,7 @@ def run_once(settings, factory) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Sync CAC40 OHLC from IG connectors.")
+    parser = argparse.ArgumentParser(description="Sync trader OHLC from IG connectors.")
     parser.add_argument(
         "--once",
         action="store_true",
@@ -37,14 +37,14 @@ def main() -> None:
         return
 
     interval = max(1, settings.trader_ohlc_poll_seconds)
-    logger.info("CAC40 OHLC worker started (poll every %ss)", interval)
+    logger.info("Trader OHLC worker started (poll every %ss)", interval)
     while True:
         try:
             logs = run_once(settings, factory)
             for line in logs:
                 logger.info("%s", line)
         except Exception:
-            logger.exception("CAC40 OHLC worker poll cycle failed")
+            logger.exception("Trader OHLC worker poll cycle failed")
         time.sleep(interval)
 
 

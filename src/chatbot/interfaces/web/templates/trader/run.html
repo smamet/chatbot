@@ -13,8 +13,8 @@
       · Cycles {{ run.state.current_bar or 0 }}
       {% if run.pnl %}
       · Open legs {{ run.pnl.legs_count or 0 }}
-      · Realized {{ '%.2f'|format(run.pnl.realized_session or 0) }}
-      · UPL {{ '%.2f'|format(run.pnl.net_upl or 0) }}
+      · Realized {{ (run.pnl.realized_session or 0)|format_trader_pnl }}
+      · UPL {{ (run.pnl.net_upl or 0)|format_trader_pnl }}
       {% endif %}
       {% else %}
       Status: <span class="badge {{ run.state.status }}" data-field="status-badge">{{ run.state.status }}</span>
@@ -87,7 +87,7 @@
   <h2>Report</h2>
   <p class="trader-report-stats">
     <span><strong>Final equity</strong> {{ '%.2f'|format(report.final_equity or 0) }}</span>
-    <span><strong>Realized PnL</strong> {{ '%.2f'|format(report.realized_pnl or 0) }}</span>
+    <span><strong>Realized PnL</strong> {{ (report.realized_pnl or 0)|format_trader_pnl }}</span>
     <span><strong>Max DD</strong> {{ '%.2f'|format(report.max_drawdown or 0) }}</span>
     <span><strong>Trades</strong> {{ report.trades }}{% if report.trades %} (WR {{ '%.0f'|format((report.winrate or 0) * 100) }}%){% else %} (WR —){% endif %}</span>
     <span><strong>LLM decisions</strong> {{ report.decisions_count or (run.decisions|length) }}</span>
@@ -112,7 +112,7 @@
         <td>{{ t.role }}</td>
         <td>{{ t.entry }}</td>
         <td>{{ t.exit }}</td>
-        <td>{{ '%.2f'|format(t.pnl) if t.pnl is number else '—' }}</td>
+        <td>{% if t.pnl is number %}<span class="{% if t.pnl > 0 %}trader-decision__pnl--pos{% elif t.pnl < 0 %}trader-decision__pnl--neg{% endif %}">{{ t.pnl|format_trader_pnl }}</span>{% else %}—{% endif %}</td>
         <td>{{ t.bars_held }}</td>
         {% if live %}
         <td>
@@ -195,7 +195,7 @@
         <span class="trader-decision__pnl">
           {% if net_upl is not none %}
           <span class="{% if net_upl > 0 %}trader-decision__pnl--pos{% elif net_upl < 0 %}trader-decision__pnl--neg{% endif %}">
-            UPL {{ '%+.2f'|format(net_upl) }}
+            UPL {{ net_upl|format_trader_pnl(signed=True) }}
           </span>
           {% else %}
           <span>UPL —</span>
@@ -203,7 +203,7 @@
           <span class="text-muted">·</span>
           {% if realized is not none %}
           <span class="{% if realized > 0 %}trader-decision__pnl--pos{% elif realized < 0 %}trader-decision__pnl--neg{% endif %}">
-            PnL {{ '%+.2f'|format(realized) }}
+            PnL {{ realized|format_trader_pnl(signed=True) }}
           </span>
           {% else %}
           <span>PnL —</span>
@@ -325,6 +325,11 @@
   <p class="text-muted">Live report — refresh the page manually when you want the latest cycles.</p>
   {% endif %}
 </section>
+
+{% if live %}
+{% from "trader/_order_index.html" import order_index_table %}
+{{ order_index_table(run.order_index or [], tenant.slug, heading='Orders') }}
+{% endif %}
 
 <dialog id="trader-lightbox" class="trader-lightbox" aria-label="Chart viewer">
   <div class="trader-lightbox__bar">

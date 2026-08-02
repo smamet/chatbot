@@ -27,15 +27,11 @@ def test_save_ohlc_upload(tmp_path: Path):
     assert again["bars"] == 2
 
 
-def test_default_ohlc_path_prefers_legacy_when_present(tmp_path: Path):
+def test_default_ohlc_path_is_ohlc_15m(tmp_path: Path):
     settings = Settings(data_root=tmp_path)
-    legacy = default_ohlc_path(settings, "old-bot")
-    # No file yet → preferred name
-    assert legacy.name == "ohlc_15m.csv"
-    legacy_file = settings.data_root / "trader" / "old-bot" / "ohlc" / "cac40_15m.csv"
-    legacy_file.parent.mkdir(parents=True, exist_ok=True)
-    legacy_file.write_text("Date,Open,High,Low,Close\n2024-01-02,1,1,1,1\n")
-    assert default_ohlc_path(settings, "old-bot").name == "cac40_15m.csv"
+    path = default_ohlc_path(settings, "old-bot")
+    assert path.name == "ohlc_15m.csv"
+    assert path.parent.name == "ohlc"
 
 
 def test_save_ohlc_upload_backtestmarket(tmp_path: Path):

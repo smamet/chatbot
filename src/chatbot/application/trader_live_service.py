@@ -144,7 +144,7 @@ def _resolve_selected_ig_connectors(
 
 
 def live_dir(settings: Settings, slug: str) -> Path:
-    """Live journal under data/trader/{slug}/live (migrates data/cac40/... once)."""
+    """Live journal under data/trader/{slug}/live."""
     from chatbot.application.trader_backtest_service import trader_root
 
     path = trader_root(settings, slug) / "live"
@@ -375,6 +375,7 @@ def default_live_config() -> dict[str, Any]:
                 "max_open_positions",
                 "order_size",
                 "spread_points",
+                "allow_market_orders",
                 "prevent_loss_exits",
                 "flatten_before_close",
                 "flatten_lead_minutes",
@@ -518,6 +519,7 @@ def save_live_config(settings: Settings, slug: str, payload: dict[str, Any]) -> 
         "max_open_positions": int(cfg.max_open_positions),
         "order_size": float(cfg.order_size),
         "spread_points": float(cfg.spread_points),
+        "allow_market_orders": bool(cfg.allow_market_orders),
         "prevent_loss_exits": bool(cfg.prevent_loss_exits),
         "flatten_before_close": bool(cfg.flatten_before_close),
         "flatten_lead_minutes": max(1, int(cfg.flatten_lead_minutes or 30)),
@@ -661,6 +663,8 @@ def _build_trader_config(
     # Profile default unless strategy explicitly overrides.
     if "hedge_beyond_entry_points" not in strategy:
         merged["hedge_beyond_entry_points"] = float(profile.hedge_beyond_entry_points)
+    if "point_value" not in strategy:
+        merged["point_value"] = float(profile.default_point_value)
     if integ_cfg.get("max_open_positions") not in (None, "") and "max_open_positions" not in strategy:
         try:
             merged["max_open_positions"] = int(integ_cfg["max_open_positions"])
@@ -1228,6 +1232,44 @@ def group_open_book(
     return groups
 
 
+def _resolve_live_point_value(live_cfg: dict[str, Any], state_raw: dict[str, Any]) -> float:
+    strategy = live_cfg.get("strategy") if isinstance(live_cfg.get("strategy"), dict) else {}
+    raw_pv = strategy.get("point_value")
+    if raw_pv is not None and raw_pv != "":
+        try:
+            return float(raw_pv)
+        except (TypeError, ValueError):
+            pass
+    from chatbot.trader.profiles import point_value_for_symbol
+
+    return point_value_for_symbol(
+        str(state_raw.get("symbol") or strategy.get("symbol") or ""),
+        profile_id=str(strategy.get("market_profile") or "") or None,
+    )
+
+
+def _repair_live_state_point_value(
+    settings: Settings, slug: str, state_raw: dict[str, Any], *, point_value: float
+) -> dict[str, Any]:
+    """Persist closed-trade rescale when legacy unit-priced FX rows are present."""
+    closed = state_raw.get("closed_trades") or []
+    if not isinstance(closed, list) or not closed:
+        return state_raw
+    if abs(float(point_value) - 1.0) <= 1e-12:
+        return state_raw
+    cfg = TraderConfig(
+        point_value=float(point_value),
+        symbol=str(state_raw.get("symbol") or "EURUSD"),
+    )
+    before = float(state_raw.get("realized_session") or 0.0)
+    ledger = HedgeLedger.from_state_dict(cfg, state_raw)
+    if abs(float(ledger.realized_session) - before) <= 1e-12:
+        return state_raw
+    repaired = ledger.to_state_dict()
+    _write_json(live_state_path(settings, slug), repaired)
+    return repaired
+
+
 def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
     """Build a run-like report payload for the live results page."""
     live_cfg = load_live_config(settings, slug)
@@ -1235,6 +1277,10 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
     state_raw = _read_json(live_state_path(settings, slug), default={}) or {}
     if not isinstance(state_raw, dict):
         state_raw = {}
+    point_value = _resolve_live_point_value(live_cfg, state_raw)
+    state_raw = _repair_live_state_point_value(
+        settings, slug, state_raw, point_value=point_value
+    )
     root = live_dir(settings, slug)
     decisions = _load_live_decision_entries(settings, slug)
 
@@ -1324,7 +1370,248 @@ def get_live_report(settings: Settings, slug: str) -> dict[str, Any]:
             "legs_count": len(positions),
             "working_orders_count": len(working),
         },
+        "order_index": build_live_order_index(settings, slug),
     }
+
+
+def build_live_order_index(
+    settings: Settings,
+    slug: str,
+    *,
+    max_cycles: int = 250,
+) -> list[dict[str, Any]]:
+    """Index local ``o{N}`` working orders from journal snapshots (newest created first).
+
+    Used for quick investigation of order ids from cycle reports. Status is derived
+    from the current open book plus cancel / place-reject crumbs in cycle logs.
+    """
+    import re
+
+    journal = live_journal_dir(settings, slug)
+    open_ids = {
+        str(o.get("id") or "")
+        for o in (read_live_book(settings, slug).get("working_orders") or [])
+        if isinstance(o, dict) and o.get("id")
+    }
+    by_id: dict[str, dict[str, Any]] = {}
+
+    def _ensure(oid: str) -> dict[str, Any]:
+        rec = by_id.get(oid)
+        if rec is None:
+            rec = {
+                "id": oid,
+                "type": "",
+                "side": "",
+                "level": None,
+                "size": None,
+                "purpose": "",
+                "deal_id": "",
+                "parent_order_id": "",
+                "position_id": "",
+                "first_seen": None,
+                "last_seen": None,
+                "first_cycle": "",
+                "last_cycle": "",
+                "cancelled": False,
+                "rejected": False,
+                "reject_reason": "",
+                "status": "unknown",
+            }
+            by_id[oid] = rec
+        return rec
+
+    def _apply_wo(rec: dict[str, Any], wo: dict[str, Any], *, ts: str, cycle: str) -> None:
+        # Newest→oldest scan: first hit sets last_* + shape; older hits push first_*.
+        first_hit = not rec.get("last_seen")
+        if first_hit:
+            rec["last_seen"] = ts
+            rec["last_cycle"] = cycle
+        if first_hit or not rec.get("type"):
+            if wo.get("type"):
+                rec["type"] = str(wo.get("type") or "")
+        if first_hit or not rec.get("side"):
+            if wo.get("side"):
+                rec["side"] = str(wo.get("side") or "")
+        if first_hit or rec.get("level") is None:
+            try:
+                if wo.get("level") is not None:
+                    rec["level"] = float(wo["level"])
+            except (TypeError, ValueError):
+                pass
+        if first_hit or rec.get("size") is None:
+            try:
+                if wo.get("size") is not None:
+                    rec["size"] = float(wo["size"])
+            except (TypeError, ValueError):
+                pass
+        if first_hit or not rec.get("purpose"):
+            if wo.get("purpose"):
+                rec["purpose"] = str(wo.get("purpose") or "")
+        if first_hit or not rec.get("deal_id"):
+            if wo.get("deal_id"):
+                rec["deal_id"] = str(wo.get("deal_id") or "")
+        if first_hit or not rec.get("parent_order_id"):
+            if wo.get("parent_order_id"):
+                rec["parent_order_id"] = str(wo.get("parent_order_id") or "")
+        if first_hit or not rec.get("position_id"):
+            if wo.get("position_id"):
+                rec["position_id"] = str(wo.get("position_id") or "")
+        rec["first_seen"] = ts
+        rec["first_cycle"] = cycle
+
+    place_re = re.compile(
+        r"^(?:place_limit|place_stop|place_market):(?P<oid>o\d+)(?:@(?P<level>[\d.]+))?$"
+    )
+    cancel_re = re.compile(r"^cancel_order:(?P<oid>o\d+)$")
+    err_re = re.compile(
+        r"place:(?P<oid>o\d+):(?P<msg>.*)$",
+        re.DOTALL,
+    )
+
+    if journal.is_dir():
+        cycle_dirs = sorted(
+            (
+                p
+                for p in journal.iterdir()
+                if p.is_dir() and p.name != "market_closed"
+            ),
+            key=lambda p: p.name,
+            reverse=True,
+        )
+        for cycle_dir in cycle_dirs[: max(1, int(max_cycles))]:
+            raw = _read_json(cycle_dir / "cycle.json", default=None)
+            if not isinstance(raw, dict):
+                continue
+            ts = str(raw.get("ts") or "")
+            cycle = cycle_dir.name
+            snap = raw.get("snapshot") if isinstance(raw.get("snapshot"), dict) else {}
+            for wo in snap.get("working_orders") or []:
+                if not isinstance(wo, dict):
+                    continue
+                oid = str(wo.get("id") or "")
+                if not oid.startswith("o"):
+                    continue
+                _apply_wo(_ensure(oid), wo, ts=ts, cycle=cycle)
+            for line in raw.get("executed") or []:
+                s = str(line or "")
+                m = cancel_re.match(s)
+                if m:
+                    rec = _ensure(m.group("oid"))
+                    rec["cancelled"] = True
+                    if not rec.get("last_seen"):
+                        rec["last_seen"] = ts
+                        rec["last_cycle"] = cycle
+                    rec["first_seen"] = ts
+                    rec["first_cycle"] = cycle
+                    continue
+                m = place_re.match(s)
+                if m:
+                    rec = _ensure(m.group("oid"))
+                    if m.group("level") and rec.get("level") is None:
+                        try:
+                            rec["level"] = float(m.group("level"))
+                        except ValueError:
+                            pass
+                    if not rec.get("last_seen"):
+                        rec["last_seen"] = ts
+                        rec["last_cycle"] = cycle
+                    rec["first_seen"] = ts
+                    rec["first_cycle"] = cycle
+            for mrow in raw.get("mirror") or []:
+                if not isinstance(mrow, dict):
+                    continue
+                for err in mrow.get("errors") or []:
+                    em = err_re.match(str(err or ""))
+                    if not em:
+                        continue
+                    rec = _ensure(em.group("oid"))
+                    rec["rejected"] = True
+                    msg = em.group("msg") or ""
+                    if "ATTACHED_ORDER_LEVEL_ERROR" in msg:
+                        rec["reject_reason"] = "ATTACHED_ORDER_LEVEL_ERROR"
+                    elif "reason=" in msg:
+                        try:
+                            rec["reject_reason"] = (
+                                msg.split("reason=", 1)[1].split()[0][:64]
+                            )
+                        except IndexError:
+                            rec["reject_reason"] = msg[:64]
+                    else:
+                        rec["reject_reason"] = msg[:64]
+                    if not rec.get("last_seen"):
+                        rec["last_seen"] = ts
+                        rec["last_cycle"] = cycle
+                    rec["first_seen"] = ts
+                    rec["first_cycle"] = cycle
+                    # Infer type/side/level from reject confirm text when possible.
+                    if "BUY STOP" in msg:
+                        rec["type"] = rec.get("type") or "STOP"
+                        rec["side"] = rec.get("side") or "BUY"
+                    elif "SELL STOP" in msg:
+                        rec["type"] = rec.get("type") or "STOP"
+                        rec["side"] = rec.get("side") or "SELL"
+                    elif "BUY LIMIT" in msg:
+                        rec["type"] = rec.get("type") or "LIMIT"
+                        rec["side"] = rec.get("side") or "BUY"
+                    elif "SELL LIMIT" in msg:
+                        rec["type"] = rec.get("type") or "LIMIT"
+                        rec["side"] = rec.get("side") or "SELL"
+                    at = re.search(r"@\s*([\d.]+)", msg)
+                    if at and rec.get("level") is None:
+                        try:
+                            rec["level"] = float(at.group(1))
+                        except ValueError:
+                            pass
+            # (snapshot already applied above)
+
+    # Current open book may have ids never journaled yet (fresh import).
+    for wo in read_live_book(settings, slug).get("working_orders") or []:
+        if not isinstance(wo, dict):
+            continue
+        oid = str(wo.get("id") or "")
+        if not oid.startswith("o"):
+            continue
+        rec = _ensure(oid)
+        rec["type"] = str(wo.get("type") or rec.get("type") or "")
+        rec["side"] = str(wo.get("side") or rec.get("side") or "")
+        try:
+            if wo.get("level") is not None:
+                rec["level"] = float(wo["level"])
+        except (TypeError, ValueError):
+            pass
+        try:
+            if wo.get("size") is not None:
+                rec["size"] = float(wo["size"])
+        except (TypeError, ValueError):
+            pass
+        rec["purpose"] = str(wo.get("purpose") or rec.get("purpose") or "")
+        rec["deal_id"] = str(wo.get("deal_id") or rec.get("deal_id") or "")
+        rec["parent_order_id"] = str(
+            wo.get("parent_order_id") or rec.get("parent_order_id") or ""
+        )
+        rec["position_id"] = str(wo.get("position_id") or rec.get("position_id") or "")
+
+    out: list[dict[str, Any]] = []
+    for oid, rec in by_id.items():
+        if oid in open_ids:
+            rec["status"] = "open"
+        elif rec.get("rejected") and not rec.get("deal_id"):
+            rec["status"] = "rejected"
+        elif rec.get("cancelled"):
+            rec["status"] = "cancelled"
+        elif rec.get("rejected"):
+            rec["status"] = "rejected"
+        else:
+            rec["status"] = "gone"
+        out.append(rec)
+
+    def _sort_key(r: dict[str, Any]) -> tuple:
+        # Newest created first; fall back to last_seen / id.
+        created = str(r.get("first_seen") or r.get("last_seen") or "")
+        return (created, str(r.get("id") or ""))
+
+    out.sort(key=_sort_key, reverse=True)
+    return out
 
 
 def resolve_live_chart_file(
@@ -2485,6 +2772,9 @@ def preview_ig_book(
     state_raw = _read_json(live_state_path(settings, slug), default={}) or {}
     if not isinstance(state_raw, dict):
         state_raw = {}
+    state_raw = _repair_live_state_point_value(
+        settings, slug, state_raw, point_value=float(cfg.point_value or 1.0)
+    )
     local_positions = _as_dict_list(state_raw.get("positions"))
     local_orders = _as_dict_list(state_raw.get("working_orders"))
     closed_raw = state_raw.get("closed_trades") or []

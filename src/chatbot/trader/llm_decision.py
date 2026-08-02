@@ -230,7 +230,7 @@ class GeminiDecisionClient:
             session.commit()
         except Exception:
             logger.exception(
-                "Failed to record CAC40 Gemini usage tenant_id=%s model=%s",
+                "Failed to record trader Gemini usage tenant_id=%s model=%s",
                 self.tenant_id,
                 self.model,
             )

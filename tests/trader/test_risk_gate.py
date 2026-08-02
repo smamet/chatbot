@@ -895,3 +895,231 @@ def test_amend_entry_clamps_size_to_order_size():
     assert entry.level == 8290.0
     assert entry.size == 1.0
     assert any(f"amend_order:{entry.id}->8290.0" in e for e in result.executed)
+
+
+# --- Triple hedge orphan regressions (82b731fc) ---
+
+_ORPHAN_HEDGE_REASONS = (
+    "duplicate_hedge",
+    "orphan_hedge",
+    "exposure_already_covered",
+    "same_level_hedge",
+)
+
+
+def _hedge_cover_count(ledger: HedgeLedger) -> int:
+    from chatbot.trader.models import OrderPurpose
+
+    return sum(
+        1
+        for o in ledger.working_orders.values()
+        if o.purpose == OrderPurpose.HEDGE_COVER
+    )
+
+
+def test_rejects_second_orphan_hedge_after_entry_rejected():
+    """Cycle 20260730_170044: linked hedge OK; rejected entry; orphan twin rejected."""
+    from chatbot.trader.models import LegRole
+
+    cfg = TraderConfig(
+        order_size=1.0,
+        spread_points=0,
+        max_open_positions=4,
+        allow_market_orders=False,
+        hedge_beyond_entry_points=2.0,
+        llm_level_band_points=15.0,
+        symbol="EURUSD",
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.1500
+    # Two open legs ⇒ orphan cannot unique-resolve (live multi-position book).
+    primary = ledger._open_leg(Side.SELL, 1.0, 1.1468, LegRole.PRIMARY)
+    ledger._open_leg(Side.SELL, 1.0, 1.1400, LegRole.PRIMARY)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_stop",
+                side="BUY",
+                level=1.1535,
+                size=1,
+                purpose="hedge_cover",
+                position_id=primary.id,
+            ),
+            LlmAction(
+                op="place_limit",
+                side="SELL",
+                level=1.1530,
+                size=1,
+                purpose="entry",
+            ),
+            LlmAction(
+                op="place_stop",
+                side="BUY",
+                level=1.1535,
+                size=1,
+                purpose="hedge_cover",
+            ),
+        )
+    )
+    assert any("same_level_primary" in r for r in result.rejected)
+    assert _hedge_cover_count(ledger) == 1
+    assert any(any(tag in r for tag in _ORPHAN_HEDGE_REASONS) for r in result.rejected)
+
+
+def test_rejects_third_orphan_hedge_when_already_covered():
+    """Cycle 20260730_191540: cover already on; max_positions entry; orphan rejected."""
+    from chatbot.trader.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+
+    cfg = TraderConfig(
+        order_size=1.0,
+        spread_points=0,
+        max_open_positions=1,
+        allow_market_orders=False,
+        hedge_beyond_entry_points=2.0,
+        llm_level_band_points=15.0,
+        symbol="EURUSD",
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.1500
+    primary = ledger._open_leg(Side.SELL, 1.0, 1.1468, LegRole.PRIMARY)
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=1.1535,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            position_id=primary.id,
+        )
+    )
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_limit",
+                side="SELL",
+                level=1.1520,
+                size=1,
+                purpose="entry",
+            ),
+            LlmAction(
+                op="place_stop",
+                side="BUY",
+                level=1.1535,
+                size=1,
+                purpose="hedge_cover",
+            ),
+        )
+    )
+    assert any("max_positions" in r for r in result.rejected)
+    assert _hedge_cover_count(ledger) == 1
+    assert any(any(tag in r for tag in _ORPHAN_HEDGE_REASONS) for r in result.rejected)
+
+
+def test_rejects_same_level_hedge_stacking_even_without_position_id():
+    """Existing unlinked hedge_cover at L → orphan at L must not stack."""
+    from chatbot.trader.models import LegRole, OrderPurpose, OrderType, WorkingOrder
+
+    cfg = TraderConfig(
+        order_size=1.0,
+        spread_points=0,
+        max_open_positions=4,
+        hedge_beyond_entry_points=2.0,
+        llm_level_band_points=15.0,
+        symbol="EURUSD",
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.1500
+    ledger._open_leg(Side.SELL, 1.0, 1.1468, LegRole.PRIMARY)
+    ledger._open_leg(Side.BUY, 1.0, 1.1490, LegRole.HEDGE)
+    ledger.place_order(
+        WorkingOrder(
+            id="",
+            type=OrderType.STOP,
+            side=Side.BUY,
+            level=1.1535,
+            size=1.0,
+            purpose=OrderPurpose.HEDGE_COVER,
+            position_id=None,
+        )
+    )
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_stop",
+                side="BUY",
+                level=1.1535,
+                size=1,
+                purpose="hedge_cover",
+            )
+        )
+    )
+    assert _hedge_cover_count(ledger) == 1
+    assert any(any(tag in r for tag in _ORPHAN_HEDGE_REASONS) for r in result.rejected)
+
+
+def test_rejects_hedge_when_multiple_legs_and_no_target():
+    """Multi-leg book + no position_id / parent → reject (no fall-through place)."""
+    from chatbot.trader.models import LegRole
+
+    cfg = TraderConfig(
+        order_size=1.0,
+        spread_points=0,
+        max_open_positions=4,
+        allow_market_orders=True,
+        hedge_beyond_entry_points=2.0,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.1500
+    ledger._open_leg(Side.SELL, 1.0, 1.1468, LegRole.PRIMARY)
+    ledger._open_leg(Side.BUY, 1.0, 1.1500, LegRole.HEDGE)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(
+                op="place_stop",
+                side="BUY",
+                level=1.1535,
+                size=1,
+                purpose="hedge_cover",
+            )
+        )
+    )
+    assert _hedge_cover_count(ledger) == 0
+    assert any("orphan_hedge" in r for r in result.rejected)
+
+
+def test_market_close_without_position_id_disabled():
+    cfg = TraderConfig(allow_market_orders=False, spread_points=0)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.15
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(_decision(LlmAction(op="market_close")))
+    assert any("market_disabled" in r for r in result.rejected)
+
+
+def test_global_default_2pt_nudge_on_index():
+    cfg = TraderConfig(
+        order_size=1.0,
+        spread_points=0,
+        hedge_beyond_entry_points=2.0,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 8200.0
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=8100, size=1, purpose="entry"),
+            LlmAction(
+                op="place_stop", side="SELL", level=8100, size=1, purpose="hedge_cover"
+            ),
+        )
+    )
+    hedge = next(
+        o for o in ledger.working_orders.values() if o.purpose.value == "hedge_cover"
+    )
+    assert abs(hedge.level - 8098.0) < 1e-9
+    assert any("hedge_nudged:" in n for n in result.notes)

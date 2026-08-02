@@ -29,6 +29,13 @@
   </select>
   <small class="field-hint">Hard gate: reject market closes and TP/close orders that would realize a loss after spread.</small>
 </label>
+<label>Allow market orders
+  <select name="allow_market_orders">
+    <option value="0" {% if not cfg.allow_market_orders %}selected{% endif %}>No (default)</option>
+    <option value="1" {% if cfg.allow_market_orders %}selected{% endif %}>Yes — market_open / market_close</option>
+  </select>
+  <small class="field-hint">When off, RiskGate rejects <code>market_open</code>/<code>market_close</code> (except weekend flatten and clearly profitable closes with a position id).</small>
+</label>
 <label>Flatten before market close
   <select name="flatten_before_close">
     <option value="1" {% if cfg.flatten_before_close %}selected{% endif %}>Yes (default)</option>

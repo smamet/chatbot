@@ -254,7 +254,7 @@
     {% endif %}
     {% if live_status.open_legs is defined %}· legs <code>{{ live_status.open_legs }}</code>{% endif %}
     {% if live_status.pnl and live_status.pnl.realized_session is defined %}
-      · realized <code>{{ '%.2f'|format(live_status.pnl.realized_session) }}</code>
+      · realized <code>{{ live_status.pnl.realized_session|format_trader_pnl }}</code>
     {% endif %}
     {% if live_worker_status and live_worker_status.finished_at %}
       · worker poll <time class="js-local-datetime" datetime="{{ live_worker_status.finished_at }}">{{ live_worker_status.finished_at }}</time>
@@ -376,6 +376,8 @@
       {% from "trader/_live_poll_parts.html" import live_cycles_list %}
       {{ live_cycles_list(live_cycles, tenant.slug) }}
     </div>
+    {% from "trader/_order_index.html" import order_index_table %}
+    {{ order_index_table(order_index or [], tenant.slug, heading='Orders', embedded=true) }}
   </div>
 
   <form id="trader-live-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/config" class="stack-form">

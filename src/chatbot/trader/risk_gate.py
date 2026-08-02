@@ -225,6 +225,54 @@ class RiskGate:
                 return True
         return False
 
+    def _same_level_hedge(self, side: Side, level: float) -> bool:
+        """True if a same-side working/filled hedge already sits at ~the same price.
+
+        Uses ``hedge_beyond_entry_points`` (not the wider entry band) so a residual
+        cover a few points away from an existing hedge is still allowed.
+        """
+        points = max(1.0, abs(float(self.config.hedge_beyond_entry_points or 2.0)))
+        pip = infer_point_size(float(self.ledger.last_price or level or 0.0))
+        band = points * pip if pip > 0 else points
+        lvl = float(level)
+        for order in self.ledger.working_orders.values():
+            if order.purpose != OrderPurpose.HEDGE_COVER or order.side != side:
+                continue
+            if abs(float(order.level) - lvl) <= band + 1e-12:
+                return True
+        for leg in self.ledger.positions.values():
+            if leg.side != side or leg.role != LegRole.HEDGE:
+                continue
+            if abs(float(leg.entry) - lvl) <= band + 1e-12:
+                return True
+        return False
+
+    def _hedge_cover_place_blocked(
+        self,
+        *,
+        side: Side,
+        level: float,
+        position_id: str | None,
+        parent_order_id: str | None,
+    ) -> str | None:
+        """Return reject suffix (no op prefix) if hedge_cover must not place.
+
+        Allows unlinked hedges when residual unprotected exposure remains (sized
+        via ``_hedge_cover_size``). Blocks same-level stacks and no-residual
+        orphans — the 1.1535 triple-STOP gap.
+        """
+        if self._same_level_hedge(side, level):
+            return "same_level_hedge"
+        # Brackets may place before the entry fills while open-book residual is flat.
+        if parent_order_id or self._find_working_entry(opposite_of=side) is not None:
+            return None
+        covered_side = Side.SELL if side == Side.BUY else Side.BUY
+        if self._unprotected_open_size(covered_side) > 1e-9:
+            return None
+        if not position_id and not parent_order_id:
+            return "orphan_hedge"
+        return "exposure_already_covered"
+
     def _resolve_position_id(self, action: LlmAction) -> str | None:
         known = self._known_leg_id(action.position_id)
         if known:
@@ -503,6 +551,15 @@ class RiskGate:
                                 if cleared is None:
                                     return
                                 order_level = cleared
+                blocked = self._hedge_cover_place_blocked(
+                    side=side,
+                    level=order_level,
+                    position_id=action.position_id,
+                    parent_order_id=parent_order_id,
+                )
+                if blocked:
+                    result.rejected.append(f"place_limit:{blocked}")
+                    return
             order = WorkingOrder(
                 id="",
                 type=OrderType.LIMIT,
@@ -641,6 +698,15 @@ class RiskGate:
                                 if cleared is None:
                                     return
                                 order_level = cleared
+                blocked = self._hedge_cover_place_blocked(
+                    side=side,
+                    level=order_level,
+                    position_id=action.position_id,
+                    parent_order_id=parent_order_id,
+                )
+                if blocked:
+                    result.rejected.append(f"place_stop:{blocked}")
+                    return
             order = WorkingOrder(
                 id="",
                 type=OrderType.STOP,

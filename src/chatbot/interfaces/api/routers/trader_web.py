@@ -215,6 +215,7 @@ def trader_start_run(
     llm_temperature: float = Form(0.0),
     llm_trigger_mode: str = Form("levels"),
     llm_level_band_points: float = Form(15.0),
+    allow_market_orders: str = Form("0"),
     prevent_loss_exits: str = Form("0"),
     flatten_before_close: str = Form("1"),
     flatten_lead_minutes: int = Form(30),
@@ -270,6 +271,8 @@ def trader_start_run(
         llm_temperature=temperature,
         llm_trigger_mode=trigger_mode,
         llm_level_band_points=band,
+        allow_market_orders=str(allow_market_orders).strip().lower()
+        in ("1", "true", "yes", "on"),
         prevent_loss_exits=str(prevent_loss_exits).strip().lower() in ("1", "true", "yes", "on"),
         flatten_before_close=str(flatten_before_close).strip().lower()
         in ("1", "true", "yes", "on"),
@@ -287,6 +290,7 @@ def trader_start_run(
         system_prompt=str(tenant.prompt or ""),
         market_profile=profile.id,
         calendar_id=profile.calendar_id,
+        point_value=float(profile.default_point_value),
     )
     from chatbot.interfaces.api.deps import _gemini_api_key
 
@@ -467,6 +471,7 @@ def _strategy_from_form(
     llm_temperature: float,
     llm_trigger_mode: str,
     llm_level_band_points: float,
+    allow_market_orders: str,
     prevent_loss_exits: str,
     flatten_before_close: str,
     flatten_lead_minutes: int,
@@ -494,6 +499,8 @@ def _strategy_from_form(
         "llm_temperature": max(0.0, min(1.0, float(llm_temperature if llm_temperature is not None else 0.0))),
         "llm_trigger_mode": trigger_mode,
         "llm_level_band_points": max(0.1, float(llm_level_band_points or 15.0)),
+        "allow_market_orders": str(allow_market_orders).strip().lower()
+        in ("1", "true", "yes", "on"),
         "prevent_loss_exits": str(prevent_loss_exits).strip().lower() in ("1", "true", "yes", "on"),
         "flatten_before_close": str(flatten_before_close).strip().lower()
         in ("1", "true", "yes", "on"),
@@ -525,6 +532,7 @@ async def trader_live_save_config(
     llm_temperature: float = Form(0.0),
     llm_trigger_mode: str = Form("levels"),
     llm_level_band_points: float = Form(15.0),
+    allow_market_orders: str = Form("0"),
     prevent_loss_exits: str = Form("0"),
     flatten_before_close: str = Form("1"),
     flatten_lead_minutes: int = Form(30),
@@ -557,6 +565,7 @@ async def trader_live_save_config(
         llm_temperature=llm_temperature,
         llm_trigger_mode=llm_trigger_mode,
         llm_level_band_points=llm_level_band_points,
+        allow_market_orders=allow_market_orders,
         prevent_loss_exits=prevent_loss_exits,
         flatten_before_close=flatten_before_close,
         flatten_lead_minutes=flatten_lead_minutes,
@@ -922,28 +931,3 @@ def trader_live_clear(
     )
 
 
-@router.api_route(
-    "/bots/{slug}/cac40",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-)
-@router.api_route(
-    "/bots/{slug}/cac40/{rest:path}",
-    methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
-)
-async def legacy_cac40_path(
-    request: Request,
-    slug: str,
-    rest: str = "",
-):
-    """Redirect/rewrite legacy /cac40 URLs to /trader."""
-    from starlette.datastructures import URL
-
-    suffix = f"/{rest}" if rest else ""
-    target = str(request.url).replace(
-        f"/bots/{slug}/cac40{suffix}", f"/bots/{slug}/trader{suffix}", 1
-    )
-    if request.method.upper() == "GET":
-        # Preserve query string already in target.
-        return RedirectResponse(url=target, status_code=307)
-    # For mutating methods, forward internally is hard; redirect with 307 keeps method.
-    return RedirectResponse(url=URL(target), status_code=307)

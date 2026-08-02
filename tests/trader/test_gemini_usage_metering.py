@@ -19,7 +19,7 @@ from chatbot.config.settings import reset_settings_cache_for_tests
 
 @pytest.fixture
 def usage_factory(tmp_path, monkeypatch: pytest.MonkeyPatch):
-    db = tmp_path / "cac40_usage.db"
+    db = tmp_path / "trader_usage.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
     reset_settings_cache_for_tests()
     from chatbot.config.settings import get_settings
@@ -63,7 +63,7 @@ def _install_fake_genai(monkeypatch: pytest.MonkeyPatch, response: object) -> Ma
     return models
 
 
-def test_decide_records_cac40_usage(usage_factory, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_decide_records_trader_usage(usage_factory, monkeypatch: pytest.MonkeyPatch) -> None:
     decision_json = """
     {
       "analysis": {

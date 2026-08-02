@@ -453,6 +453,7 @@ def test_live_report_render_with_realized_session_only(settings: Settings) -> No
     from jinja2 import Environment, FileSystemLoader, select_autoescape
 
     from chatbot.application.trader_live_service import get_live_report, save_live_config
+    from chatbot.application.trader_format import format_trader_pnl
     from chatbot.interfaces.web.templates import dumps_json
 
     save_live_config(settings, "demo-bot", {"mode": "off", "ig_connector_ids": [], "strategy": {}})
@@ -481,6 +482,7 @@ def test_live_report_render_with_realized_session_only(settings: Settings) -> No
         autoescape=select_autoescape(["html", "xml"]),
     )
     env.filters["dumps_json"] = dumps_json
+    env.filters["format_trader_pnl"] = format_trader_pnl
 
     class _Req:
         url = type("U", (), {"path": "/x"})()
@@ -1134,3 +1136,112 @@ def test_adapt_decision_for_replay_clears_resting_brackets() -> None:
     assert "o438" in cancel_ids
     assert "o437" not in cancel_ids  # cascaded from parent
     assert any(a.op == "place_limit" and a.level == 1.1405 for a in adapted.actions)
+
+
+def test_build_live_order_index_from_journal(settings: Settings) -> None:
+    from chatbot.application.trader_live_service import (
+        build_live_order_index,
+        live_dir,
+        live_journal_dir,
+        save_live_config,
+    )
+
+    save_live_config(settings, "ord-bot", {"mode": "paper", "ig_connector_ids": [], "strategy": {}})
+    root = live_journal_dir(settings, "ord-bot")
+    older = root / "20260730_100000"
+    newer = root / "20260730_101559"
+    older.mkdir(parents=True)
+    newer.mkdir(parents=True)
+    (older / "cycle.json").write_text(
+        __import__("json").dumps(
+            {
+                "ts": "2026-07-30T10:00:00+00:00",
+                "snapshot": {
+                    "working_orders": [
+                        {
+                            "id": "o583",
+                            "type": "STOP",
+                            "side": "BUY",
+                            "level": 1.1475,
+                            "size": 1.0,
+                            "purpose": "hedge_cover",
+                            "deal_id": "DIAAAAX7NW28BAX",
+                        }
+                    ]
+                },
+                "executed": [],
+                "mirror": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (newer / "cycle.json").write_text(
+        __import__("json").dumps(
+            {
+                "ts": "2026-07-30T10:15:59+00:00",
+                "snapshot": {
+                    "working_orders": [
+                        {
+                            "id": "o583",
+                            "type": "STOP",
+                            "side": "BUY",
+                            "level": 1.1475,
+                            "size": 1.0,
+                            "purpose": "hedge_cover",
+                            "deal_id": "",
+                        },
+                        {
+                            "id": "o584",
+                            "type": "STOP",
+                            "side": "SELL",
+                            "level": 1.139,
+                            "size": 1.0,
+                            "purpose": "hedge_cover",
+                            "deal_id": "DIAAAAX7QHZV6AL",
+                        },
+                    ]
+                },
+                "executed": ["cancel_order:o582", "place_stop:o584@1.139"],
+                "mirror": [
+                    {
+                        "errors": [
+                            "place:o583:IG working order rejected: reason=ATTACHED_ORDER_LEVEL_ERROR "
+                            "(BUY STOP @ 1.1475)"
+                        ]
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Persist open book with o584 only.
+    state = live_dir(settings, "ord-bot") / "state.json"
+    state.write_text(
+        __import__("json").dumps(
+            {
+                "working_orders": [
+                    {
+                        "id": "o584",
+                        "type": "STOP",
+                        "side": "SELL",
+                        "level": 1.139,
+                        "size": 1.0,
+                        "purpose": "hedge_cover",
+                        "deal_id": "DIAAAAX7QHZV6AL",
+                    }
+                ],
+                "positions": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    rows = build_live_order_index(settings, "ord-bot")
+    by_id = {r["id"]: r for r in rows}
+    assert by_id["o583"]["status"] == "rejected"
+    assert by_id["o583"]["reject_reason"] == "ATTACHED_ORDER_LEVEL_ERROR"
+    assert abs(float(by_id["o583"]["level"]) - 1.1475) < 1e-9
+    assert by_id["o584"]["status"] == "open"
+    assert by_id["o582"]["status"] == "cancelled"
+    # Newest created first (o584/o582 stamped in newer cycle before o583's first_seen).
+    assert rows[0]["id"] in ("o584", "o582", "o583")

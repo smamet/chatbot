@@ -98,7 +98,9 @@ class TraderConfig:
     # hedges are nudged, not rejected.
     hedge_beyond_entry_points: float = 2.0
     overnight_funding_rate: float = 0.0001  # per night on notional
-    point_value: float = 1.0  # EUR per index point per lot
+    # Account currency per 1.0 price-unit move per lot.
+    # CAC40 ≈ 1.0; EURUSD Mini ($1/pip) ≈ 10000 (profile default).
+    point_value: float = 1.0
     timeframe: str = "15m"
     # Bars shown on each LLM chart (from full history as-of current bar).
     lookback_15m: int = 96
@@ -119,7 +121,7 @@ class TraderConfig:
     fundmanager_url: str = ""
     fundmanager_token: str = ""
     bot_id: str = "evnor-cac-demo"
-    strategy_name: str = "cac40_mean_reversion"
+    strategy_name: str = "mean_reversion"
     gemini_model: str = "gemini-2.5-flash"
     prompt_version: str = "v1"
     # Tenant Config prompt (trading system prompt). Empty → profile default file.

@@ -48,14 +48,8 @@ def _read_json(path: Path, default: Any = None) -> Any:
 
 
 def trader_root(settings: Settings, tenant_slug: str) -> Path:
-    """Per-bot trader data dir. Migrates legacy data/cac40/{slug} once if present."""
+    """Per-bot trader data dir under data/trader/{slug}/."""
     root = settings.data_root / "trader" / tenant_slug
-    legacy = settings.data_root / "cac40" / tenant_slug
-    if legacy.is_dir() and not root.exists():
-        import shutil
-
-        root.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(legacy), str(root))
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -367,19 +361,8 @@ def stop_run(settings: Settings, tenant_slug: str, run_id: str) -> bool:
 
 
 def default_ohlc_path(settings: Settings, tenant_slug: str) -> Path:
-    """
-    Per-bot OHLC file (1 bot → 1 symbol → 1 CSV).
-
-    Prefers ``ohlc_15m.csv``; falls back to legacy ``cac40_15m.csv`` when present.
-    """
-    ohlc_dir = trader_root(settings, tenant_slug) / "ohlc"
-    preferred = ohlc_dir / "ohlc_15m.csv"
-    legacy = ohlc_dir / "cac40_15m.csv"
-    if preferred.exists():
-        return preferred
-    if legacy.exists():
-        return legacy
-    return preferred
+    """Per-bot OHLC file (1 bot → 1 symbol → 1 CSV): ``ohlc/ohlc_15m.csv``."""
+    return trader_root(settings, tenant_slug) / "ohlc" / "ohlc_15m.csv"
 
 
 def ohlc_info(settings: Settings, tenant_slug: str) -> dict[str, Any]:

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from chatbot.application.connector_test_service import (
-    run_ig_cac40_working_order_matrix,
+    run_ig_working_order_matrix,
     run_ig_stream_order_probe,
 )
 from chatbot.trader.ig_stream_probe import lightstreamer_password, run_ig_stream_probe
@@ -66,7 +66,7 @@ def test_stream_probe_blocks_live() -> None:
     assert result.error == "live_blocked"
 
 
-def test_cac40_matrix_places_four_shapes_no_market() -> None:
+def test_ig_wo_matrix_places_four_shapes_no_market() -> None:
     placed: list[dict] = []
     market_calls: list[str] = []
 
@@ -137,7 +137,7 @@ def test_cac40_matrix_places_four_shapes_no_market() -> None:
             market_calls.append("close")
 
     with patch("chatbot.trader.ig_connector.IgConnector", _FakeIg):
-        result = run_ig_cac40_working_order_matrix(
+        result = run_ig_working_order_matrix(
             {
                 "api_key": "k",
                 "username": "u",
@@ -165,7 +165,7 @@ def test_cac40_matrix_places_four_shapes_no_market() -> None:
     assert "allow_market_orders=false" in result.message
 
 
-def test_cac40_matrix_market_flag() -> None:
+def test_ig_wo_matrix_market_flag() -> None:
     market_calls: list[str] = []
 
     class _FakeIg:
@@ -228,7 +228,7 @@ def test_cac40_matrix_market_flag() -> None:
             market_calls.append(f"close:{position_id}")
 
     with patch("chatbot.trader.ig_connector.IgConnector", _FakeIg):
-        result = run_ig_cac40_working_order_matrix(
+        result = run_ig_working_order_matrix(
             {
                 "api_key": "k",
                 "username": "u",
@@ -279,7 +279,7 @@ def test_stream_order_probe_still_runs_fx_when_cac_fails() -> None:
 
     with (
         patch(
-            "chatbot.application.connector_test_service.run_ig_cac40_working_order_matrix",
+            "chatbot.application.connector_test_service.run_ig_working_order_matrix",
             return_value=MagicMock(ok=False, message="cac fail", error="matrix_failed"),
         ),
         patch("chatbot.trader.ig_connector.IgConnector", _FakeFxIg),
@@ -315,7 +315,7 @@ def test_live_demo_cac_matrix_and_market() -> None:
         pytest.skip("No IG connector in DB")
     cfg = dict(cfg)
     cfg["acc_type"] = "DEMO"
-    result = run_ig_cac40_working_order_matrix(
+    result = run_ig_working_order_matrix(
         cfg,
         allow_market_orders=True,
         use_stream_confirms=True,

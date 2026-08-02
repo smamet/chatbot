@@ -1022,7 +1022,7 @@ def run_ig_working_order_test(
         ig.close()
 
 
-def run_ig_cac40_working_order_matrix(
+def run_ig_working_order_matrix(
     config: dict,
     *,
     allow_market_orders: bool = False,
@@ -1230,7 +1230,7 @@ def run_ig_stream_order_probe(
     from chatbot.trader.ig_connector import IgConnector
     from chatbot.trader.models import OrderPurpose, OrderType, Side, WorkingOrder
 
-    cac = run_ig_cac40_working_order_matrix(
+    cac = run_ig_working_order_matrix(
         config,
         allow_market_orders=allow_market_orders,
         use_stream_confirms=True,

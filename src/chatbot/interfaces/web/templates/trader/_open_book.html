@@ -30,6 +30,7 @@
 
 {% macro _book_row(row, child=false, live_mode='off', show_status=false) %}
   <tr class="{% if child %}trader-book__child{% else %}trader-book__parent{% endif %}{% if row.status == 'remove' %} trader-book__row--remove{% elif row.status == 'new' %} trader-book__row--new{% endif %}">
+    <td class="trader-book__id">{% if row.id %}<code>{{ row.id }}</code>{% else %}—{% endif %}</td>
     <td class="trader-book__kind">
       {% if child %}<span class="trader-book__nest">└</span>{% endif %}
       {% if row.row_kind == 'position' %}
@@ -49,7 +50,7 @@
     <td>
       {% if row.upl is number %}
         <span class="{% if row.upl > 0 %}trader-decision__pnl--pos{% elif row.upl < 0 %}trader-decision__pnl--neg{% endif %}">
-          {{ '%+.2f'|format(row.upl) }}
+          {{ row.upl|format_trader_pnl(signed=True) }}
         </span>
       {% else %}—{% endif %}
     </td>
@@ -88,6 +89,7 @@
   <table class="data-table data-table--compact trader-book__table">
     <thead>
       <tr>
+        <th>ID</th>
         <th>Kind</th>
         <th>Side</th>
         <th>Size</th>
@@ -106,7 +108,7 @@
           {% endfor %}
         {% endfor %}
       {% else %}
-        <tr><td colspan="7" class="empty-state">No open positions or working orders</td></tr>
+        <tr><td colspan="8" class="empty-state">No open positions or working orders</td></tr>
       {% endif %}
     </tbody>
   </table>
@@ -121,6 +123,7 @@
   <table class="data-table data-table--compact trader-book__table">
     <thead>
       <tr>
+        <th>ID</th>
         <th>Kind</th>
         <th>Side</th>
         <th>Size</th>
@@ -140,7 +143,7 @@
           {% endfor %}
         {% endfor %}
       {% else %}
-        <tr><td colspan="8" class="empty-state">No open positions or working orders on either side</td></tr>
+        <tr><td colspan="9" class="empty-state">No open positions or working orders on either side</td></tr>
       {% endif %}
     </tbody>
   </table>

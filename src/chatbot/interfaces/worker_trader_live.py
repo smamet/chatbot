@@ -18,7 +18,7 @@ def run_once(settings, factory) -> list[str]:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run CAC40 live/paper trading cycles.")
+    parser = argparse.ArgumentParser(description="Run trader live trading cycles.")
     parser.add_argument(
         "--once",
         action="store_true",
@@ -37,14 +37,14 @@ def main() -> None:
         return
 
     interval = max(1, settings.trader_live_poll_seconds)
-    logger.info("CAC40 live worker started (poll every %ss)", interval)
+    logger.info("Trader live worker started (poll every %ss)", interval)
     while True:
         try:
             logs = run_once(settings, factory)
             for line in logs:
                 logger.info("%s", line)
         except Exception:
-            logger.exception("CAC40 live worker poll cycle failed")
+            logger.exception("Trader live worker poll cycle failed")
         time.sleep(interval)
 
 

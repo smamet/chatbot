@@ -1,0 +1,121 @@
+{# Searchable local working-order index (o{N}) from live journal. #}
+{% macro order_status_badge(status) %}
+  {% if status == 'open' %}<span class="badge on">open</span>
+  {% elif status == 'cancelled' %}<span class="badge off">cancelled</span>
+  {% elif status == 'rejected' %}<span class="badge failed">rejected</span>
+  {% elif status == 'gone' %}<span class="badge warn">gone</span>
+  {% else %}<span class="badge">{{ status or '—' }}</span>
+  {% endif %}
+{% endmacro %}
+
+{% macro order_index_table(orders, slug, heading='Orders', embedded=false, report_base='') %}
+{% set report_href = report_base or ('/dashboard/bots/' ~ slug ~ '/trader/live/report') %}
+{% if embedded %}
+<div class="trader-orders trader-orders--embedded" data-trader-order-index>
+  <h3 class="card-title" style="font-size:1rem;margin-top:1rem;">{{ heading }}</h3>
+{% else %}
+<section class="card trader-orders" data-trader-order-index>
+  <h2>{{ heading }}</h2>
+{% endif %}
+  <p class="field-hint">Local <code>o{N}</code> ids from journal cycles (newest created first). Search by id, deal, level, purpose, or status.</p>
+  <div class="trader-orders__toolbar">
+    <label class="trader-orders__search">
+      <span class="trader-orders__search-label">Search</span>
+      <input type="search" class="input" placeholder="o583, 1.1475, hedge, rejected…"
+             data-order-search autocomplete="off" spellcheck="false" aria-label="Search orders">
+    </label>
+    <p class="trader-orders__count text-muted" data-order-count>
+      {{ (orders or [])|length }} order{% if (orders or [])|length != 1 %}s{% endif %}
+    </p>
+  </div>
+  <div class="trader-orders__scroll">
+    <table class="data-table data-table--compact trader-orders__table">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Type</th>
+          <th>Side</th>
+          <th>Level</th>
+          <th>Purpose</th>
+          <th>Status</th>
+          <th>Created</th>
+          <th>Deal</th>
+          <th>Cycle</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if orders %}
+          {% for o in orders %}
+          <tr data-order-row
+              data-search="{{ o.id }} {{ o.type }} {{ o.side }} {{ o.level }} {{ o.purpose }} {{ o.status }} {{ o.deal_id }} {{ o.reject_reason }} {{ o.first_cycle }} {{ o.last_cycle }}">
+            <td><code>{{ o.id }}</code></td>
+            <td>{{ o.type or '—' }}</td>
+            <td>{{ o.side or '—' }}</td>
+            <td>{% if o.level is number %}{% if o.level < 50 %}{{ '%.5f'|format(o.level) }}{% else %}{{ '%.2f'|format(o.level) }}{% endif %}{% else %}—{% endif %}</td>
+            <td>{{ o.purpose or '—' }}{% if o.parent_order_id %} <span class="text-muted">←{{ o.parent_order_id }}</span>{% elif o.position_id %} <span class="text-muted">→{{ o.position_id }}</span>{% endif %}</td>
+            <td>
+              {{ order_status_badge(o.status) }}
+              {% if o.reject_reason %}<span class="text-muted" title="{{ o.reject_reason }}"> {{ o.reject_reason[:28] }}{% if o.reject_reason|length > 28 %}…{% endif %}</span>{% endif %}
+            </td>
+            <td>
+              {% if o.first_seen %}
+              <time class="js-local-datetime" datetime="{{ o.first_seen }}">{{ o.first_seen }}</time>
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if o.deal_id %}
+                {% if o.deal_id.startswith('attached:') %}
+                <span class="badge done" title="{{ o.deal_id }}">IG attach</span>
+                {% else %}
+                <code title="{{ o.deal_id }}">{{ o.deal_id[:12] }}{% if o.deal_id|length > 12 %}…{% endif %}</code>
+                {% endif %}
+              {% else %}—{% endif %}
+            </td>
+            <td>
+              {% if o.last_cycle %}
+              <a href="{{ report_href }}#cycle-{{ o.last_cycle }}" title="Last seen cycle">{{ o.last_cycle[-6:] }}</a>
+              {% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        {% else %}
+          <tr data-order-empty><td colspan="9" class="empty-state">No orders in journal yet</td></tr>
+        {% endif %}
+        <tr data-order-none hidden><td colspan="9" class="empty-state">No orders match</td></tr>
+      </tbody>
+    </table>
+  </div>
+{% if embedded %}
+</div>
+{% else %}
+</section>
+{% endif %}
+<script>
+(function (root) {
+  if (!root || root.dataset.bound === '1') return;
+  root.dataset.bound = '1';
+  var input = root.querySelector('[data-order-search]');
+  var countEl = root.querySelector('[data-order-count]');
+  var rows = Array.prototype.slice.call(root.querySelectorAll('[data-order-row]'));
+  var none = root.querySelector('[data-order-none]');
+  var total = rows.length;
+  function run() {
+    var q = (input && input.value || '').trim().toLowerCase();
+    var n = 0;
+    rows.forEach(function (row) {
+      var hay = (row.getAttribute('data-search') || '').toLowerCase();
+      var ok = !q || hay.indexOf(q) !== -1;
+      row.hidden = !ok;
+      if (ok) n += 1;
+    });
+    if (none) none.hidden = n !== 0 || total === 0;
+    if (countEl) {
+      countEl.textContent = q
+        ? (n + ' / ' + total + ' order' + (total !== 1 ? 's' : ''))
+        : (total + ' order' + (total !== 1 ? 's' : ''));
+    }
+  }
+  if (input) input.addEventListener('input', run);
+})(document.currentScript.previousElementSibling);
+</script>
+{% endmacro %}

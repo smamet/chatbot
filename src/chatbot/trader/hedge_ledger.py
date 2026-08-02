@@ -17,14 +17,31 @@ from chatbot.trader.models import (
 )
 
 
+def price_move_pnl(
+    side: Side,
+    size: float,
+    entry: float,
+    exit_price: float,
+    point_value: float = 1.0,
+) -> float:
+    """Account-currency PnL from a price move (same formula as close_position)."""
+    direction = 1.0 if side == Side.BUY else -1.0
+    return (exit_price - entry) * direction * float(size) * float(point_value)
+
+
 def realized_exit_pnl(leg: PositionLeg, exit_price: float, point_value: float = 1.0) -> float:
     """Same economics as HedgeLedger.close_position."""
-    direction = 1.0 if leg.side == Side.BUY else -1.0
-    return (exit_price - leg.entry) * direction * leg.size * point_value
+    return price_move_pnl(leg.side, leg.size, leg.entry, exit_price, point_value)
 
 
 def exit_would_lose(leg: PositionLeg, exit_price: float, point_value: float = 1.0) -> bool:
     return realized_exit_pnl(leg, exit_price, point_value) <= 0
+
+
+def _looks_unit_priced(stored_pnl: float, unit_pnl: float) -> bool:
+    """True when stored PnL matches price-delta economics (point_value=1)."""
+    tol = 1e-9 + 1e-6 * abs(unit_pnl)
+    return abs(float(stored_pnl) - float(unit_pnl)) <= tol
 
 
 @dataclass
@@ -230,6 +247,31 @@ class HedgeLedger:
 
     def trusted_closed_trades(self) -> list[ClosedTrade]:
         return [t for t in self.closed_trades if not t.phantom]
+
+    def reconcile_closed_trades_to_point_value(self) -> float:
+        """Rescale closed trades stored at ``point_value=1`` to ``config.point_value``.
+
+        Older FX sessions stored raw price deltas (e.g. ``0.0015``) while IG Mini
+        economics are $1/pip (``point_value=10000`` → ``15.0``). Adjusts cash /
+        realized_session for non-phantom rows. Returns the net adjustment.
+        """
+        pv = float(self.config.point_value or 1.0)
+        if abs(pv - 1.0) <= 1e-12:
+            return 0.0
+        adjustment = 0.0
+        for trade in self.closed_trades:
+            unit = price_move_pnl(trade.side, trade.size, trade.entry, trade.exit, 1.0)
+            if not _looks_unit_priced(trade.realized_pnl, unit):
+                continue
+            new_pnl = unit * pv
+            delta = new_pnl - float(trade.realized_pnl)
+            trade.realized_pnl = new_pnl
+            if not trade.phantom:
+                adjustment += delta
+        if adjustment:
+            self.realized_session += adjustment
+            self.cash += adjustment
+        return adjustment
 
     def market_close_fill_price(self, leg: PositionLeg) -> float:
         half = abs(self.config.spread_points) / 2.0
@@ -503,4 +545,5 @@ class HedgeLedger:
         ledger.equity_curve = list(raw.get("equity_curve") or [])
         start = int(raw.get("id_seq") or 0) + 1
         ledger._id_seq = itertools.count(max(1, start))
+        ledger.reconcile_closed_trades_to_point_value()
         return ledger

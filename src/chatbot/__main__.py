@@ -670,47 +670,6 @@ def _ig_config_from_cli(from_db_slug: str | None) -> dict:
     return out
 
 
-@trader_app.command("migrate-data")
-def trader_migrate_data_cmd(
-    slug: Annotated[
-        str | None,
-        typer.Option("--slug", help="Only migrate this bot slug (default: all under data/cac40)"),
-    ] = None,
-) -> None:
-    """Move data/cac40/{slug} → data/trader/{slug} (and global worker status files)."""
-    import shutil
-
-    settings = get_settings()
-    legacy_root = settings.data_root / "cac40"
-    new_root = settings.data_root / "trader"
-    new_root.mkdir(parents=True, exist_ok=True)
-    moved = 0
-    if slug:
-        candidates = [legacy_root / slug]
-    else:
-        candidates = [p for p in legacy_root.iterdir()] if legacy_root.is_dir() else []
-    for src in candidates:
-        if not src.exists():
-            continue
-        if src.name in ("worker_status.json", "live_worker_status.json", "sample_15m.csv"):
-            dest = new_root / src.name
-            if not dest.exists():
-                shutil.move(str(src), str(dest))
-                typer.echo(f"moved {src} -> {dest}")
-                moved += 1
-            continue
-        if not src.is_dir():
-            continue
-        dest = new_root / src.name
-        if dest.exists():
-            typer.echo(f"skip {src.name} (already at {dest})")
-            continue
-        shutil.move(str(src), str(dest))
-        typer.echo(f"moved {src} -> {dest}")
-        moved += 1
-    typer.echo(f"done moved={moved}")
-
-
 @app.command("serve")
 def serve_cmd(
     host: Annotated[str, typer.Option("--host", "-h")] = "0.0.0.0",

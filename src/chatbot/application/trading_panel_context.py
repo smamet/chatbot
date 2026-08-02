@@ -1,4 +1,4 @@
-"""Shared context builder for the Trading panel (bot detail tab + legacy /cac40)."""
+"""Shared context builder for the Trading panel (bot detail tab)."""
 
 from __future__ import annotations
 
@@ -15,6 +15,7 @@ from chatbot.application.trader_backtest_service import (
 )
 from chatbot.application.trader_live_service import (
     LIVE_CYCLE_SECONDS,
+    build_live_order_index,
     list_live_cycles,
     load_live_config,
     read_live_book,
@@ -52,6 +53,7 @@ def build_trading_panel_context(
     defaults = TraderConfig().to_dict()
     defaults["symbol"] = str(integ_cfg.get("symbol") or profile.default_symbol)
     defaults["epic"] = str(integ_cfg.get("epic") or profile.default_epic)
+    defaults["point_value"] = float(profile.default_point_value)
     if integ_cfg.get("max_open_positions") not in (None, ""):
         try:
             defaults["max_open_positions"] = int(integ_cfg["max_open_positions"])
@@ -197,6 +199,7 @@ def build_trading_panel_context(
         "live_cycle_seconds": LIVE_CYCLE_SECONDS,
         "live_cycles": list_live_cycles(settings, slug, limit=3),
         "live_book": read_live_book(settings, slug),
+        "order_index": build_live_order_index(settings, slug),
         "sync_log_count": len(read_sync_log(settings, slug, limit=200)),
         "market_profile": profile.id,
         "market_profile_label": profile.label,
