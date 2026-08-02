@@ -86,9 +86,28 @@
           {% endfor %}
         </select>
       </label>
-      <label>Symbol <input type="text" name="symbol" id="trader-symbol" value="{{ tenant.config.trader.symbol }}" required></label>
-      <label>IG epic <input type="text" name="epic" id="trader-epic" value="{{ tenant.config.trader.epic }}" required>
-        <span class="field-hint">Confirm the epic on your IG account (Demo/Live). Default EURUSD epic is a starting guess.</span>
+      <label>Symbol
+        <span class="trader-symbol-field">
+          <input type="text" name="symbol" id="trader-symbol" value="{{ tenant.config.trader.symbol }}"
+                 required autocomplete="off"
+                 data-bot-slug="{{ tenant.slug }}">
+          <input type="hidden" name="selected_epic" id="trader-selected-epic" value="">
+          <ul id="trader-symbol-menu" class="trader-symbol-menu" hidden></ul>
+        </span>
+        <span class="field-hint" id="trader-symbol-hint">Human ticker (e.g. EURUSD, CAC40, XAU). Type 2+ chars for IG suggestions (results cached 24h).</span>
+      </label>
+      <label>Resolved epic
+        <input type="text" id="trader-epic" value="{{ tenant.config.trader.epic }}" readonly
+               class="input-readonly" tabindex="-1">
+        <span class="field-hint">
+          Auto-matched IG market on save (or when you pick a suggestion).
+          {% if tenant.config.trader.pnl_currency %}
+          · currency <code>{{ tenant.config.trader.pnl_currency }}</code>
+          {% endif %}
+          {% if tenant.config.trader.point_value %}
+          · point value <code>{{ tenant.config.trader.point_value }}</code>
+          {% endif %}
+        </span>
       </label>
       <label>Max open legs <input type="number" name="max_open_positions" min="1" value="{{ tenant.config.trader.max_open_positions }}"></label>
       <label>Fund Manager URL <input type="url" name="fundmanager_url" value="{{ tenant.config.trader.fundmanager_url }}" placeholder="https://…"></label>
@@ -603,7 +622,6 @@
           {% if c.type.value == 'ig' %}
           <code>{{ c.config.get('name') or '—' }}</code>
           {% if c.config.get('acc_type') %}<span class="badge">{{ c.config.get('acc_type') }}</span>{% endif %}
-          {% if c.config.get('epic') %}<span class="text-muted">{{ c.config.get('epic') }}</span>{% endif %}
           {% elif c.type.value == 'email' and c.direction.value == 'out' %}
           <code>{{ c.config.get('outbound_provider', 'smtp') }}</code>
           {% else %}—{% endif %}
@@ -2222,12 +2240,101 @@
   const profileSel = document.getElementById("trader-market-profile");
   const sym = document.getElementById("trader-symbol");
   const epic = document.getElementById("trader-epic");
-  if (profileSel && sym && epic) {
+  const selectedEpic = document.getElementById("trader-selected-epic");
+  const menu = document.getElementById("trader-symbol-menu");
+  if (profileSel && sym) {
     profileSel.addEventListener("change", () => {
       const opt = profileSel.selectedOptions[0];
       if (!opt) return;
       if (opt.dataset.symbol) sym.value = opt.dataset.symbol;
-      if (opt.dataset.epic) epic.value = opt.dataset.epic;
+      if (epic && opt.dataset.epic) epic.value = opt.dataset.epic;
+      if (selectedEpic) selectedEpic.value = "";
+    });
+  }
+  let suggestTimer = null;
+  function hideMenu() {
+    if (!menu) return;
+    menu.hidden = true;
+    menu.innerHTML = "";
+  }
+  function pickRow(row) {
+    if (!row) return;
+    sym.value = row.symbol || sym.value;
+    if (epic) epic.value = row.epic || epic.value;
+    if (selectedEpic) selectedEpic.value = row.epic || "";
+    hideMenu();
+  }
+  function showRows(rows, error) {
+    if (!menu) return;
+    menu.innerHTML = "";
+    if (error && (!rows || !rows.length)) {
+      const li = document.createElement("li");
+      li.className = "trader-symbol-menu__empty";
+      li.textContent = error === "no_ig_connector"
+        ? "Add an IG connector to search markets."
+        : (error === "ig_login_failed" ? "IG login failed — check connector credentials." : ("Search failed: " + error));
+      menu.appendChild(li);
+      menu.hidden = false;
+      return;
+    }
+    if (!rows || !rows.length) {
+      const li = document.createElement("li");
+      li.className = "trader-symbol-menu__empty";
+      li.textContent = "No markets found for that query.";
+      menu.appendChild(li);
+      menu.hidden = false;
+      return;
+    }
+    for (const row of rows) {
+      const li = document.createElement("li");
+      li.className = "trader-symbol-menu__item";
+      li.setAttribute("role", "option");
+      const title = document.createElement("strong");
+      title.textContent = row.name || row.symbol || row.epic || "";
+      const meta = document.createElement("code");
+      meta.textContent = row.epic || "";
+      li.appendChild(title);
+      li.appendChild(meta);
+      li.addEventListener("mousedown", (ev) => {
+        ev.preventDefault();
+        pickRow(row);
+      });
+      menu.appendChild(li);
+    }
+    menu.hidden = false;
+  }
+  if (sym && menu) {
+    const slug = sym.getAttribute("data-bot-slug") || "";
+    sym.addEventListener("input", () => {
+      if (selectedEpic) selectedEpic.value = "";
+      const q = (sym.value || "").trim();
+      if (q.length < 2) {
+        hideMenu();
+        return;
+      }
+      clearTimeout(suggestTimer);
+      suggestTimer = setTimeout(async () => {
+        try {
+          const res = await fetch(
+            `/dashboard/bots/${encodeURIComponent(slug)}/trader-symbol-search?q=${encodeURIComponent(q)}`,
+            { headers: { Accept: "application/json" } }
+          );
+          const data = await res.json().catch(() => ({}));
+          if (!res.ok) {
+            showRows([], data.error || ("HTTP " + res.status));
+            return;
+          }
+          showRows(data.results || [], data.error || "");
+        } catch (err) {
+          showRows([], String(err || "network error"));
+        }
+      }, 280);
+    });
+    sym.addEventListener("blur", () => {
+      setTimeout(hideMenu, 150);
+    });
+    sym.addEventListener("keydown", (ev) => {
+      if (ev.key === "Escape") hideMenu();
     });
   }
 })();

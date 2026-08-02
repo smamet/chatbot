@@ -22,6 +22,9 @@ class TraderSettings:
     fundmanager_url: str = ""
     fundmanager_token: str = ""
     max_open_positions: int = 4
+    # Cached from IG resolve on bot create/update (display + live defaults).
+    pnl_currency: str = ""
+    point_value: float = 0.0  # 0 = unresolved; live derives from IG
 
     def to_dict(self) -> dict:
         return {
@@ -31,6 +34,8 @@ class TraderSettings:
             "fundmanager_url": self.fundmanager_url,
             "fundmanager_token": self.fundmanager_token,
             "max_open_positions": self.max_open_positions,
+            "pnl_currency": self.pnl_currency,
+            "point_value": self.point_value,
         }
 
     @classmethod
@@ -41,6 +46,10 @@ class TraderSettings:
             max_legs = int(data.get("max_open_positions", cls.max_open_positions))
         except (TypeError, ValueError):
             max_legs = cls.max_open_positions
+        try:
+            point_value = float(data.get("point_value") or 0.0)
+        except (TypeError, ValueError):
+            point_value = 0.0
         return cls(
             market_profile=str(data.get("market_profile") or cls.market_profile).strip()
             or cls.market_profile,
@@ -49,6 +58,8 @@ class TraderSettings:
             fundmanager_url=str(data.get("fundmanager_url") or "").strip(),
             fundmanager_token=str(data.get("fundmanager_token") or ""),
             max_open_positions=max(1, max_legs),
+            pnl_currency=str(data.get("pnl_currency") or "").strip().upper(),
+            point_value=point_value if point_value > 0 else 0.0,
         )
 
 

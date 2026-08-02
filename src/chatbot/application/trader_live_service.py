@@ -640,12 +640,15 @@ def _build_trader_config(
     from chatbot.trader.profiles import get_profile
 
     strategy = dict(live_cfg.get("strategy") or {})
-    ig_base = ig_config_from_connector(primary_ig)
     profile = get_profile(str(integ_cfg.get("market_profile") or market_profile))
+    # Bot-owned epic (legacy connector epic only if bot epic empty).
+    bot_epic = str(integ_cfg.get("epic") or "").strip()
+    ig_base = ig_config_from_connector(primary_ig, epic=bot_epic or None)
+    epic = bot_epic or str(ig_base.epic or profile.default_epic)
     merged = {
         **strategy,
         "symbol": str(integ_cfg.get("symbol") or profile.default_symbol),
-        "epic": str(primary_ig.get("epic") or integ_cfg.get("epic") or ig_base.epic),
+        "epic": epic,
         "ig_api_key": ig_base.ig_api_key,
         "ig_username": ig_base.ig_username,
         "ig_password": ig_base.ig_password,
@@ -660,11 +663,17 @@ def _build_trader_config(
         "market_profile": profile.id,
         "calendar_id": profile.calendar_id,
     }
-    # Profile default unless strategy explicitly overrides.
+    # Profile / bot defaults unless strategy explicitly overrides.
     if "hedge_beyond_entry_points" not in strategy:
         merged["hedge_beyond_entry_points"] = float(profile.hedge_beyond_entry_points)
     if "point_value" not in strategy:
-        merged["point_value"] = float(profile.default_point_value)
+        try:
+            bot_pv = float(integ_cfg.get("point_value") or 0)
+        except (TypeError, ValueError):
+            bot_pv = 0.0
+        merged["point_value"] = bot_pv if bot_pv > 0 else float(profile.default_point_value)
+    if "pnl_currency" not in strategy:
+        merged["pnl_currency"] = str(integ_cfg.get("pnl_currency") or "").strip().upper()
     if integ_cfg.get("max_open_positions") not in (None, "") and "max_open_positions" not in strategy:
         try:
             merged["max_open_positions"] = int(integ_cfg["max_open_positions"])
@@ -1764,7 +1773,8 @@ def _get_or_build_scheduler(
 
     order_connectors.append((connectors[0][0], sched.ig))
     for cid, conn_cfg in connectors[1:]:
-        secondary_cfg = ig_config_from_connector(conn_cfg)
+        # Same bot epic on every account; connectors are credentials only.
+        secondary_cfg = ig_config_from_connector(conn_cfg, epic=cfg.epic)
         secondary = IgConnector(secondary_cfg, dry_run=dry_run)
         order_connectors.append((cid, secondary))
     sched.order_connectors = order_connectors
@@ -2655,7 +2665,9 @@ def _fetch_ig_snapshot(
         market_profile=str(getattr(tenant.config.trader, "market_profile", None) or "cac40"),
     )
 
-    connector = IgConnector(ig_config_from_connector(primary_cfg), dry_run=True)
+    connector = IgConnector(
+        ig_config_from_connector(primary_cfg, epic=cfg.epic), dry_run=True
+    )
     try:
         connector.login()
         if not connector.authenticated:

@@ -700,12 +700,10 @@ def discover_armed_stream_bots(
         integ = trader_settings_as_integration_dict(tenant)
         profile = get_profile(integ.get("market_profile"))
         strategy = {**(live_cfg.get("strategy") or {})}
+        # Bot-owned epic (legacy connector epic only as empty-bot fallback).
         epic = str(
-            strategy.get("epic")
-            or primary.get("epic")
-            or integ.get("epic")
-            or profile.default_epic
-        )
+            integ.get("epic") or primary.get("epic") or profile.default_epic
+        ).strip()
         cfg = TraderConfig(
             ig_api_key=str(primary.get("api_key") or ""),
             ig_username=str(primary.get("username") or ""),
@@ -713,8 +711,10 @@ def discover_armed_stream_bots(
             ig_account_id=str(primary.get("account_id") or ""),
             ig_acc_type=str(primary.get("acc_type") or "DEMO").upper(),
             epic=epic,
-            symbol=str(strategy.get("symbol") or integ.get("symbol") or profile.default_symbol),
+            symbol=str(integ.get("symbol") or strategy.get("symbol") or profile.default_symbol),
             data_timezone=str(strategy.get("data_timezone") or "Europe/Paris"),
+            point_value=float(integ.get("point_value") or profile.default_point_value or 1.0),
+            pnl_currency=str(integ.get("pnl_currency") or ""),
         )
         out.append(
             {

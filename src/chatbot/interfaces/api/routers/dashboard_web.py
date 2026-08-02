@@ -1238,12 +1238,20 @@ async def bot_new_submit(
     allowed_integrations = _allowed_integrations_from_form(form)
     trader_kwargs: dict = {}
     if parsed_type == BotType.TRADER:
+        from chatbot.application.trader_market_resolve import (
+            apply_resolved_to_trader_settings,
+            resolve_trader_market_settings,
+        )
         from chatbot.domain.models.tenant import TraderSettings
 
-        trader_kwargs["trader"] = TraderSettings(
-            market_profile=str(form.get("market_profile") or "cac40").strip() or "cac40",
+        resolved = resolve_trader_market_settings(
             symbol=str(form.get("trader_symbol") or "CAC40").strip() or "CAC40",
-            epic=str(form.get("trader_epic") or "IX.D.CAC.BMU.IP").strip() or "IX.D.CAC.BMU.IP",
+            market_profile=str(form.get("market_profile") or "cac40").strip() or "cac40",
+            session=session,
+            tenant_id=None,
+        )
+        trader_kwargs["trader"] = apply_resolved_to_trader_settings(
+            TraderSettings(), resolved
         )
         if not allowed_connectors:
             allowed_connectors = ("ig",)
@@ -2083,7 +2091,7 @@ def bot_save_trader_settings(
     slug: str,
     market_profile: str = Form("cac40"),
     symbol: str = Form("CAC40"),
-    epic: str = Form("IX.D.CAC.BMU.IP"),
+    selected_epic: str = Form(""),
     max_open_positions: int = Form(4),
     fundmanager_url: str = Form(""),
     fundmanager_token: str = Form(""),
@@ -2096,21 +2104,100 @@ def bot_save_trader_settings(
     _require_access(user, user_service, tenant)
     if not tenant.is_trader:
         raise HTTPException(status_code=403, detail="Trading settings require a trader bot")
-    from chatbot.trader.profiles import get_profile
+    from chatbot.application.connector_service import ConnectorService
+    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from chatbot.application.trader_market_resolve import (
+        apply_resolved_to_trader_settings,
+        resolve_trader_market_settings,
+    )
 
-    profile = get_profile(market_profile)
     token = fundmanager_token.strip() or tenant.config.trader.fundmanager_token
-    config = tenant.config.with_trader(
-        market_profile=profile.id,
-        symbol=(symbol or profile.default_symbol).strip() or profile.default_symbol,
-        epic=(epic or profile.default_epic).strip() or profile.default_epic,
+    legacy_epic = ""
+    try:
+        ig_cfg = ConnectorService(SqlAlchemyConnectorRepository(session)).get_ig_config(
+            tenant.id
+        )
+        if ig_cfg:
+            legacy_epic = str(ig_cfg.get("epic") or "").strip()
+    except Exception:
+        legacy_epic = ""
+    # Soft migrate: if bot epic still default-empty and connector has one, seed once.
+    seed = ""
+    if not str(tenant.config.trader.epic or "").strip() and legacy_epic:
+        seed = legacy_epic
+    picked = (selected_epic or "").strip()
+    resolved = resolve_trader_market_settings(
+        symbol=symbol,
+        market_profile=market_profile,
+        explicit_epic=picked or None,
+        session=session,
+        tenant_id=tenant.id,
+        legacy_connector_epic=seed or None,
+    )
+    trader = apply_resolved_to_trader_settings(
+        tenant.config.trader,
+        resolved,
         max_open_positions=max(1, int(max_open_positions or 4)),
         fundmanager_url=fundmanager_url.strip(),
         fundmanager_token=token,
     )
+    config = tenant.config.with_trader(**trader.to_dict())
     tenant_service.update_tenant(tenant.id, config=config)
     session.commit()
     return RedirectResponse(url=f"/dashboard/bots/{slug}?tab=config", status_code=303)
+
+
+@router.get("/bots/{slug}/trader-symbol-search")
+def bot_trader_symbol_search(
+    slug: str,
+    q: str = "",
+    user: User = Depends(require_user),
+    tenant_service: TenantService = Depends(get_tenant_service),
+    user_service: UserService = Depends(get_user_service),
+    settings: Settings = Depends(get_settings_dep),
+    session: Session = Depends(get_session),
+):
+    """Autocomplete: search IG markets for a human symbol/ticker (24h disk cache)."""
+    tenant = _tenant_or_404(tenant_service, slug)
+    _require_access(user, user_service, tenant)
+    if not tenant.is_trader:
+        raise HTTPException(status_code=403, detail="Trader bot required")
+    query = (q or "").strip()
+    if len(query) < 2:
+        return JSONResponse({"results": [], "ig_calls": 0, "cache_hits": 0})
+    from chatbot.application.connector_service import ConnectorService
+    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from chatbot.trader.epic_resolve import autocomplete_symbol_rows
+    from chatbot.trader.ig_connector import IgConnector
+    from chatbot.trader.ig_market_search_cache import cache_dir_for
+    from chatbot.trader.ig_ohlc import ig_config_from_connector
+
+    ig_cfg = ConnectorService(SqlAlchemyConnectorRepository(session)).get_ig_config(
+        tenant.id
+    )
+    if not ig_cfg:
+        return JSONResponse(
+            {"results": [], "error": "no_ig_connector", "ig_calls": 0, "cache_hits": 0}
+        )
+    try:
+        epic = str(tenant.config.trader.epic or "").strip() or None
+        ig = IgConnector(ig_config_from_connector(ig_cfg, epic=epic), dry_run=True)
+        ig.login()
+        if not ig.authenticated:
+            return JSONResponse(
+                {"results": [], "error": "ig_login_failed", "ig_calls": 0, "cache_hits": 0}
+            )
+        payload = autocomplete_symbol_rows(
+            ig,
+            query,
+            limit=12,
+            cache_dir=cache_dir_for(settings.data_root),
+        )
+        return JSONResponse(payload)
+    except Exception as exc:
+        return JSONResponse(
+            {"results": [], "error": str(exc), "ig_calls": 0, "cache_hits": 0}
+        )
 
 
 @router.get("/bots/{slug}/trader-default-prompt")
@@ -2606,6 +2693,8 @@ async def test_connector_connection(
         connector_type=connector_type,
         direction=direction,
     )
+    if connector_type == "ig" and tenant.is_trader and not str(cfg.get("epic") or "").strip():
+        cfg = {**cfg, "epic": str(tenant.config.trader.epic or "").strip()}
     result = run_connector_connection_test(
         connector_type, direction, cfg, session=session, tenant_id=tenant.id, settings=settings
     )
@@ -2639,6 +2728,8 @@ async def test_connector_working_orders(
         connector_type=connector_type,
         direction=direction,
     )
+    if tenant.is_trader and not str(cfg.get("epic") or "").strip():
+        cfg = {**cfg, "epic": str(tenant.config.trader.epic or "").strip()}
     allow_market = str(form.get("allow_market_orders", "")).strip().lower() in (
         "1",
         "true",

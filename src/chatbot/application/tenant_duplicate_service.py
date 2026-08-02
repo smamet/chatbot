@@ -43,18 +43,28 @@ def _apply_trader_overrides(
     market_profile: str | None,
     symbol: str | None,
     epic: str | None,
+    session: Session | None = None,
+    tenant_id: int | None = None,
 ) -> TenantConfig:
     trader = config.trader
-    updates: dict[str, Any] = {}
-    if market_profile is not None and str(market_profile).strip():
-        updates["market_profile"] = str(market_profile).strip()
-    if symbol is not None and str(symbol).strip():
-        updates["symbol"] = str(symbol).strip()
-    if epic is not None and str(epic).strip():
-        updates["epic"] = str(epic).strip()
-    if not updates:
+    profile = (market_profile if market_profile is not None else trader.market_profile) or ""
+    sym = (symbol if symbol is not None else trader.symbol) or ""
+    if not str(profile).strip() and not str(sym).strip() and not (epic and str(epic).strip()):
         return config
-    return replace(config, trader=replace(trader, **updates))
+    from chatbot.application.trader_market_resolve import (
+        apply_resolved_to_trader_settings,
+        resolve_trader_market_settings,
+    )
+
+    resolved = resolve_trader_market_settings(
+        symbol=str(sym).strip() or trader.symbol,
+        market_profile=str(profile).strip() or trader.market_profile,
+        explicit_epic=str(epic).strip() if epic else None,
+        session=session,
+        tenant_id=tenant_id,
+    )
+    new_trader = apply_resolved_to_trader_settings(trader, resolved)
+    return replace(config, trader=new_trader)
 
 
 def _clone_mail_connections(
@@ -213,6 +223,8 @@ def duplicate_tenant(
             market_profile=market_profile,
             symbol=symbol,
             epic=epic,
+            session=session,
+            tenant_id=source.id,
         )
 
     prompt = source.prompt

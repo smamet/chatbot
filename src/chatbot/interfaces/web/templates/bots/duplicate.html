@@ -32,7 +32,10 @@
         </select>
       </label>
       <label>Symbol <input type="text" name="trader_symbol" id="dup-trader-symbol" value="{{ trader_symbol or source.config.trader.symbol }}"></label>
-      <label>IG epic <input type="text" name="trader_epic" id="dup-trader-epic" value="{{ trader_epic or source.config.trader.epic }}"></label>
+      <label>Resolved epic
+        <input type="text" id="dup-trader-epic" value="{{ trader_epic or source.config.trader.epic }}" readonly class="input-readonly" tabindex="-1">
+        <span class="field-hint">Re-resolved from symbol on duplicate when you change the market.</span>
+      </label>
       <div class="checkbox-row">
         <input type="checkbox" name="reset_prompt_from_profile" id="dup-reset-prompt" value="on"
                {% if reset_prompt_from_profile %}checked{% endif %}>
@@ -52,11 +55,11 @@
   const sel = document.getElementById('dup-market-profile');
   const sym = document.getElementById('dup-trader-symbol');
   const epic = document.getElementById('dup-trader-epic');
-  if (!sel || !sym || !epic) return;
+  if (!sel || !sym) return;
   sel.addEventListener('change', () => {
     const opt = sel.options[sel.selectedIndex];
     if (opt && opt.dataset.symbol) sym.value = opt.dataset.symbol;
-    if (opt && opt.dataset.epic) epic.value = opt.dataset.epic;
+    if (epic && opt && opt.dataset.epic) epic.value = opt.dataset.epic;
   });
 })();
 </script>

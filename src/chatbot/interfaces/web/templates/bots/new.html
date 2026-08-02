@@ -28,8 +28,10 @@
             <option value="eurusd">EURUSD (FX)</option>
           </select>
         </label>
-        <label>Symbol <input type="text" name="trader_symbol" value="CAC40"></label>
-        <label>IG epic <input type="text" name="trader_epic" value="IX.D.CAC.BMU.IP"></label>
+        <label>Symbol
+          <input type="text" name="trader_symbol" value="CAC40" autocomplete="off">
+          <span class="field-hint">Epic is auto-resolved on create (e.g. EURUSD → CS.D.EURUSD.MINI.IP).</span>
+        </label>
       </div>
     </fieldset>
     <label>System prompt<textarea name="prompt" rows="8">{{ prompt or 'You are a helpful assistant.' }}</textarea></label>

@@ -48,6 +48,16 @@ from chatbot.interfaces.api.deps import get_session, get_settings_dep, get_tenan
 from chatbot.interfaces.web.deps import get_user_service, require_user
 from chatbot.interfaces.web.templates import templates
 
+
+def _bot_or_profile_point_value(integ_cfg: dict, profile) -> float:
+    try:
+        bot_pv = float(integ_cfg.get("point_value") or 0)
+    except (TypeError, ValueError):
+        bot_pv = 0.0
+    if bot_pv > 0:
+        return bot_pv
+    return float(getattr(profile, "default_point_value", 1.0) or 1.0)
+
 router = APIRouter(prefix="/dashboard", tags=["trader"])
 
 
@@ -179,12 +189,14 @@ def trader_sync_ig(
             status_code=303,
         )
     try:
+        bot_epic = str(tenant.config.trader.epic or "").strip() or None
         info = sync_ohlc_from_ig(
             settings,
             slug,
             ig_config=ig_config,
             allow_bootstrap=True,
             trigger="manual",
+            epic=bot_epic,
         )
     except Exception as exc:
         return RedirectResponse(
@@ -290,7 +302,8 @@ def trader_start_run(
         system_prompt=str(tenant.prompt or ""),
         market_profile=profile.id,
         calendar_id=profile.calendar_id,
-        point_value=float(profile.default_point_value),
+        point_value=_bot_or_profile_point_value(integ_cfg, profile),
+        pnl_currency=str(integ_cfg.get("pnl_currency") or ""),
     )
     from chatbot.interfaces.api.deps import _gemini_api_key
 
@@ -389,6 +402,12 @@ def trader_run_detail(
         run = get_run(settings, slug, run_id)
     except FileNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Run not found") from exc
+    report_cfg = (run.get("report") or {}).get("config") if isinstance(run.get("report"), dict) else {}
+    pnl_ccy = ""
+    if isinstance(report_cfg, dict):
+        pnl_ccy = str(report_cfg.get("pnl_currency") or "").strip().upper()
+    if not pnl_ccy:
+        pnl_ccy = str(tenant.config.trader.pnl_currency or "").strip().upper() or "USD"
     return templates.TemplateResponse(
         request,
         "trader/run.html",
@@ -397,6 +416,7 @@ def trader_run_detail(
             "tenant": tenant,
             "title": f"Run {run_id}",
             "run": run,
+            "pnl_currency": pnl_ccy,
         },
     )
 
@@ -660,6 +680,8 @@ def trader_live_report(
             "dev_mode": settings.dev_mode,
             "live_ok": request.query_params.get("live_ok"),
             "live_error": request.query_params.get("live_error"),
+            "pnl_currency": str(tenant.config.trader.pnl_currency or "").strip().upper()
+            or "USD",
         },
     )
 
@@ -846,6 +868,8 @@ def trader_live_book_sync(
             "sync_log": read_sync_log(settings, slug, limit=100),
             "live_ok": request.query_params.get("live_ok"),
             "live_error": request.query_params.get("live_error"),
+            "pnl_currency": str(tenant.config.trader.pnl_currency or "").strip().upper()
+            or "USD",
         },
     )
 

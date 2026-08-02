@@ -397,17 +397,6 @@ CONNECTOR_SCHEMAS: dict[str, list[ConnectorField]] = {
             directions=(ConnectorDirection.BOTH.value,),
         ),
         ConnectorField(
-            key="epic",
-            label="Epic",
-            help=(
-                "IG market epic for this bot. Must match account type: "
-                "CFD accounts need a CFD epic (default IX.D.CAC.BMU.IP; also IFS/CFS); "
-                "…DAILY.IP is usually UK spread bet (GBP)."
-            ),
-            default="IX.D.CAC.BMU.IP",
-            directions=(ConnectorDirection.BOTH.value,),
-        ),
-        ConnectorField(
             key="dry_run",
             label="Dry run",
             help="When enabled, orders stay in HedgeLedger only (no IG order API calls).",

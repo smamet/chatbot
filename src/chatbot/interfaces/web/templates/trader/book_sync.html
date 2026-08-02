@@ -73,7 +73,7 @@
         <td>{{ t.id }}</td>
         <td>{{ t.side or '—' }}</td>
         <td>{% if t.deal_id %}<code>{{ t.deal_id }}</code>{% else %}—{% endif %}</td>
-        <td>{% if t.pnl is number %}<span class="{% if t.pnl > 0 %}trader-decision__pnl--pos{% elif t.pnl < 0 %}trader-decision__pnl--neg{% endif %}">{{ t.pnl|format_trader_pnl }}</span>{% else %}—{% endif %}</td>
+        <td>{% if t.pnl is number %}<span class="{% if t.pnl > 0 %}trader-decision__pnl--pos{% elif t.pnl < 0 %}trader-decision__pnl--neg{% endif %}">{{ t.pnl|format_trader_pnl(currency=pnl_currency|default(bot_pnl_currency|default('USD'))) }}</span>{% else %}—{% endif %}</td>
         <td>{{ status_badge(t.status) }}</td>
       </tr>
       {% else %}

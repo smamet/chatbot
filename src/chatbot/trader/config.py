@@ -45,6 +45,7 @@ _CONFIG_DISPLAY_ORDER = (
     "data_timezone",
     "intrabar_pessimistic",
     "point_value",
+    "pnl_currency",
     "overnight_funding_rate",
     "symbol",
     "strategy_name",
@@ -98,9 +99,10 @@ class TraderConfig:
     # hedges are nudged, not rejected.
     hedge_beyond_entry_points: float = 2.0
     overnight_funding_rate: float = 0.0001  # per night on notional
-    # Account currency per 1.0 price-unit move per lot.
-    # CAC40 ≈ 1.0; EURUSD Mini ($1/pip) ≈ 10000 (profile default).
+    # Account currency per 1.0 price-unit move per lot (IG-derived when live).
     point_value: float = 1.0
+    # ISO currency for PnL display (EUR/USD/…); empty until resolved.
+    pnl_currency: str = ""
     timeframe: str = "15m"
     # Bars shown on each LLM chart (from full history as-of current bar).
     lookback_15m: int = 96

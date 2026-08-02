@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+from chatbot.trader.instrument_economics import currency_symbol
 
-def format_trader_pnl(value: float | int | None, *, signed: bool = True) -> str:
-    """Format account-currency PnL (e.g. ``+$15.00``, ``-$5.00``, ``$0.00``).
 
-    Uses enough decimals for tiny FX price-unit leftovers; normal Mini FX /
-    index moves render with 2 decimals.
-    """
+def format_trader_pnl(
+    value: float | int | None,
+    *,
+    signed: bool = True,
+    currency: str | None = "USD",
+) -> str:
+    """Format account-currency PnL (e.g. ``+€12.50``, ``-$5.00``, ``$0.00``)."""
     if value is None:
         return "—"
     try:
@@ -23,8 +26,9 @@ def format_trader_pnl(value: float | int | None, *, signed: bool = True) -> str:
     else:
         decimals = 5
     mag = f"{av:.{decimals}f}"
+    sym = currency_symbol(currency)
     if v > 0:
-        return f"+${mag}" if signed else f"${mag}"
+        return f"+{sym}{mag}" if signed else f"{sym}{mag}"
     if v < 0:
-        return f"-${mag}"
-    return f"${mag}"
+        return f"-{sym}{mag}"
+    return f"{sym}{mag}"

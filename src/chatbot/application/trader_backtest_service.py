@@ -559,11 +559,13 @@ def sync_ohlc_from_ig(
     allow_bootstrap: bool = True,
     trigger: str = "manual",
     now: datetime | None = None,
+    epic: str | None = None,
 ) -> dict[str, Any]:
     """
     Append IG 15m bars since the last CSV timestamp.
 
     Raises ValueError for gap > max_gap_days or missing bootstrap when not allowed.
+    ``epic`` is the bot-owned market epic (connector supplies credentials only).
     """
     from chatbot.trader.ig_ohlc import fetch_ig_ohlc_range
     from chatbot.trader.ohlc_store import append_bars, load_ohlc_csv
@@ -626,7 +628,11 @@ def sync_ohlc_from_ig(
         allowance: dict[str, Any] = {}
         if start < end:
             fresh = fetch_ig_ohlc_range(
-                ig_config, start=start, end=end, allowance_out=allowance
+                ig_config,
+                start=start,
+                end=end,
+                allowance_out=allowance,
+                epic=epic,
             )
             if last_ts is not None and not fresh.empty:
                 from chatbot.trader.ohlc_store import (
@@ -758,12 +764,14 @@ def run_due_ig_ohlc_syncs(session: Session, settings: Settings) -> list[str]:
             logs.append(f"{slug}: skip — OHLC CSV missing (no cron bootstrap)")
             continue
         try:
+            bot_epic = str(tenant.config.trader.epic or "").strip() or None
             info = sync_ohlc_from_ig(
                 settings,
                 slug,
                 ig_config=ig_config,
                 allow_bootstrap=False,
                 trigger="worker",
+                epic=bot_epic,
             )
             ok_count += 1
             logs.append(

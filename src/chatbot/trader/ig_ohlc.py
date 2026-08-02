@@ -12,16 +12,26 @@ from chatbot.trader.ig_connector import IgConnector
 logger = logging.getLogger(__name__)
 
 
-def ig_config_from_connector(config: dict[str, Any] | None) -> TraderConfig:
-    """Map saved IG connector config keys onto TraderConfig."""
+def ig_config_from_connector(
+    config: dict[str, Any] | None,
+    *,
+    epic: str | None = None,
+) -> TraderConfig:
+    """Map saved IG connector credentials onto TraderConfig.
+
+    Epic is bot-owned: pass ``epic=`` from trader settings. Legacy connector
+    ``epic`` is used only when the bot epic is empty (migration fallback).
+    """
     cfg = dict(config or {})
+    bot_epic = str(epic or "").strip()
+    legacy = str(cfg.get("epic") or "").strip()
     return TraderConfig(
         ig_api_key=str(cfg.get("api_key") or ""),
         ig_username=str(cfg.get("username") or ""),
         ig_password=str(cfg.get("password") or ""),
         ig_account_id=str(cfg.get("account_id") or ""),
         ig_acc_type=str(cfg.get("acc_type") or "DEMO").upper() or "DEMO",
-        epic=str(cfg.get("epic") or TraderConfig().epic),
+        epic=bot_epic or legacy or TraderConfig().epic,
     )
 
 
@@ -116,9 +126,10 @@ def fetch_ig_ohlc_range(
     timezone: str = "Europe/Paris",
     allowance_out: dict[str, Any] | None = None,
     allow_max_fallback: bool = True,
+    epic: str | None = None,
 ) -> pd.DataFrame:
     """Login to IG and fetch mid-price OHLC for [start, end] (with max= fallback)."""
-    config = ig_config_from_connector(ig_config)
+    config = ig_config_from_connector(ig_config, epic=epic)
     if not config.ig_api_key or not config.ig_username or not config.ig_password:
         raise ValueError("IG connector is missing api_key, username, or password")
     connector = IgConnector(config, dry_run=True)

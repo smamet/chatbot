@@ -53,7 +53,12 @@ def build_trading_panel_context(
     defaults = TraderConfig().to_dict()
     defaults["symbol"] = str(integ_cfg.get("symbol") or profile.default_symbol)
     defaults["epic"] = str(integ_cfg.get("epic") or profile.default_epic)
-    defaults["point_value"] = float(profile.default_point_value)
+    try:
+        bot_pv = float(integ_cfg.get("point_value") or 0)
+    except (TypeError, ValueError):
+        bot_pv = 0.0
+    defaults["point_value"] = bot_pv if bot_pv > 0 else float(profile.default_point_value)
+    defaults["pnl_currency"] = str(integ_cfg.get("pnl_currency") or "")
     if integ_cfg.get("max_open_positions") not in (None, ""):
         try:
             defaults["max_open_positions"] = int(integ_cfg["max_open_positions"])
@@ -82,12 +87,13 @@ def build_trading_panel_context(
     conn_svc = ConnectorService(SqlAlchemyConnectorRepository(session))
     ig_config = conn_svc.get_ig_config(tenant.id)
     ig_list = conn_svc.list_ig(tenant.id)
+    bot_epic = str(integ_cfg.get("epic") or profile.default_epic)
     ig_connectors = [
         {
             "id": c.id,
             "name": str(c.config.get("name") or f"IG #{c.id}"),
             "acc_type": str(c.config.get("acc_type") or "DEMO").upper(),
-            "epic": str(c.config.get("epic") or "—"),
+            "epic": bot_epic,  # market is bot-owned; connectors are credentials
             "active": c.active,
             "selected": c.id in (live_cfg.get("ig_connector_ids") or []),
         }
@@ -168,6 +174,8 @@ def build_trading_panel_context(
         "ohlc_exists": dataset["exists"],
         "bot_symbol": defaults["symbol"],
         "bot_epic": defaults["epic"],
+        "bot_pnl_currency": defaults.get("pnl_currency") or "",
+        "bot_point_value": defaults.get("point_value"),
         "default_config": defaults,
         "upload_error": _q("upload_error"),
         "upload_ok": _q("upload_ok"),

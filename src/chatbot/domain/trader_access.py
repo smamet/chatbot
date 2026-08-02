@@ -22,6 +22,8 @@ def trader_settings_as_integration_dict(tenant: Tenant) -> dict[str, Any]:
         "max_open_positions": t.max_open_positions,
         "bot_id": tenant.slug,
         "market_profile": t.market_profile,
+        "pnl_currency": t.pnl_currency,
+        "point_value": t.point_value,
     }
 
 

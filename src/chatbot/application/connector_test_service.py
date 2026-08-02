@@ -88,7 +88,8 @@ def _test_ig(config: dict) -> ConnectorTestResult:
     acc_type = str(config.get("acc_type", "DEMO") or "DEMO").strip().upper()
     if acc_type not in ("DEMO", "LIVE"):
         acc_type = "DEMO"
-    epic = str(config.get("epic", "") or "IX.D.CAC.BMU.IP").strip()
+    # Epic is bot-owned; connector test injects it when available.
+    epic = str(config.get("epic", "") or "").strip()
     account_id = str(config.get("account_id", "")).strip()
     base_url = _IG_HOSTS.get(acc_type, _IG_HOSTS["DEMO"])
     context = (
@@ -98,7 +99,7 @@ def _test_ig(config: dict) -> ConnectorTestResult:
         f"api_key={_mask_secret(api_key)}\n"
         f"password={'(set)' if password else '(empty)'}\n"
         f"account_id={account_id or '(none)'}\n"
-        f"epic={epic}"
+        f"epic={epic or '(bot Trading settings)'}"
     )
     cfg = TraderConfig(
         ig_api_key=api_key,
@@ -106,7 +107,7 @@ def _test_ig(config: dict) -> ConnectorTestResult:
         ig_password=password,
         ig_account_id=account_id,
         ig_acc_type=acc_type,
-        epic=epic,
+        epic=epic or "IX.D.CAC.BMU.IP",
     )
     ig = IgConnector(cfg, dry_run=True)
     logged_in = False
@@ -118,6 +119,15 @@ def _test_ig(config: dict) -> ConnectorTestResult:
                 ok=False,
                 message="IG login failed (no session tokens returned).",
                 error=context,
+            )
+        if not epic:
+            return ConnectorTestResult(
+                ok=True,
+                message=(
+                    f"IG {acc_type} login OK (credentials).\n"
+                    "Set the market epic on bot Trading settings to also probe prices.\n\n"
+                    f"{context}"
+                ),
             )
         df = ig.get_ohlc("15m", 2)
         if df.empty:
@@ -495,7 +505,7 @@ def _diagnose_ig_working_order_rejects(
         lines.append("")
         lines.append(
             f"DIAG FOUND working payload/epic — first ACCEPTED dealId={accepted_deal_id}. "
-            "Save that epic / payload shape on the connector."
+            "Save that epic on bot Trading settings (market is bot-owned)."
         )
     else:
         lines.append("")
