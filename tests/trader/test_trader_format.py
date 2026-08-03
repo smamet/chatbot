@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from chatbot.application.trader_format import format_trader_pnl
+from chatbot.application.trader_format import format_position_side, format_trader_pnl
+
+
+def test_format_position_side() -> None:
+    assert format_position_side("BUY") == "LONG"
+    assert format_position_side("SELL") == "SHORT"
+    assert format_position_side("long") == "LONG"
+    assert format_position_side(None) == "—"
 
 
 def test_format_trader_pnl_index_style() -> None:

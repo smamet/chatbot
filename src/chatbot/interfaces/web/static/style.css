@@ -2319,11 +2319,41 @@ textarea {
   display: none !important;
 }
 
+.trader-decisions__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-md);
+  align-items: flex-end;
+  justify-content: space-between;
+  margin-bottom: var(--space-sm);
+}
+
+.trader-decisions__search {
+  flex: 1 1 240px;
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.trader-decisions__search-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.trader-decisions__count {
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.trader-decisions__none {
+  margin: var(--space-md) 0 0;
+}
+
 .trader-decision-list {
   display: flex;
   flex-direction: column;
-  gap: var(--space-md);
-  /* Tall enough to show one fully expanded cycle (charts + actions + mirror). */
+  gap: var(--space-sm);
+  /* Tall enough to browse collapsed cycles + one expanded with thumbnails. */
   height: min(70vh, 56rem);
   overflow: auto;
   padding-right: 0.25rem;
@@ -2334,6 +2364,10 @@ textarea {
   border-radius: var(--radius-md);
   background: var(--color-bg);
   padding: 0;
+}
+
+.trader-decision[hidden] {
+  display: none;
 }
 
 .trader-decision--closed {
@@ -2363,9 +2397,9 @@ textarea {
   cursor: pointer;
   list-style: none;
   display: flex;
-  flex-wrap: wrap;
+  flex-direction: column;
   gap: var(--space-sm);
-  align-items: center;
+  align-items: stretch;
   padding: var(--space-md) var(--space-lg);
   font-weight: 500;
 }
@@ -2374,9 +2408,47 @@ textarea {
   display: none;
 }
 
+.trader-decision__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-sm);
+  align-items: center;
+}
+
 .trader-decision__ts {
   font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
   font-size: 0.85rem;
+}
+
+.trader-decision__id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--color-text-muted, var(--text-muted));
+}
+
+.trader-decision__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  align-items: center;
+}
+
+.trader-decision__chip {
+  display: inline-block;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  padding: 0.15rem 0.45rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-bg) 88%, var(--color-border));
+  color: var(--color-text, inherit);
+}
+
+.trader-decision__chip--more {
+  font-weight: 500;
+  color: var(--color-text-muted, var(--text-muted));
 }
 
 .trader-decision__pnl {
@@ -2406,19 +2478,25 @@ textarea {
 
 .trader-chart-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: var(--space-md);
-  margin: var(--space-md) 0;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--space-sm);
+  width: 100%;
+  margin: 0;
+}
+
+.trader-chart-grid--preview {
+  cursor: default;
 }
 
 .trader-chart {
   margin: 0;
+  min-width: 0;
 }
 
 .trader-chart figcaption {
-  font-size: 0.8rem;
+  font-size: 0.72rem;
   color: var(--color-text-muted);
-  margin-bottom: 0.35rem;
+  margin-bottom: 0.2rem;
 }
 
 .trader-chart__open {
@@ -2440,7 +2518,10 @@ textarea {
 .trader-chart img {
   display: block;
   width: 100%;
+  max-height: 10rem;
   height: auto;
+  object-fit: cover;
+  object-position: top;
   border: 1px solid var(--color-border);
   border-radius: var(--radius-sm);
   background: #fff;

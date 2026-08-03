@@ -3,6 +3,16 @@ from __future__ import annotations
 from chatbot.trader.instrument_economics import currency_symbol
 
 
+def format_position_side(side: str | None) -> str:
+    """Map IG/order side on a filled leg to position direction (LONG/SHORT)."""
+    token = str(side or "").strip().upper()
+    if token in ("BUY", "LONG", "B"):
+        return "LONG"
+    if token in ("SELL", "SHORT", "S"):
+        return "SHORT"
+    return token or "—"
+
+
 def format_trader_pnl(
     value: float | int | None,
     *,

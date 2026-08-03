@@ -126,9 +126,11 @@ class PositionLeg:
     deal_id: str = ""  # IG dealId when imported / mirrored
 
     def to_dict(self) -> dict[str, Any]:
+        direction = "LONG" if self.side == Side.BUY else "SHORT"
         return {
             "id": self.id,
             "side": self.side.value,
+            "direction": direction,
             "size": self.size,
             "entry": self.entry,
             "role": self.role.value,
@@ -171,9 +173,11 @@ class ClosedTrade:
     ig_confirmed: bool = False  # True when closed because deal vanished from IG
 
     def to_dict(self) -> dict[str, Any]:
+        direction = "LONG" if self.side == Side.BUY else "SHORT"
         return {
             "id": self.id,
             "side": self.side.value,
+            "direction": direction,
             "size": self.size,
             "entry": self.entry,
             "exit": self.exit,

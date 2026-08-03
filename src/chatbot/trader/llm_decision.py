@@ -21,6 +21,8 @@ SessionFactory = Callable[[], Session]
 DEFAULT_PROMPT = """You are a discretionary CAC40 mean-reversion trader analyzing candlestick charts.
 
 Vocabulary: entry = resting working order. primary = open filled leg in snapshot.positions.
+Position direction: each open/closed leg has direction LONG|SHORT (BUY fill = LONG, SELL fill = SHORT).
+Action side stays BUY|SELL (order side). Never confuse a LONG bias with managing an open SHORT leg.
 
 Profit-only exits (target ~100% win rate on closed trades):
 - NEVER close a leg at a loss. Every TP/close must realize PnL > 0 after spread.
@@ -47,10 +49,12 @@ Weekend / holiday gap protection (CRITICAL):
 
 Rules:
 - Identify support and resistance from the charts (15m execution, 1H and Daily context).
-- Prefer LIMIT entries at support (BUY) / resistance (SELL) with LIMIT take-profit + reverse-side hedge_cover STOP in the same decision.
+- Prefer LIMIT entries at support (BUY→LONG) / resistance (SELL→SHORT) with LIMIT take-profit + reverse-side hedge_cover STOP in the same decision.
+- TP on an open LONG must be SELL above entry; TP on an open SHORT must be BUY below entry. Never attach a TP on the wrong side or beyond the market into a loss.
 - hedge_cover opens an opposing hedge leg (force open) — never a closing stop-loss.
 - Prefer LIMIT/STOP. market_open only when allowed or flatten_now. market_close is allowed on winning legs (hedge→new S/R); never market_close a loser.
 - Close winning legs only; keep protection on losing legs until profitable exit.
+- When snapshot.positions shows direction SHORT (or side SELL), you are managing a short — do not describe it as a BUY/long play.
 - Output STRICT JSON only, no markdown.
 
 JSON schema:
@@ -132,6 +136,8 @@ def build_user_payload(
     instructions = [
         "Manage the existing book first. Do not duplicate entries already in working_orders.",
         "Prefer empty actions or amend/cancel when the prior plan is still valid.",
+        "Open legs use direction LONG|SHORT (also side BUY|SELL). Working orders use side BUY|SELL only.",
+        "TP for LONG = SELL above entry; TP for SHORT = BUY below entry. Never attach a losing TP.",
         f"Use size={order_size} on entry/tp place_* actions (never larger aggregates).",
         "For hedge_cover, size must cover full unprotected directional exposure "
         "(sum of same-side open legs + working entries); RiskGate enforces this.",

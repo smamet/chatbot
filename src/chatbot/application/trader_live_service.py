@@ -842,6 +842,10 @@ def _decision_row_from_entry(
         build_cycle_ops_log,
         ops_log_line_count,
     )
+    from chatbot.application.trader_decision_ui import (
+        decision_search_ids,
+        summarize_llm_actions,
+    )
 
     charts_rel = str(entry.get("charts_rel") or "").strip().replace("\\", "/")
     chart_files = list(entry.get("chart_files") or [])
@@ -859,11 +863,18 @@ def _decision_row_from_entry(
     if not isinstance(dec, dict):
         dec = {}
     analysis = dec.get("analysis") or {}
+    actions = dec.get("actions") or []
+    if not isinstance(actions, list):
+        actions = []
+    snapshot = entry.get("snapshot") or {}
+    if not isinstance(snapshot, dict):
+        snapshot = {}
+    snap_working = snapshot.get("working_orders")
     book = entry.get("book")
     if not isinstance(book, dict) or (
         "positions" in book and not isinstance(book.get("positions"), int)
     ):
-        book = _book_from_snapshot(entry.get("snapshot") or {})
+        book = _book_from_snapshot(snapshot)
         # If book still has list-shaped leftovers from a bad merge, coerce counts.
         if isinstance(book.get("positions"), list):
             book["positions"] = len(book["positions"])
@@ -877,7 +888,14 @@ def _decision_row_from_entry(
         "bias": analysis.get("bias"),
         "support": analysis.get("support"),
         "resistance": analysis.get("resistance"),
-        "actions": dec.get("actions") or [],
+        "actions": actions,
+        "action_summary": summarize_llm_actions(actions, working_orders=snap_working),
+        "search_ids": decision_search_ids(
+            actions=actions,
+            snapshot=snapshot,
+            executed=entry.get("executed") if isinstance(entry.get("executed"), list) else [],
+            rejected=entry.get("rejected") if isinstance(entry.get("rejected"), list) else [],
+        ),
         "pnl": _normalize_decision_pnl(entry.get("pnl")),
         "book": {
             "positions": int(book.get("positions") or 0),
@@ -994,6 +1012,8 @@ def _load_market_closed_groups(journal: Path) -> list[dict[str, Any]]:
                 "support": None,
                 "resistance": None,
                 "actions": [],
+                "action_summary": [],
+                "search_ids": [],
                 "executed": [],
                 "rejected": [],
                 "charts": [],

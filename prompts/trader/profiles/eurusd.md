@@ -7,9 +7,12 @@ Context:
 - Session follows IG FX-style 24x5 (Sun open → Fri close London); flatten before the Friday close / weekend gap.
 
 Vocabulary: entry = resting working order. primary = open filled leg in snapshot.positions.
+Position direction: each leg has `direction` LONG|SHORT (BUY fill = LONG, SELL fill = SHORT). Action `side` stays BUY|SELL.
+Never confuse a long bias with an open SHORT primary — read `direction` / `side` on the leg you manage.
 
 Profit-only exits (target ~100% win rate on closed trades):
 - NEVER close a leg at a loss. Every TP/close must realize PnL > 0 after spread.
+- LONG TP = SELL above entry; SHORT TP = BUY below entry. Never attach TP on the wrong side or into a loss vs live price.
 - Losing primary stays open under hedge protection; do not scratch both legs.
 - Close a hedge only when it can exit in profit on mean reversion; then TP the primary in profit.
 - Hedge→new S/R play: if a hedge is open in profit and charts show a fresh support buy / resistance sell, do NOT pyramid another hedge_cover for the old primary. Same decision: close/TP the profitable hedge, cancel pending further hedge stops it replaces, place new LIMIT entry at that S/R + tp + reverse-side hedge_cover a few pips beyond.

@@ -2,7 +2,7 @@
 {% block body %}
 <section class="page-header">
   <div>
-    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}?tab=trading&amp;ttab=backtest">← Trading</a></p>
+    <p class="eyebrow"><a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}?tab=trading&amp;ttab={% if live %}live{% else %}backtest{% endif %}">← Trading</a></p>
     <h1>{% if live %}Live results{% else %}{{ run.run_id }}{% endif %}</h1>
     <p class="subtitle" id="trader-run-subtitle"
        data-poll-url="{% if not live %}/dashboard/bots/{{ tenant.slug }}/trader/runs/{{ run.run_id }}/status.json{% endif %}"
@@ -100,7 +100,7 @@
   <table class="data-table">
     <thead>
       <tr>
-        <th>ID</th><th>Side</th><th>Role</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Bars</th>
+        <th>ID</th><th>Dir</th><th>Role</th><th>Entry</th><th>Exit</th><th>PnL</th><th>Bars</th>
         {% if live %}<th>IG</th>{% endif %}
       </tr>
     </thead>
@@ -108,7 +108,7 @@
       {% for t in report.closed_trades or [] %}
       <tr>
         <td>{{ t.id }}</td>
-        <td>{{ t.side }}</td>
+        <td>{{ t.side|format_position_side }}</td>
         <td>{{ t.role }}</td>
         <td>{{ t.entry }}</td>
         <td>{{ t.exit }}</td>
@@ -131,21 +131,37 @@
 </section>
 {% endif %}
 
-<section class="card">
+<section class="card" data-trader-decision-list>
   <h2>LLM decisions &amp; charts</h2>
   <p class="text-muted">Charts below are exactly what was sent to Gemini at each decision point, with the model analysis and RiskGate result. “Accepted” means RiskGate updated the <em>local</em> book — check Mirror below for what was pushed to IG.</p>
   {% if run.decisions %}
   {% from "trader/_cycle_ops_log.html" import cycle_ops_log %}
+  <div class="trader-decisions__toolbar">
+    <label class="trader-decisions__search">
+      <span class="trader-decisions__search-label">Search cycles</span>
+      <input type="search" class="input" placeholder="20260802_211614, o123, p1581, TP change…"
+             data-cycle-search autocomplete="off" spellcheck="false" aria-label="Search cycles">
+    </label>
+    <p class="trader-decisions__count text-muted" data-cycle-count>
+      {{ run.decisions|length }} cycle{% if run.decisions|length != 1 %}s{% endif %}
+    </p>
+  </div>
   <div class="trader-decision-list">
     {% for d in run.decisions %}
+    {% set cycle_id = d.cycle_dir or loop.index %}
+    {% set summary_chips = d.action_summary if d.action_summary is defined else [] %}
     {% if d.kind == 'market_closed_group' %}
-    <details class="trader-decision trader-decision--closed" id="cycle-{{ d.cycle_dir or loop.index }}">
+    <details class="trader-decision trader-decision--closed"
+             id="cycle-{{ cycle_id }}"
+             data-cycle-row
+             data-search="{{ cycle_id }} {{ d.from_ts or '' }} {{ d.to_ts or '' }} market closed heartbeat">
       <summary>
         {% if d.from_ts %}
         <time class="trader-decision__ts js-local-datetime" datetime="{{ d.from_ts }}">{{ d.from_ts }}</time>
         {% else %}
         <span class="trader-decision__ts">—</span>
         {% endif %}
+        {% if d.cycle_dir %}<code class="trader-decision__id" title="{{ d.cycle_dir }}">{{ d.cycle_dir }}</code>{% endif %}
         <span class="badge off">Market closed</span>
         <span class="text-muted">{{ d.heartbeat_count or 0 }} heartbeat{% if (d.heartbeat_count or 0) != 1 %}s{% endif %}</span>
         {% if d.from_ts and d.to_ts and d.from_ts != d.to_ts %}
@@ -172,48 +188,56 @@
       </div>
     </details>
     {% else %}
-    <details class="trader-decision" id="cycle-{{ d.cycle_dir or loop.index }}" {% if loop.first %}open{% endif %}>
+    {% set chip_search = summary_chips|join(' ') %}
+    {% set id_search = (d.search_ids or [])|join(' ') %}
+    <details class="trader-decision"
+             id="cycle-{{ cycle_id }}"
+             data-cycle-row
+             data-search="{{ cycle_id }} {{ d.ts or '' }} {{ d.bias or '' }} {{ chip_search }} {{ id_search }} {% if d.executed %}accepted {{ d.executed|length }}{% endif %} {% if d.rejected %}rejected {{ d.rejected|length }}{% endif %}">
       <summary>
-        {% if d.ts %}
-        <time class="trader-decision__ts js-local-datetime" datetime="{{ d.ts }}">{{ d.ts }}</time>
-        {% else %}
-        <span class="trader-decision__ts">—</span>
-        {% endif %}
-        <span class="badge">{{ d.bias or 'no decision' }}</span>
-        <span class="text-muted">S={{ d.support if d.support is not none else '—' }} · R={{ d.resistance if d.resistance is not none else '—' }}</span>
-        <span class="text-muted">{{ d.actions|length }} actions</span>
-        {% if d.executed %}<span class="badge done">{{ d.executed|length }} accepted</span>{% endif %}
-        {% if d.rejected %}<span class="badge failed">{{ d.rejected|length }} rej</span>{% endif %}
-        {% set book = d.book or {} %}
-        {% set legs_n = book.positions if book.positions is number else (book.positions|length if book.positions is iterable and book.positions is not string else 0) %}
-        {% set orders_n = book.working_orders if book.working_orders is number else (book.working_orders|length if book.working_orders is iterable and book.working_orders is not string else 0) %}
-        <span class="text-muted">{{ legs_n }} legs · {{ orders_n }} orders</span>
-        {% set pnl = d.pnl or {} %}
-        {% set realized = pnl.realized if pnl.realized is number else (pnl.realized_session if pnl.realized_session is number else none) %}
-        {% set net_upl = pnl.net_upl if pnl.net_upl is number else none %}
-        {% if net_upl is not none or realized is not none %}
-        <span class="trader-decision__pnl">
-          {% if net_upl is not none %}
-          <span class="{% if net_upl > 0 %}trader-decision__pnl--pos{% elif net_upl < 0 %}trader-decision__pnl--neg{% endif %}">
-            UPL {{ net_upl|format_trader_pnl(signed=True, currency=pnl_currency|default('USD')) }}
-          </span>
+        <div class="trader-decision__meta">
+          {% if d.ts %}
+          <time class="trader-decision__ts js-local-datetime" datetime="{{ d.ts }}">{{ d.ts }}</time>
           {% else %}
-          <span>UPL —</span>
+          <span class="trader-decision__ts">—</span>
           {% endif %}
-          <span class="text-muted">·</span>
-          {% if realized is not none %}
-          <span class="{% if realized > 0 %}trader-decision__pnl--pos{% elif realized < 0 %}trader-decision__pnl--neg{% endif %}">
-            PnL {{ realized|format_trader_pnl(signed=True, currency=pnl_currency|default('USD')) }}
+          {% if d.cycle_dir %}<code class="trader-decision__id" title="{{ d.cycle_dir }}">{{ d.cycle_dir }}</code>{% endif %}
+          <span class="badge">{{ d.bias or 'no decision' }}</span>
+          <span class="trader-decision__actions">
+            {% for chip in summary_chips[:4] %}
+            <span class="trader-decision__chip">{{ chip }}</span>
+            {% endfor %}
+            {% if summary_chips|length > 4 %}
+            <span class="trader-decision__chip trader-decision__chip--more">+{{ summary_chips|length - 4 }}</span>
+            {% endif %}
           </span>
-          {% else %}
-          <span>PnL —</span>
+          {% if d.executed %}<span class="badge done">{{ d.executed|length }} accepted</span>{% endif %}
+          {% if d.rejected %}<span class="badge failed">{{ d.rejected|length }} rej</span>{% endif %}
+          {% set pnl = d.pnl or {} %}
+          {% set realized = pnl.realized if pnl.realized is number else (pnl.realized_session if pnl.realized_session is number else none) %}
+          {% set net_upl = pnl.net_upl if pnl.net_upl is number else none %}
+          {% if net_upl is not none or realized is not none %}
+          <span class="trader-decision__pnl">
+            {% if net_upl is not none %}
+            <span class="{% if net_upl > 0 %}trader-decision__pnl--pos{% elif net_upl < 0 %}trader-decision__pnl--neg{% endif %}">
+              UPL {{ net_upl|format_trader_pnl(signed=True, currency=pnl_currency|default('USD')) }}
+            </span>
+            {% else %}
+            <span>UPL —</span>
+            {% endif %}
+            <span class="text-muted">·</span>
+            {% if realized is not none %}
+            <span class="{% if realized > 0 %}trader-decision__pnl--pos{% elif realized < 0 %}trader-decision__pnl--neg{% endif %}">
+              PnL {{ realized|format_trader_pnl(signed=True, currency=pnl_currency|default('USD')) }}
+            </span>
+            {% else %}
+            <span>PnL —</span>
+            {% endif %}
+          </span>
           {% endif %}
-        </span>
-        {% endif %}
-      </summary>
-      <div class="trader-decision__body">
+        </div>
         {% if d.charts %}
-        <div class="trader-chart-grid">
+        <div class="trader-chart-grid trader-chart-grid--preview">
           {% for c in d.charts %}
           <figure class="trader-chart">
             <figcaption>{{ c.tf }}</figcaption>
@@ -228,12 +252,16 @@
           </figure>
           {% endfor %}
         </div>
-        {% else %}
+        {% endif %}
+      </summary>
+      <div class="trader-decision__body">
+        {% if not d.charts %}
         <p class="text-muted">No chart images for this decision.</p>
         {% endif %}
 
         {% set an = (d.decision.analysis if d.decision else {}) or {} %}
         <div class="trader-decision__notes">
+          <p class="text-muted">S={{ d.support if d.support is not none else '—' }} · R={{ d.resistance if d.resistance is not none else '—' }}</p>
           {% if an.rsi_note %}<p><strong>RSI:</strong> {{ an.rsi_note }}</p>{% endif %}
           {% if an.pivot_note %}<p><strong>Pivot:</strong> {{ an.pivot_note }}</p>{% endif %}
         </div>
@@ -314,6 +342,7 @@
     </details>
     {% endif %}
     {% endfor %}
+    <p class="empty-state trader-decisions__none" data-cycle-none hidden>No cycles match</p>
   </div>
   {% else %}
   <p class="empty-state">No decisions yet (run may still be starting, or llm_mode=replay with empty cache).</p>
@@ -347,6 +376,55 @@
 </dialog>
 
 <script>
+(function () {
+  const root = document.querySelector('[data-trader-decision-list]');
+  if (!root) return;
+  const input = root.querySelector('[data-cycle-search]');
+  const countEl = root.querySelector('[data-cycle-count]');
+  const none = root.querySelector('[data-cycle-none]');
+  const rows = Array.prototype.slice.call(root.querySelectorAll('[data-cycle-row]'));
+  const total = rows.length;
+
+  function openHashCycle() {
+    const hash = (location.hash || '').replace(/^#/, '');
+    if (!hash) return;
+    const el = document.getElementById(hash);
+    if (!el || !el.classList.contains('trader-decision')) return;
+    el.open = true;
+    el.hidden = false;
+    try { el.scrollIntoView({ block: 'nearest' }); } catch (_) {}
+  }
+
+  function runSearch() {
+    const q = (input && input.value || '').trim().toLowerCase();
+    let n = 0;
+    let firstMatch = null;
+    rows.forEach(function (row) {
+      const hay = (row.getAttribute('data-search') || '').toLowerCase();
+      const ok = !q || hay.indexOf(q) !== -1;
+      row.hidden = !ok;
+      if (ok) {
+        n += 1;
+        if (!firstMatch) firstMatch = row;
+      }
+    });
+    if (none) none.hidden = n !== 0 || total === 0;
+    if (countEl) {
+      countEl.textContent = q
+        ? (n + ' / ' + total + ' cycle' + (total !== 1 ? 's' : ''))
+        : (total + ' cycle' + (total !== 1 ? 's' : ''));
+    }
+    if (q && n === 1 && firstMatch) {
+      firstMatch.open = true;
+      try { firstMatch.scrollIntoView({ block: 'nearest' }); } catch (_) {}
+    }
+  }
+
+  if (input) input.addEventListener('input', runSearch);
+  openHashCycle();
+  window.addEventListener('hashchange', openHashCycle);
+})();
+
 (function () {
   const openers = Array.from(document.querySelectorAll('.trader-chart__open'));
   if (!openers.length) return;
@@ -392,7 +470,11 @@
   }
 
   openers.forEach(function (btn, i) {
-    btn.addEventListener('click', function () { openAt(i); });
+    btn.addEventListener('click', function (e) {
+      e.preventDefault();
+      e.stopPropagation();
+      openAt(i);
+    });
   });
   btnPrev.addEventListener('click', function (e) {
     e.stopPropagation();

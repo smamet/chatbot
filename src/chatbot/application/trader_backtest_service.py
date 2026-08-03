@@ -17,6 +17,10 @@ from chatbot.application.trader_cycle_ops_log import (
     build_cycle_ops_log,
     ops_log_line_count,
 )
+from chatbot.application.trader_decision_ui import (
+    decision_search_ids,
+    summarize_llm_actions,
+)
 from chatbot.trader.backtest_engine import BacktestEngine, new_run_dir
 from chatbot.trader.config import TraderConfig, public_config_snapshot
 from chatbot.config.settings import Settings
@@ -223,30 +227,53 @@ def _load_decision_entries(
             if chart_dir.is_dir():
                 chart_files = sorted(p.name for p in chart_dir.glob("chart_*.png"))
         charts = []
-        if charts_rel.startswith("charts/") and chart_files:
-            key = charts_rel.split("/", 1)[1]
-            for name in chart_files:
-                tf = name.removeprefix("chart_").removesuffix(".png")
-                charts.append(
-                    {
-                        "tf": tf,
-                        "file": name,
-                        "url": (
-                            f"/dashboard/bots/{tenant_slug}/trader/runs/{run_id}"
-                            f"/charts/{key}/{name}"
-                        ),
-                    }
-                )
+        chart_key = ""
+        if charts_rel.startswith("charts/"):
+            chart_key = charts_rel.split("/", 1)[1]
+            if chart_files:
+                for name in chart_files:
+                    tf = name.removeprefix("chart_").removesuffix(".png")
+                    charts.append(
+                        {
+                            "tf": tf,
+                            "file": name,
+                            "url": (
+                                f"/dashboard/bots/{tenant_slug}/trader/runs/{run_id}"
+                                f"/charts/{chart_key}/{name}"
+                            ),
+                        }
+                    )
         dec = entry.get("decision") or {}
         analysis = dec.get("analysis") or {}
+        actions = dec.get("actions") or []
+        if not isinstance(actions, list):
+            actions = []
+        snapshot = entry.get("snapshot") or {}
+        if not isinstance(snapshot, dict):
+            snapshot = {}
+        cycle_dir = str(entry.get("cycle_dir") or chart_key or "").strip()
         row = {
             **entry,
+            "cycle_dir": cycle_dir,
             "chart_files": chart_files,
             "charts": charts,
             "bias": analysis.get("bias"),
             "support": analysis.get("support"),
             "resistance": analysis.get("resistance"),
-            "actions": dec.get("actions") or [],
+            "actions": actions,
+            "action_summary": summarize_llm_actions(
+                actions, working_orders=snapshot.get("working_orders")
+            ),
+            "search_ids": decision_search_ids(
+                actions=actions,
+                snapshot=snapshot,
+                executed=entry.get("executed")
+                if isinstance(entry.get("executed"), list)
+                else [],
+                rejected=entry.get("rejected")
+                if isinstance(entry.get("rejected"), list)
+                else [],
+            ),
             "pnl": _resolve_entry_pnl(entry, by_bar, by_ts),
         }
         ops_log = build_cycle_ops_log(row)

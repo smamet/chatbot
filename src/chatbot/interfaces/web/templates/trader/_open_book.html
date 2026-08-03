@@ -44,7 +44,7 @@
         {% if row.order_type %}<span class="text-muted"> {{ row.order_type }}</span>{% endif %}
       {% endif %}
     </td>
-    <td>{{ row.side }}</td>
+    <td>{% if row.row_kind == 'position' %}{{ row.side|format_position_side }}{% else %}{{ row.side }}{% endif %}</td>
     <td>{{ row.size if row.size is not none else '—' }}</td>
     <td>{% if row.level is number %}{% if row.level < 50 %}{{ '%.5f'|format(row.level) }}{% else %}{{ '%.2f'|format(row.level) }}{% endif %}{% else %}{{ row.level or '—' }}{% endif %}</td>
     <td>
@@ -91,7 +91,7 @@
       <tr>
         <th>ID</th>
         <th>Kind</th>
-        <th>Side</th>
+        <th>Side / Dir</th>
         <th>Size</th>
         <th>Level</th>
         <th>UPL</th>
@@ -125,7 +125,7 @@
       <tr>
         <th>ID</th>
         <th>Kind</th>
-        <th>Side</th>
+        <th>Side / Dir</th>
         <th>Size</th>
         <th>Level</th>
         <th>UPL</th>

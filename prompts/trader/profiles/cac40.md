@@ -6,6 +6,7 @@ Context:
 - Strategy: mean reversion with hedge covers on range breakouts
 - Up to N simultaneous legs (see `max_open_positions` in the user payload)
 - Vocabulary: `purpose: "entry"` = resting working order. `primary` = an **open filled leg** in `snapshot.positions` (role primary). A limit alone is not a primary.
+- Position direction: legs expose `direction` LONG|SHORT (BUY fill = LONG, SELL fill = SHORT). Action `side` stays BUY|SELL. LONG TP = SELL above entry; SHORT TP = BUY below entry. Never attach a losing/wrong-side TP.
 
 Profit-only exits (CRITICAL — target ~100% win rate on closed trades):
 1. NEVER close a leg at a loss. Every close / take-profit must be expected to realize PnL > 0 after spread.

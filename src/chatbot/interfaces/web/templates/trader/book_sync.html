@@ -65,13 +65,13 @@
   </p>
   <table class="data-table data-table--compact">
     <thead>
-      <tr><th>ID</th><th>Side</th><th>Deal</th><th>PnL</th><th>IG</th></tr>
+      <tr><th>ID</th><th>Dir</th><th>Deal</th><th>PnL</th><th>IG</th></tr>
     </thead>
     <tbody>
       {% for t in preview.closed_trades or [] %}
       <tr class="{% if t.status == 'reopened' %}trader-book__row--remove{% endif %}">
         <td>{{ t.id }}</td>
-        <td>{{ t.side or '—' }}</td>
+        <td>{{ (t.side or '')|format_position_side }}</td>
         <td>{% if t.deal_id %}<code>{{ t.deal_id }}</code>{% else %}—{% endif %}</td>
         <td>{% if t.pnl is number %}<span class="{% if t.pnl > 0 %}trader-decision__pnl--pos{% elif t.pnl < 0 %}trader-decision__pnl--neg{% endif %}">{{ t.pnl|format_trader_pnl(currency=pnl_currency|default(bot_pnl_currency|default('USD'))) }}</span>{% else %}—{% endif %}</td>
         <td>{{ status_badge(t.status) }}</td>

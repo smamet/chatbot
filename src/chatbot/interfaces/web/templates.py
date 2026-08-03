@@ -15,7 +15,7 @@ from chatbot.application.customer_access_gate import (
 from chatbot.application.disk_usage_service import format_bytes
 from chatbot.application.erpnext_error_display import format_erpnext_error_message
 from chatbot.application.monitoring_format import format_count, format_usd
-from chatbot.application.trader_format import format_trader_pnl
+from chatbot.application.trader_format import format_position_side, format_trader_pnl
 from chatbot.application.validation_message_ui import channel_label
 from chatbot.mail.process_since import format_process_since_display
 
@@ -46,6 +46,7 @@ templates.env.filters["format_bytes"] = format_bytes
 templates.env.filters["format_count"] = format_count
 templates.env.filters["format_usd"] = format_usd
 templates.env.filters["format_trader_pnl"] = format_trader_pnl
+templates.env.filters["format_position_side"] = format_position_side
 templates.env.filters["pretty_json"] = pretty_json
 templates.env.filters["dumps_json"] = dumps_json
 templates.env.filters["channel_label"] = channel_label
