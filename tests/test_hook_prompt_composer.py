@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from chatbot.application.hook_prompt_composer import compose_hook_instructions, hooks_enabled_for_tenant
 from chatbot.automation.modules.registry import enabled_modules_for_tenant
-from chatbot.domain.models.tenant import Tenant, TenantConfig
+from chatbot.domain.models.tenant import BotType, Tenant, TenantConfig
 
 
 def test_compose_hook_includes_orders_module() -> None:
@@ -49,3 +49,22 @@ def test_hooks_enabled_with_modules() -> None:
         updated_at=datetime.now(UTC),
     )
     assert hooks_enabled_for_tenant(tenant) is True
+
+
+def test_hooks_disabled_for_trader_even_with_modules() -> None:
+    from datetime import UTC, datetime
+
+    tenant = Tenant(
+        id=1,
+        slug="t",
+        name="T",
+        prompt="Hi",
+        hook_instructions=None,
+        gemini_api_key=None,
+        config=TenantConfig(automation_modules=("core.orders",)),
+        active=True,
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        bot_type=BotType.TRADER,
+    )
+    assert hooks_enabled_for_tenant(tenant) is False

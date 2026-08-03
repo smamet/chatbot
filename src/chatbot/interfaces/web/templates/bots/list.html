@@ -22,7 +22,7 @@
       <tr>
         <th>Name</th>
         <th>Slug</th>
-        <th>Hooks</th>
+        <th>Type</th>
         {% if user.role == 'admin' %}<th></th>{% endif %}
         <th></th>
       </tr>
@@ -35,7 +35,7 @@
         role="link">
       <td><strong>{{ t.name }}</strong></td>
       <td><code>{{ t.slug }}</code></td>
-      <td>{% if t.hooks_enabled %}<span class="badge on">ON</span>{% else %}<span class="badge off">OFF</span>{% endif %}</td>
+      <td>{% if t.is_trader %}Trader{% else %}Assistant{% endif %}</td>
       {% if user.role == 'admin' %}
       <td class="bot-list-actions">
         <a href="/dashboard/bots/{{ t.slug }}/duplicate" class="btn-secondary btn-sm">Duplicate</a>

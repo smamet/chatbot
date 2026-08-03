@@ -28,6 +28,8 @@ def compose_hook_instructions(
 
 
 def hooks_enabled_for_tenant(tenant: Tenant) -> bool:
+    if tenant.is_trader:
+        return False
     config = tenant.config
     if config.hook_instructions_extra.strip():
         return True

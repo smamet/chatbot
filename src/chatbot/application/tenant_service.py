@@ -65,11 +65,19 @@ class TenantService:
             else BotType(str(bot_type).strip().lower() or BotType.ASSISTANT.value)
         )
         cfg = config or TenantConfig()
-        if parsed == BotType.TRADER and not cfg.allowed_connectors:
-            # Default trader bots to IG-only connectors.
+        if parsed == BotType.TRADER:
             from dataclasses import replace
 
-            cfg = replace(cfg, allowed_connectors=("ig",), allowed_integrations=("__none__",))
+            # Traders do not use chat hooks/automation modules.
+            trader_kw: dict = {
+                "automation_modules": (),
+                "hook_instructions_extra": "",
+            }
+            if not cfg.allowed_connectors:
+                # Default trader bots to IG-only connectors.
+                trader_kw["allowed_connectors"] = ("ig",)
+                trader_kw["allowed_integrations"] = ("__none__",)
+            cfg = replace(cfg, **trader_kw)
         tenant = self._repo.create(
             slug=candidate,
             name=name.strip(),

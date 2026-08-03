@@ -10,7 +10,9 @@
   <p class="subtitle"><code>{{ tenant.slug }}</code></p>
   <div class="badges">
     {% if tenant.active %}<span class="badge on">Active</span>{% else %}<span class="badge off">Inactive</span>{% endif %}
+    {% if not tenant.is_trader %}
     {% if tenant.hooks_enabled %}<span class="badge on">Hooks ON</span>{% else %}<span class="badge off">Hooks OFF</span>{% endif %}
+    {% endif %}
   </div>
 </div>
 
