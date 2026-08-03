@@ -117,6 +117,42 @@ def daily_pivot_map(df: pd.DataFrame) -> dict[date, dict[str, float]]:
     return pivot_map(df, "D")
 
 
+def _format_price_label(price: float) -> str:
+    """Adaptive decimals so FX (~1.15) and indices (~7000) both stay readable."""
+    p = abs(float(price))
+    if p >= 100:
+        return f"{price:.1f}"
+    if p >= 10:
+        return f"{price:.2f}"
+    if p >= 1:
+        return f"{price:.4f}"
+    return f"{price:.5f}"
+
+
+def min_candle_body_height(data: pd.DataFrame) -> float:
+    """Scale-aware doji body — never use a fixed absolute price (0.1 wrecks FX)."""
+    if data is None or data.empty:
+        return 1e-6
+    highs = data["high"].astype(float)
+    lows = data["low"].astype(float)
+    ranges = (highs - lows).abs()
+    positive = ranges[ranges > 0]
+    if len(positive):
+        ref = float(positive.median())
+    else:
+        mid = float(data["close"].astype(float).abs().median() or 0.0)
+        ref = mid * 1e-4 if mid > 0 else 1e-6
+    return max(ref * 0.02, 1e-12)
+
+
+def candle_body_height(open_: float, high: float, low: float, close: float, *, min_height: float) -> float:
+    """Visible body height; zero-range bars become a thin doji at series scale."""
+    height = abs(float(close) - float(open_)) or (float(high) - float(low)) * 0.01
+    if height <= 0:
+        return float(min_height)
+    return float(height)
+
+
 def _draw_pivots(
     ax: Any,
     data: pd.DataFrame,
@@ -149,7 +185,7 @@ def _draw_pivots(
             ax.text(
                 x1 + 0.45,
                 price,
-                f"{name} {price:.1f}",
+                f"{name} {_format_price_label(float(price))}",
                 color=style["color"],
                 fontsize=6.5,
                 va="center",
@@ -207,12 +243,13 @@ def render_ohlc_chart(
         ax_rsi = None
 
     width = 0.6
+    min_body = min_candle_body_height(data)
     for i, (_ts, row) in enumerate(data.iterrows()):
         o, h, l, c = float(row["open"]), float(row["high"]), float(row["low"]), float(row["close"])
         color = "#16a34a" if c >= o else "#dc2626"
         ax.plot([i, i], [l, h], color=color, linewidth=1)
         bottom = min(o, c)
-        height = abs(c - o) or (h - l) * 0.01 or 0.1
+        height = candle_body_height(o, h, l, c, min_height=min_body)
         ax.add_patch(Rectangle((i - width / 2, bottom), width, height, facecolor=color, edgecolor=color))
 
     if show_pivots:

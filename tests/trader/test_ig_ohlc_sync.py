@@ -366,11 +366,27 @@ def test_natural_break_preopen_to_cash() -> None:
 
     a = pd.Timestamp("2026-07-22 06:15:00", tz="Europe/Paris")
     b = pd.Timestamp("2026-07-22 09:00:00", tz="Europe/Paris")
-    assert is_natural_session_break(a, b) is True
+    assert is_natural_session_break(a, b, calendar_id="euronext_fr40") is True
     # True mid-session hole still flagged.
     c = pd.Timestamp("2026-07-22 10:00:00", tz="Europe/Paris")
     d = pd.Timestamp("2026-07-22 11:00:00", tz="Europe/Paris")
-    assert is_natural_session_break(c, d) is False
+    assert is_natural_session_break(c, d, calendar_id="euronext_fr40") is False
+
+
+def test_fx_midweek_hole_is_not_natural_break() -> None:
+    """FX 24×5 must not inherit FR40 cash-hour 'natural' overnight holes."""
+    from chatbot.trader.market_calendar import resolve_calendar_id
+    from chatbot.trader.ohlc_store import is_natural_session_break
+
+    assert resolve_calendar_id(epic="CS.D.EURUSD.MINI.IP") == "forex_ig"
+    assert resolve_calendar_id(epic="IX.D.DAX.IFMM.IP") == "ig_index_cfd"
+    a = pd.Timestamp("2026-07-22 02:00:00", tz="Europe/Paris")
+    b = pd.Timestamp("2026-07-22 04:00:00", tz="Europe/Paris")
+    assert is_natural_session_break(a, b, calendar_id="forex_ig") is False
+    # Weekend still natural for FX.
+    fri = pd.Timestamp("2026-07-24 22:00:00", tz="Europe/Paris")
+    sun = pd.Timestamp("2026-07-26 23:15:00", tz="Europe/Paris")
+    assert is_natural_session_break(fri, sun, calendar_id="forex_ig") is True
 
 
 def test_catchup_falls_back_to_max_when_range_empty() -> None:
@@ -430,7 +446,7 @@ def test_natural_break_rejects_preopen_to_midday_splice() -> None:
 
     a = pd.Timestamp("2026-07-22 06:15:00", tz="Europe/Paris")
     midday = pd.Timestamp("2026-07-22 12:00:00", tz="Europe/Paris")
-    assert is_natural_session_break(a, midday) is False
+    assert is_natural_session_break(a, midday, calendar_id="euronext_fr40") is False
 
 
 def test_max_gap_constant() -> None:

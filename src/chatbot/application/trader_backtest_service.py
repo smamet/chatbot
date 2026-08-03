@@ -634,22 +634,28 @@ def sync_ohlc_from_ig(
                 allowance_out=allowance,
                 epic=epic,
             )
-            if last_ts is not None and not fresh.empty:
+            if not fresh.empty:
+                from chatbot.trader.market_calendar import resolve_calendar_id
                 from chatbot.trader.ohlc_store import (
                     assert_append_contiguous,
                     find_intrasession_gaps,
                 )
 
-                fresh = assert_append_contiguous(last_ts, fresh, allow_session_breaks=True)
-                stretch_gaps = find_intrasession_gaps(fresh)
-                if stretch_gaps:
-                    a, b, delta = stretch_gaps[0]
-                    raise ValueError(
-                        f"IG returned OHLC with mid-session hole {a} → {b} ({delta}); "
-                        "refusing to append. Re-upload a clean CSV, then Sync."
+                cal_id = resolve_calendar_id(epic=epic or ig_config.get("epic"))
+                if last_ts is not None:
+                    fresh = assert_append_contiguous(
+                        last_ts, fresh, allow_session_breaks=True, calendar_id=cal_id
                     )
-            if not fresh.empty:
-                append_bars(dest, fresh, require_contiguous=True)
+                    stretch_gaps = find_intrasession_gaps(fresh, calendar_id=cal_id)
+                    if stretch_gaps:
+                        a, b, delta = stretch_gaps[0]
+                        raise ValueError(
+                            f"IG returned OHLC with mid-session hole {a} → {b} ({delta}); "
+                            "refusing to append. Re-upload a clean CSV, then Sync."
+                        )
+                append_bars(
+                    dest, fresh, require_contiguous=True, calendar_id=cal_id
+                )
                 added = int(len(fresh))
         info = ohlc_info(settings, tenant_slug)
         last_candle = info.get("to")

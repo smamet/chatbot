@@ -153,11 +153,10 @@ def window_asof(df: pd.DataFrame, ts: pd.Timestamp, lookback: int) -> pd.DataFra
 
 # 15m series: contiguous when successive stamps differ by exactly one slot.
 OHLC_15M_DELTA = pd.Timedelta(minutes=15)
-# Approx cash CAC session in Europe/Paris (used to ignore overnight/weekend holes).
-_SESSION_START_HOUR = 8
-_SESSION_END_HOUR = 18
 # Gaps older than this are "history noise" for live (vendor CSV holes).
 RECENT_GAP_DAYS = 90
+# Cap dealing-hour probes so huge weekend/holiday holes stay cheap.
+_MAX_GAP_PROBES = 96 * 14  # ~2 weeks of 15m slots
 
 
 def next_15m_ts(ts: pd.Timestamp) -> pd.Timestamp:
@@ -171,33 +170,88 @@ def connects_15m(prev: pd.Timestamp, nxt: pd.Timestamp) -> bool:
     return b <= next_15m_ts(a)
 
 
-def is_natural_session_break(prev: pd.Timestamp, nxt: pd.Timestamp) -> bool:
+def _as_aware_pair(
+    prev: pd.Timestamp, nxt: pd.Timestamp
+) -> tuple[pd.Timestamp, pd.Timestamp]:
+    a = pd.Timestamp(prev)
+    b = pd.Timestamp(nxt)
+    if a.tzinfo is not None and b.tzinfo is not None and a.tzinfo != b.tzinfo:
+        b = b.tz_convert(a.tzinfo)
+    return a, b
+
+
+def _gap_contains_closed_dealing(
+    prev: pd.Timestamp,
+    nxt: pd.Timestamp,
+    *,
+    calendar_id: str | None,
+    bar_delta: pd.Timedelta,
+) -> bool:
+    """True when at least one missing 15m slot falls outside the market calendar."""
+    from chatbot.trader.market_calendar import is_dealing_open, resolve_calendar_id
+
+    cal = resolve_calendar_id(calendar_id=calendar_id)
+    probe = pd.Timestamp(prev) + bar_delta
+    end = pd.Timestamp(nxt)
+    steps = 0
+    while probe < end:
+        dt = probe.to_pydatetime()
+        if not is_dealing_open(dt, calendar_id=cal):
+            return True
+        probe = probe + bar_delta
+        steps += 1
+        if steps > _MAX_GAP_PROBES:
+            return True
+    return False
+
+
+def _cash_session_pause_break(prev: pd.Timestamp, nxt: pd.Timestamp, cash: tuple[int, int]) -> bool:
+    """
+    Index CFD overnight ↔ cash open quirks (Paris-local hours).
+
+    Same calendar day inside cash hours ⇒ not natural.
+    Pre-open tails (e.g. last=06:15 → next=08:00/09:00) are natural.
+    """
+    start_h, end_h = cash
+    a, b = _as_aware_pair(prev, nxt)
+    if a.date() != b.date():
+        return True
+    a_out = a.hour < start_h or a.hour >= end_h
+    b_out = b.hour < start_h or b.hour >= end_h
+    if a_out and b_out:
+        return True
+    if a.hour < start_h and not b_out:
+        return b.hour <= start_h + 1
+    if a.hour >= end_h or b.hour >= end_h:
+        return True
+    return False
+
+
+def is_natural_session_break(
+    prev: pd.Timestamp,
+    nxt: pd.Timestamp,
+    *,
+    calendar_id: str | None = None,
+    bar_delta: pd.Timedelta = OHLC_15M_DELTA,
+) -> bool:
     """
     Overnight / weekend / holiday-style hole (not a mid-session missing candle).
 
-    Same calendar day inside cash session hours ⇒ not natural.
-    Pre-open extended-hours tails (e.g. last=06:15 → next=08:00/09:00) are natural:
-    IG FR40 often pauses between overnight and the cash open.
+    Epic-agnostic: uses the market calendar's dealing window. Index cash calendars
+    also treat overnight↔cash pauses as natural; FX 24×5 does not (mid-week holes
+    stay real gaps). Charts themselves never invent filler candles for these holes.
     """
-    a = pd.Timestamp(prev)
-    b = pd.Timestamp(nxt)
-    if b <= next_15m_ts(a):
+    from chatbot.trader.market_calendar import cash_session_hours, resolve_calendar_id
+
+    a, b = _as_aware_pair(prev, nxt)
+    if b <= a + bar_delta:
         return True
-    if a.tzinfo is not None and b.tzinfo is not None and a.tzinfo != b.tzinfo:
-        b = b.tz_convert(a.tzinfo)
-    if a.date() != b.date():
+    cal_id = resolve_calendar_id(calendar_id=calendar_id)
+    if _gap_contains_closed_dealing(a, b, calendar_id=cal_id, bar_delta=bar_delta):
         return True
-    a_out = a.hour < _SESSION_START_HOUR or a.hour >= _SESSION_END_HOUR
-    b_out = b.hour < _SESSION_START_HOUR or b.hour >= _SESSION_END_HOUR
-    # Both outside cash hours (extended / pre-open tail).
-    if a_out and b_out:
-        return True
-    # Pre-open → cash open only (not pre-open → mid-afternoon splice).
-    if a.hour < _SESSION_START_HOUR and not b_out:
-        return b.hour <= _SESSION_START_HOUR + 1
-    # Post-close edge same calendar day.
-    if a.hour >= _SESSION_END_HOUR or b.hour >= _SESSION_END_HOUR:
-        return True
+    cash = cash_session_hours(cal_id)
+    if cash is not None:
+        return _cash_session_pause_break(a, b, cash)
     return False
 
 
@@ -205,6 +259,7 @@ def find_intrasession_gaps(
     df: pd.DataFrame,
     *,
     bar_delta: pd.Timedelta = OHLC_15M_DELTA,
+    calendar_id: str | None = None,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timedelta]]:
     """Return mid-session holes (prev, next, delta) in a 15m OHLC frame."""
     if df is None or len(df) < 2:
@@ -215,7 +270,7 @@ def find_intrasession_gaps(
         delta = b - a
         if delta <= bar_delta:
             continue
-        if is_natural_session_break(a, b):
+        if is_natural_session_break(a, b, calendar_id=calendar_id, bar_delta=bar_delta):
             continue
         gaps.append((pd.Timestamp(a), pd.Timestamp(b), delta))
     return gaps
@@ -247,6 +302,7 @@ def summarize_ohlc_gaps(
     max_samples: int = 8,
     bar_delta: pd.Timedelta = OHLC_15M_DELTA,
     recent_days: int = RECENT_GAP_DAYS,
+    calendar_id: str | None = None,
 ) -> dict:
     """
     UI-friendly mid-session gap report + how to fix.
@@ -254,7 +310,7 @@ def summarize_ohlc_gaps(
     Overnight / weekend holes are ignored. Gaps older than ``recent_days``
     are reported as historical vendor noise (not a live blocker).
     """
-    gaps = find_intrasession_gaps(df, bar_delta=bar_delta)
+    gaps = find_intrasession_gaps(df, bar_delta=bar_delta, calendar_id=calendar_id)
     empty = {
         "has_gaps": False,
         "has_recent_gaps": False,
@@ -331,6 +387,7 @@ def assert_append_contiguous(
     fresh: pd.DataFrame,
     *,
     allow_session_breaks: bool = True,
+    calendar_id: str | None = None,
 ) -> pd.DataFrame:
     """
     Keep only bars after ``last_ts`` and refuse discontinuous mid-session splices.
@@ -356,7 +413,9 @@ def assert_append_contiguous(
     first = pd.Timestamp(out.index[0])
     if connects_15m(last, first):
         return out
-    if allow_session_breaks and is_natural_session_break(last, first):
+    if allow_session_breaks and is_natural_session_break(
+        last, first, calendar_id=calendar_id
+    ):
         return out
     raise ValueError(
         f"Refusing discontinuous OHLC append: last={last} → first_new={first} "
@@ -369,12 +428,15 @@ def append_bars(
     df: pd.DataFrame,
     *,
     require_contiguous: bool = False,
+    calendar_id: str | None = None,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.exists():
         existing = load_ohlc_csv(path, timezone=str(df.index.tz) if df.index.tz else "UTC")
         if require_contiguous and not existing.empty:
-            df = assert_append_contiguous(pd.Timestamp(existing.index[-1]), df)
+            df = assert_append_contiguous(
+                pd.Timestamp(existing.index[-1]), df, calendar_id=calendar_id
+            )
         merged = pd.concat([existing, df]).sort_index()
         merged = merged[~merged.index.duplicated(keep="last")]
     else:

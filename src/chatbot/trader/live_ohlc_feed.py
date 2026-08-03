@@ -13,6 +13,7 @@ import pandas as pd
 from chatbot.trader.chart_renderer import pivot_history_pad
 from chatbot.trader.config import TraderConfig
 from chatbot.trader.ig_connector import IgApiError, IgConnector
+from chatbot.trader.market_calendar import resolve_calendar_id
 from chatbot.trader.ohlc_store import (
     append_bars,
     assert_append_contiguous,
@@ -24,6 +25,18 @@ from chatbot.trader.ohlc_store import (
     resample_ohlc,
     window_asof,
 )
+
+
+def _feed_calendar_id(config: TraderConfig | None = None, *, calendar_id: str | None = None) -> str:
+    if calendar_id:
+        return resolve_calendar_id(calendar_id=calendar_id)
+    if config is None:
+        return resolve_calendar_id()
+    return resolve_calendar_id(
+        calendar_id=config.calendar_id,
+        market_profile=config.market_profile,
+        epic=config.epic,
+    )
 
 logger = logging.getLogger(__name__)
 
@@ -108,6 +121,7 @@ def _prepare_newer_bars(
     *,
     last_local: pd.Timestamp,
     timezone_name: str,
+    calendar_id: str | None = None,
 ) -> pd.DataFrame:
     if fresh is None or fresh.empty:
         return fresh.iloc[0:0] if fresh is not None else pd.DataFrame()
@@ -115,7 +129,9 @@ def _prepare_newer_bars(
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
     df.index = df.index.tz_convert(timezone_name)
-    return assert_append_contiguous(last_local, df, allow_session_breaks=True)
+    return assert_append_contiguous(
+        last_local, df, allow_session_breaks=True, calendar_id=calendar_id
+    )
 
 
 def top_up_csv_from_connector(
@@ -125,6 +141,7 @@ def top_up_csv_from_connector(
     max_bars: int = LIVE_TOP_UP_BARS,
     timezone_name: str = "Europe/Paris",
     now: datetime | None = None,
+    calendar_id: str | None = None,
 ) -> dict[str, Any]:
     """
     Append missing 15m bars since CSV last ts — never creating mid-session holes.
@@ -184,7 +201,7 @@ def top_up_csv_from_connector(
             else:
                 first = pd.Timestamp(tip_newer.index[0])
                 if connects_15m(last_local, first) or is_natural_session_break(
-                    last_local, first
+                    last_local, first, calendar_id=calendar_id
                 ):
                     fresh = tip_newer
                 else:
@@ -215,18 +232,23 @@ def top_up_csv_from_connector(
             "mode": mode,
         }
 
-    newer = _prepare_newer_bars(fresh, last_local=last_local, timezone_name=timezone_name)
+    newer = _prepare_newer_bars(
+        fresh,
+        last_local=last_local,
+        timezone_name=timezone_name,
+        calendar_id=calendar_id,
+    )
     added = 0
     if not newer.empty:
         # Validate the stretch *before* writing — never corrupt the CSV.
-        stretch_gaps = find_intrasession_gaps(newer)
+        stretch_gaps = find_intrasession_gaps(newer, calendar_id=calendar_id)
         if stretch_gaps:
             a, b, delta = stretch_gaps[0]
             raise ValueError(
                 f"IG returned OHLC with mid-session hole {a} → {b} ({delta}); "
                 "refusing to corrupt local CSV"
             )
-        append_bars(path, newer, require_contiguous=True)
+        append_bars(path, newer, require_contiguous=True, calendar_id=calendar_id)
         added = int(len(newer))
         last_ts = pd.Timestamp(newer.index[-1])
     return {
@@ -276,13 +298,14 @@ def prepare_live_ohlc_feed(
     Load local 15m CSV, optionally top up bars from IG, resample higher TFs.
 
     Never bootstraps an empty CSV (caller must Sync/upload once).
-    Skips LLM when the chart window still contains mid-session holes.
+    Mid-session holes inside the chart lookback are warnings only (not LLM blockers).
 
     When ``stream_healthy`` is True, skips hot-path REST ``/prices`` top-up
     unless the CSV is behind the expected closed bar (one gap-repair fetch).
     When ``stream_stale`` is True during an open session, fail-closed for LLM.
     """
     tz = str(config.data_timezone or "Europe/Paris")
+    cal_id = _feed_calendar_id(config)
     empty = pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
     if not path.exists() or path.stat().st_size <= 0:
         return LiveOhlcFeed(
@@ -323,7 +346,7 @@ def prepare_live_ohlc_feed(
                 )
                 expected = expected_last_closed_15m(now=now, tz=tz)
                 if last_local < expected and not is_natural_session_break(
-                    last_local, expected
+                    last_local, expected, calendar_id=cal_id
                 ):
                     do_top_up = True
                     warnings.append(
@@ -341,6 +364,7 @@ def prepare_live_ohlc_feed(
                 max_bars=LIVE_TOP_UP_BARS,
                 timezone_name=tz,
                 now=now,
+                calendar_id=cal_id,
             )
             top_up_added = int(result.get("added") or 0)
             if isinstance(result.get("allowance"), dict):
@@ -416,7 +440,7 @@ def prepare_live_ohlc_feed(
             warnings.append(error)
     elif (
         slots_behind_expected > STALE_OK_SLOTS
-        and not is_natural_session_break(last_local, expected)
+        and not is_natural_session_break(last_local, expected, calendar_id=cal_id)
     ):
         # Top-up "succeeded" with 0 bars but we're still mid-session behind.
         stale = True
@@ -448,17 +472,18 @@ def prepare_live_ohlc_feed(
         warnings.append(error)
 
     w15, w1h, w1d = build_live_frames(df_full, config)
-    chart_gaps = find_intrasession_gaps(w15)
+    # Historical holes in the lookback window must not block LLM: charts use an
+    # integer x-index (gap = nothing), and vendor CSVs often miss a bar or two.
+    # Tip freshness / stream stale still fail-close above.
+    chart_gaps = find_intrasession_gaps(w15, calendar_id=cal_id)
     if chart_gaps:
         a, b, delta = chart_gaps[0]
-        skip_llm = True
         gap_msg = (
             f"OHLC chart window has mid-session gap {a} → {b} ({delta}); "
-            "skipping LLM until Sync fills missing 15m bars"
+            "continuing (charts omit the hole — Sync if you want it filled)"
         )
-        error = gap_msg if not error else f"{error}\n{gap_msg}"
         warnings.append(gap_msg)
-        logger.error(gap_msg)
+        logger.warning(gap_msg)
 
     last_price = float(df_full["close"].iloc[-1])
     if stream_mid is not None:

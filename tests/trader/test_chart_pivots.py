@@ -5,9 +5,12 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pandas as pd
+import pytest
 
 from chatbot.trader.chart_renderer import (
+    candle_body_height,
     daily_pivot_map,
+    min_candle_body_height,
     normalize_pivot_period,
     pivot_map,
     render_multi_timeframe,
@@ -97,6 +100,35 @@ def test_render_multi_skips_pivots_on_daily(tmp_path: Path) -> None:
         # titles are "CAC40 15m" / "CAC40 1D"
         assert any(k and "15m" in k and v is True for k, v in calls.items())
         assert any(k and "1D" in k and v is False for k, v in calls.items())
+
+
+def test_fx_doji_body_height_is_not_absolute_tenth() -> None:
+    """Regression: absolute 0.1 body turned EURUSD flat bars into 1.15→1.25 spikes."""
+    idx = pd.date_range("2026-08-01 10:00", periods=20, freq="15min", tz="Europe/Paris")
+    price = 1.1530
+    df = pd.DataFrame(
+        {
+            "open": [price] * 20,
+            "high": [price] * 20,
+            "low": [price] * 20,
+            "close": [price] * 20,
+            "volume": [1] * 20,
+        },
+        index=idx,
+    )
+    min_body = min_candle_body_height(df)
+    height = candle_body_height(price, price, price, price, min_height=min_body)
+    assert height < 0.001
+    assert height > 0
+    # Mixed series: doji uses scale of real ranges, not 0.1.
+    df2 = df.copy()
+    df2.loc[df2.index[0], ["high", "low"]] = (price + 0.0010, price - 0.0010)
+    min_body2 = min_candle_body_height(df2)
+    height2 = candle_body_height(price, price, price, price, min_height=min_body2)
+    assert height2 < 0.001
+    assert candle_body_height(1.15, 1.151, 1.149, 1.1505, min_height=min_body2) == pytest.approx(
+        0.0005
+    )
 
 
 def test_render_respects_rsi_and_pivot_toggles(tmp_path: Path) -> None:

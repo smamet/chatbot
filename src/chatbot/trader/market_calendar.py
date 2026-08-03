@@ -50,8 +50,24 @@ def _calendar_params(calendar_id: str | None) -> dict[str, Any]:
             "close_weekday": _FX_CLOSE_WEEKDAY,
             "close_time": _FX_CLOSE_TIME,
             "use_euronext_holidays": False,
+            # No cash-session pause — FX is continuous inside the weekly window.
+            "cash_session_hours": None,
             "weekly_open_label": "Sun 22:05 Europe/London",
             "weekly_close_label": "Fri 21:55 Europe/London",
+        }
+    if key in ("ig_index_cfd", "index_cfd", "ig_index"):
+        # Generic IG index CFD weekly window (no Euronext holiday set).
+        return {
+            "id": "ig_index_cfd",
+            "source": "IG Index CFD 24x5 (approx)",
+            "open_weekday": _FR40_OPEN_WEEKDAY,
+            "open_time": _FR40_OPEN_TIME,
+            "close_weekday": _FR40_CLOSE_WEEKDAY,
+            "close_time": _FR40_CLOSE_TIME,
+            "use_euronext_holidays": False,
+            "cash_session_hours": (8, 18),
+            "weekly_open_label": "Sun 23:02 Europe/London",
+            "weekly_close_label": "Fri 22:00 Europe/London",
         }
     return {
         "id": "euronext_fr40",
@@ -61,9 +77,50 @@ def _calendar_params(calendar_id: str | None) -> dict[str, Any]:
         "close_weekday": _FR40_CLOSE_WEEKDAY,
         "close_time": _FR40_CLOSE_TIME,
         "use_euronext_holidays": True,
+        # Paris-local cash hours: IG often pauses overnight ↔ cash open.
+        "cash_session_hours": (8, 18),
         "weekly_open_label": "Sun 23:02 Europe/London",
         "weekly_close_label": "Fri 22:00 Europe/London",
     }
+
+
+def resolve_calendar_id(
+    *,
+    calendar_id: str | None = None,
+    market_profile: str | None = None,
+    epic: str | None = None,
+) -> str:
+    """Pick a session calendar (explicit → epic family → profile → default).
+
+    Epic family wins over profile so a DAX epic on a misc profile still gets
+    index hours, and ``CS.D.*`` always gets FX 24×5 — charts/gaps stay sane.
+    """
+    explicit = str(calendar_id or "").strip()
+    if explicit:
+        return str(_calendar_params(explicit)["id"])
+    ep = str(epic or "").strip().upper()
+    if ep.startswith(("CS.D.", "CS.C.")):
+        return "forex_ig"
+    if ep.startswith("IX.D."):
+        # CAC keeps Euronext holidays; other index CFDs share the weekly window only.
+        if ".CAC." in ep:
+            return "euronext_fr40"
+        return "ig_index_cfd"
+    if market_profile:
+        from chatbot.trader.profiles import get_profile
+
+        return get_profile(market_profile).calendar_id
+    return "euronext_fr40"
+
+
+def cash_session_hours(calendar_id: str | None = None) -> tuple[int, int] | None:
+    """Paris-local (start, end) hours for index cash pauses, or None for 24×5 FX."""
+    hours = _calendar_params(resolve_calendar_id(calendar_id=calendar_id)).get(
+        "cash_session_hours"
+    )
+    if hours is None:
+        return None
+    return int(hours[0]), int(hours[1])
 
 
 def euronext_closures(year: int) -> dict[date, str]:

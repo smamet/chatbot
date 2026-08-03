@@ -17,6 +17,7 @@ from chatbot.application.trader_stream_service import (
     evaluate_stream_stale,
     local_ohlc_is_caught_up,
     reconcile_open_book_under_lock,
+    stream_bar_is_tradeable,
     stream_book_reconcile_is_fresh,
     stream_is_healthy,
 )
@@ -136,6 +137,77 @@ def test_stream_book_reconcile_is_fresh() -> None:
     assert not stream_book_reconcile_is_fresh(status, now=now)
 
 
+def test_ig_stream_skips_bar_build_when_market_closed() -> None:
+    from chatbot.trader.ig_stream_service import IgStreamService
+
+    closed_bars: list = []
+    ticks: list = []
+    svc = IgStreamService(
+        endpoint="https://example",
+        account_id="ACC",
+        cst="c",
+        xst="x",
+        epic="CS.D.EURUSD.MINI.IP",
+        on_tick=lambda q: ticks.append(q),
+        on_bar_closed=lambda bar, q: closed_bars.append(bar),
+    )
+
+    class _Update:
+        def __init__(self, fields: dict) -> None:
+            self._fields = fields
+
+        def getValue(self, key: str):  # noqa: N802
+            return self._fields.get(key)
+
+    # First tick opens a bar while tradeable.
+    svc._handle_price_update(
+        _Update(
+            {
+                "BID": "1.15",
+                "OFFER": "1.1502",
+                "MARKET_STATE": "TRADEABLE",
+            }
+        )
+    )
+    assert svc._open_bar is not None
+    assert len(ticks) == 1
+
+    # Closed-market snapshots must drop the open bar and never close one.
+    svc._handle_price_update(
+        _Update(
+            {
+                "BID": "1.15",
+                "OFFER": "1.1502",
+                "MARKET_STATE": "CLOSED",
+            }
+        )
+    )
+    assert svc._open_bar is None
+    assert closed_bars == []
+    assert len(ticks) == 2
+
+
+def test_stream_bar_is_tradeable_gates_market_state_and_calendar() -> None:
+    assert stream_bar_is_tradeable({"market_state": "TRADEABLE"})
+    assert stream_bar_is_tradeable({"market_state": "AVAILABLE"})
+    assert stream_bar_is_tradeable({})  # unknown → allow (calendar may still gate)
+    assert not stream_bar_is_tradeable({"market_state": "CLOSED"})
+    assert not stream_bar_is_tradeable({"market_state": "EDITABLE"})
+    # Saturday mid-day — FX and FR40 both closed.
+    sat = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+    assert not stream_bar_is_tradeable(
+        {"market_state": "TRADEABLE"}, calendar_id="forex_ig", bar_time=sat
+    )
+    assert not stream_bar_is_tradeable(
+        {"market_state": "TRADEABLE"}, calendar_id="euronext_fr40", bar_time=sat
+    )
+    # Wednesday London morning — open for both.
+    wed = datetime(2026, 7, 29, 10, 0, tzinfo=timezone.utc)
+    assert stream_bar_is_tradeable(
+        {"market_state": "TRADEABLE"}, calendar_id="forex_ig", bar_time=wed
+    )
+
+
 def test_append_closed_stream_bar(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     from chatbot.config.settings import Settings
 
@@ -180,6 +252,53 @@ def test_append_closed_stream_bar(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert result.get("added") == 1, result
     loaded = pd.read_csv(path)
     assert len(loaded) == 3
+
+
+def test_append_closed_stream_bar_skips_when_market_closed(tmp_path: Path) -> None:
+    from chatbot.config.settings import Settings
+
+    settings = Settings(data_root=tmp_path)
+    slug = "fx-bot"
+    ohlc_dir = tmp_path / "trader" / slug / "ohlc"
+    ohlc_dir.mkdir(parents=True)
+    path = ohlc_dir / "ohlc_15m.csv"
+    idx = pd.DatetimeIndex(
+        [pd.Timestamp("2026-07-31 21:45:00", tz="Europe/Paris")],
+        name="ts",
+    )
+    seed = pd.DataFrame(
+        {
+            "open": [1.15],
+            "high": [1.151],
+            "low": [1.149],
+            "close": [1.1505],
+            "volume": [1],
+        },
+        index=idx,
+    )
+    out = seed.reset_index()
+    out.columns = ["Date", "Open", "High", "Low", "Close", "Volume"]
+    out.to_csv(path, index=False)
+
+    # Saturday — must not append a flat synthetic bar.
+    bar = TickBar(
+        bucket_start=datetime(2026, 8, 1, 10, 0, tzinfo=timezone.utc),
+        open=1.15,
+        high=1.15,
+        low=1.15,
+        close=1.15,
+        ticks=1,
+    )
+    result = append_closed_stream_bar(
+        settings,
+        slug,
+        bar,
+        timezone_name="Europe/Paris",
+        quote={"market_state": "CLOSED"},
+        calendar_id="forex_ig",
+    )
+    assert result.get("skipped") == "market_closed"
+    assert len(pd.read_csv(path)) == 1
 
 
 def test_prepare_live_ohlc_skips_prices_when_stream_healthy(

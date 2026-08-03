@@ -165,7 +165,7 @@ def test_find_intrasession_gaps_detects_mid_session_hole() -> None:
     assert hist_report["severity"] == "info"
 
 
-def test_prepare_feed_skips_llm_on_chart_gap(tmp_path: Path) -> None:
+def test_prepare_feed_warns_but_allows_llm_on_chart_gap(tmp_path: Path) -> None:
     path = tmp_path / "ohlc_15m.csv"
     a = _sample_bars("2024-06-03 09:00:00", n=10)
     b = _sample_bars("2024-06-03 12:00:00", n=40)  # mid-session hole
@@ -185,8 +185,9 @@ def test_prepare_feed_skips_llm_on_chart_gap(tmp_path: Path) -> None:
             connector=None,
             top_up=False,
         )
-    assert feed.skip_llm is True
-    assert feed.error and "mid-session gap" in feed.error
+    assert feed.skip_llm is False
+    assert feed.error is None
+    assert any("mid-session gap" in w for w in feed.warnings)
 
 
 def test_top_up_range_catchup_fills_large_gap(tmp_path: Path) -> None:

@@ -202,12 +202,38 @@ def local_ohlc_is_caught_up(
         return False
 
 
+def stream_bar_is_tradeable(
+    quote: dict[str, Any] | None = None,
+    *,
+    calendar_id: str | None = None,
+    bar_time: datetime | None = None,
+) -> bool:
+    """True when a closed stream bar may be written to OHLC CSV.
+
+    Gates on IG MARKET_STATE (when present) and, when ``calendar_id`` is set, the
+    profile session calendar so weekend/holiday snapshot ticks never become
+    synthetic candles — for FX and indices alike.
+    """
+    market_state = str((quote or {}).get("market_state") or "").strip().upper()
+    if market_state and market_state not in ("TRADEABLE", "AVAILABLE"):
+        return False
+    cal = str(calendar_id or "").strip()
+    if cal:
+        from chatbot.trader.market_calendar import is_dealing_open
+
+        if not is_dealing_open(bar_time, calendar_id=cal):
+            return False
+    return True
+
+
 def append_closed_stream_bar(
     settings: Settings,
     slug: str,
     bar: TickBar,
     *,
     timezone_name: str = "Europe/Paris",
+    quote: dict[str, Any] | None = None,
+    calendar_id: str | None = None,
 ) -> dict[str, Any]:
     """Append one closed synthetic 15m bar (bucket_start = bar open ts)."""
     path = default_ohlc_path(settings, slug)
@@ -216,6 +242,10 @@ def append_closed_stream_bar(
         ts = pd.Timestamp(bucket, tz="UTC").tz_convert(timezone_name)
     else:
         ts = pd.Timestamp(bucket).tz_convert(timezone_name)
+    out: dict[str, Any] = {"added": 0, "path": str(path), "ts": str(ts)}
+    if not stream_bar_is_tradeable(quote, calendar_id=calendar_id, bar_time=bucket):
+        out["skipped"] = "market_closed"
+        return out
     # Closed bar is labeled at bucket start (same convention as IG 15m).
     row = pd.DataFrame(
         {
@@ -228,7 +258,6 @@ def append_closed_stream_bar(
         index=pd.DatetimeIndex([ts], name="ts"),
     )
 
-    out: dict[str, Any] = {"added": 0, "path": str(path), "ts": str(ts)}
     if not path.exists():
         out["error"] = "ohlc_csv_missing"
         return out
@@ -240,12 +269,13 @@ def append_closed_stream_bar(
                 out["skipped"] = "already_have"
                 return out
             if not (
-                connects_15m(last, ts) or is_natural_session_break(last, ts)
+                connects_15m(last, ts)
+                or is_natural_session_break(last, ts, calendar_id=calendar_id)
             ):
                 out["error"] = "gap"
                 out["last"] = str(last)
                 return out
-        append_bars(path, row, require_contiguous=True)
+        append_bars(path, row, require_contiguous=True, calendar_id=calendar_id)
         out["added"] = 1
     except Exception as exc:
         out["error"] = str(exc)
@@ -601,14 +631,29 @@ class BotStreamRuntime:
     def _on_tick(self, quote: dict[str, Any]) -> None:
         write_stream_quote(self.settings, self.slug, quote)
 
+    def _resolved_calendar_id(self) -> str:
+        from chatbot.trader.market_calendar import resolve_calendar_id
+
+        return resolve_calendar_id(
+            calendar_id=getattr(self, "_calendar_id", None) or self.cfg.calendar_id,
+            market_profile=self.cfg.market_profile,
+            epic=self.cfg.epic,
+        )
+
     def _on_bar_closed(self, bar: TickBar, quote: dict[str, Any]) -> None:
         tz = str(self.cfg.data_timezone or "Europe/Paris")
+        calendar_id = self._resolved_calendar_id()
         result = append_closed_stream_bar(
             self.settings,
             self.slug,
             bar,
             timezone_name=tz,
+            quote=quote,
+            calendar_id=calendar_id,
         )
+        if result.get("skipped") == "market_closed":
+            write_stream_quote(self.settings, self.slug, quote)
+            return
         if result.get("error") == "gap":
             self._need_gap_repair = True
             # Bypass backoff for the immediate bar-close path (one shot).
@@ -619,6 +664,8 @@ class BotStreamRuntime:
                     self.slug,
                     bar,
                     timezone_name=tz,
+                    quote=quote,
+                    calendar_id=calendar_id,
                 )
                 if result.get("error") == "gap":
                     # Still non-contiguous after top-up — keep pending for heartbeat.
@@ -695,6 +742,7 @@ def discover_armed_stream_bots(
             continue
         primary["_connector_id"] = primary_id or 0
         from chatbot.domain.trader_access import trader_settings_as_integration_dict
+        from chatbot.trader.market_calendar import resolve_calendar_id
         from chatbot.trader.profiles import get_profile
 
         integ = trader_settings_as_integration_dict(tenant)
@@ -704,6 +752,11 @@ def discover_armed_stream_bots(
         epic = str(
             integ.get("epic") or primary.get("epic") or profile.default_epic
         ).strip()
+        calendar_id = resolve_calendar_id(
+            calendar_id=integ.get("calendar_id"),
+            market_profile=profile.id,
+            epic=epic,
+        )
         cfg = TraderConfig(
             ig_api_key=str(primary.get("api_key") or ""),
             ig_username=str(primary.get("username") or ""),
@@ -715,6 +768,8 @@ def discover_armed_stream_bots(
             data_timezone=str(strategy.get("data_timezone") or "Europe/Paris"),
             point_value=float(integ.get("point_value") or profile.default_point_value or 1.0),
             pnl_currency=str(integ.get("pnl_currency") or ""),
+            market_profile=profile.id,
+            calendar_id=calendar_id,
         )
         out.append(
             {
@@ -723,7 +778,7 @@ def discover_armed_stream_bots(
                 "mode": mode,
                 "ig_config": primary,
                 "cfg": cfg,
-                "calendar_id": profile.calendar_id,
+                "calendar_id": calendar_id,
             }
         )
     return out

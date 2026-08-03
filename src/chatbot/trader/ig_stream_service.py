@@ -251,37 +251,44 @@ class IgStreamService:
             ts=now_s,
             epic=self.epic,
         )
+        state_u = market_state.upper()
+        # CLOSED / EDITABLE / etc. still send snapshot ticks — do not synthesize OHLC.
+        tradeable = (not state_u) or state_u in ("TRADEABLE", "AVAILABLE")
         with self._lock:
             self.ticks_total += 1
             self.last_tick_at = now_s
             self.last_quote = quote
-            bucket = _bucket_15m(now)
             closed: TickBar | None = None
-            if self._open_bar is None:
-                self._open_bar = TickBar(
-                    bucket_start=bucket,
-                    open=mid,
-                    high=mid,
-                    low=mid,
-                    close=mid,
-                    ticks=1,
-                )
-            elif self._open_bar.bucket_start != bucket:
-                closed = self._open_bar
-                self._open_bar = TickBar(
-                    bucket_start=bucket,
-                    open=mid,
-                    high=mid,
-                    low=mid,
-                    close=mid,
-                    ticks=1,
-                )
+            if not tradeable:
+                # Drop any in-progress bar so the next open starts clean.
+                self._open_bar = None
             else:
-                bar = self._open_bar
-                bar.high = max(bar.high, mid)
-                bar.low = min(bar.low, mid)
-                bar.close = mid
-                bar.ticks += 1
+                bucket = _bucket_15m(now)
+                if self._open_bar is None:
+                    self._open_bar = TickBar(
+                        bucket_start=bucket,
+                        open=mid,
+                        high=mid,
+                        low=mid,
+                        close=mid,
+                        ticks=1,
+                    )
+                elif self._open_bar.bucket_start != bucket:
+                    closed = self._open_bar
+                    self._open_bar = TickBar(
+                        bucket_start=bucket,
+                        open=mid,
+                        high=mid,
+                        low=mid,
+                        close=mid,
+                        ticks=1,
+                    )
+                else:
+                    bar = self._open_bar
+                    bar.high = max(bar.high, mid)
+                    bar.low = min(bar.low, mid)
+                    bar.close = mid
+                    bar.ticks += 1
         if self.on_tick:
             try:
                 self.on_tick(quote.to_dict())
