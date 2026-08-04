@@ -80,7 +80,7 @@ body {
 
 .brand-logo {
   display: block;
-  height: 26px;
+  height: 34px;
   width: auto;
 }
 
@@ -3865,7 +3865,7 @@ pre.log,
 
 .login-logo {
   display: block;
-  height: 48px;
+  height: 56px;
   width: auto;
   margin: 0 auto var(--space-lg);
 }
