@@ -10,8 +10,8 @@ from datetime import datetime, timezone
 from chatbot.adapters.persistence.engine import create_db_engine, session_factory
 from chatbot.application.trader_stream_service import (
     STREAM_SUPERVISOR_LOOP_SECONDS,
-    BotStreamRuntime,
     discover_armed_stream_bots,
+    sync_stream_runtimes,
     write_stream_worker_status,
 )
 from chatbot.config.settings import get_settings
@@ -30,6 +30,8 @@ def _dealing_open(calendar_id: str | None) -> bool:
 
 
 def run_supervisor(settings, factory, *, once: bool = False) -> None:
+    from chatbot.application.trader_stream_service import BotStreamRuntime
+
     runtimes: dict[str, BotStreamRuntime] = {}
     loop_s = max(2.0, float(STREAM_SUPERVISOR_LOOP_SECONDS))
     refresh_every = max(loop_s, 30.0)
@@ -39,28 +41,7 @@ def run_supervisor(settings, factory, *, once: bool = False) -> None:
         nonlocal last_refresh
         with factory() as session:
             bots = discover_armed_stream_bots(session, settings)
-        wanted = {b["slug"] for b in bots}
-        for slug in list(runtimes.keys()):
-            if slug not in wanted:
-                logger.info("Stopping stream for disarmed bot %s", slug)
-                runtimes.pop(slug).stop()
-        for bot in bots:
-            slug = bot["slug"]
-            if slug in runtimes:
-                continue
-            logger.info("Starting stream for %s epic=%s", slug, bot["cfg"].epic)
-            rt = BotStreamRuntime(
-                settings=settings,
-                slug=slug,
-                mode=bot["mode"],
-                ig_config=bot["ig_config"],
-                cfg=bot["cfg"],
-                enable_trade_reconcile=True,
-            )
-            rt.start()
-            runtimes[slug] = rt
-            # stash calendar for heartbeat
-            rt._calendar_id = bot.get("calendar_id")  # type: ignore[attr-defined]
+        sync_stream_runtimes(runtimes, bots, settings=settings)
         last_refresh = time.monotonic()
 
     refresh_bots()

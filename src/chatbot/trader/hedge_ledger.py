@@ -15,6 +15,7 @@ from chatbot.trader.models import (
     Side,
     WorkingOrder,
 )
+from chatbot.trader.point_size import points_to_price
 
 
 def price_move_pnl(
@@ -273,21 +274,29 @@ class HedgeLedger:
             self.cash += adjustment
         return adjustment
 
+    def _half_spread_price(self, mid: float) -> float:
+        return points_to_price(self.config.spread_points, mid) / 2.0
+
+    def _slippage_price(self, mid: float) -> float:
+        return points_to_price(self.config.slippage_points, mid)
+
     def market_close_fill_price(self, leg: PositionLeg) -> float:
-        half = abs(self.config.spread_points) / 2.0
+        mid = float(self.last_price or leg.entry or 0.0)
+        half = self._half_spread_price(mid)
         return self.last_price - half if leg.side == Side.BUY else self.last_price + half
 
     def estimate_exit_fill(self, close_side: Side, level: float, *, order_type: OrderType = OrderType.LIMIT) -> float:
         """Optimistic touch fill at level (same convention as fill_engine)."""
+        mid = float(self.last_price or level or 0.0)
         if order_type == OrderType.STOP:
-            slip = abs(self.config.slippage_points)
+            slip = self._slippage_price(mid)
             return level + slip if close_side == Side.BUY else level - slip
-        half = abs(self.config.spread_points) / 2.0
+        half = self._half_spread_price(mid)
         return level + half if close_side == Side.BUY else level - half
 
     def market_open(self, side: Side, size: float, *, role: LegRole = LegRole.PRIMARY) -> str:
         price = self.last_price
-        half = abs(self.config.spread_points) / 2.0
+        half = self._half_spread_price(float(price or 0.0))
         fill = price + half if side == Side.BUY else price - half
         leg = self._open_leg(side, size, fill, role)
         return leg.id

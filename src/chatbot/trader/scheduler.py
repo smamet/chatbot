@@ -104,13 +104,50 @@ class LiveScheduler:
         return
 
     @staticmethod
-    def _login_shared(conn: IgConnector) -> None:
+    def _login_shared(conn: IgConnector, *, force: bool = False) -> None:
         from chatbot.trader.ig_session_cache import login_with_shared_cache
 
         try:
-            login_with_shared_cache(conn)
+            login_with_shared_cache(conn, force=force)
         except Exception:
             conn.login()
+
+    @staticmethod
+    def _is_ig_auth_failure(exc: BaseException) -> bool:
+        """True for 401 / invalid client token — worth one forced re-login."""
+        info = compact_ig_error(exc)
+        status = info.get("http_status")
+        code = str(info.get("error_code") or "").lower()
+        if status == 401:
+            return True
+        return any(
+            needle in code
+            for needle in (
+                "client-token-invalid",
+                "security.client-token",
+                "authentication",
+                "invalid-details",
+            )
+        )
+
+    def _force_relogin_primary(self) -> None:
+        """Drop cached CST/XST for the primary connector and login again."""
+        from chatbot.trader.ig_session_cache import (
+            invalidate_cached_session,
+            session_cache_key,
+        )
+
+        self.ig._cst = None
+        self.ig._security = None
+        invalidate_cached_session(
+            session_cache_key(
+                api_key=self.ig.config.ig_api_key or "",
+                username=self.ig.config.ig_username or "",
+                account_id=self.ig.config.ig_account_id or "",
+                acc_type=self.ig.config.ig_acc_type or "DEMO",
+            )
+        )
+        self._login_shared(self.ig, force=True)
 
     def run_forever(self) -> None:
         self._login_shared(self.ig)
@@ -662,11 +699,32 @@ class LiveScheduler:
             ig_orders = self.ig.list_working_orders()
             self._last_rest_book_sync_at = time.time()
         except Exception as exc:
-            logger.exception("IG book sync failed")
-            out["ran"] = True
-            out["desync"] = True
-            out["warnings"].append(f"book_sync:{exc}")
-            return out
+            if self._is_ig_auth_failure(exc):
+                auth_info = compact_ig_error(exc)
+                logger.warning(
+                    "IG book sync auth failure — forcing re-login once (%s)",
+                    auth_info.get("error_code")
+                    or auth_info.get("http_status")
+                    or exc,
+                )
+                try:
+                    self._force_relogin_primary()
+                    ig_positions = self.ig.list_open_positions()
+                    ig_orders = self.ig.list_working_orders()
+                    self._last_rest_book_sync_at = time.time()
+                    out["warnings"].append("book_sync:relogin_after_auth_failure")
+                except Exception as retry_exc:
+                    logger.exception("IG book sync failed after re-login")
+                    out["ran"] = True
+                    out["desync"] = True
+                    out["warnings"].append(f"book_sync:{retry_exc}")
+                    return out
+            else:
+                logger.exception("IG book sync failed")
+                out["ran"] = True
+                out["desync"] = True
+                out["warnings"].append(f"book_sync:{exc}")
+                return out
 
         out["ran"] = True
         sync = sync_open_book_from_ig(
@@ -676,6 +734,7 @@ class LiveScheduler:
             epic=self.config.epic,
             exit_price_for_leg=self._exit_price_for_leg,
         )
+        prior_warnings = list(out.get("warnings") or [])
         out.update(
             {
                 "ig_net": sync.get("ig_net"),
@@ -688,7 +747,7 @@ class LiveScheduler:
                 "imported": list(sync.get("imported") or []),
                 "dropped_orders": list(sync.get("dropped_orders") or []),
                 "repair": sync.get("repair"),
-                "warnings": list(sync.get("warnings") or []),
+                "warnings": prior_warnings + list(sync.get("warnings") or []),
                 "quarantined": list(sync.get("quarantined") or []),
             }
         )

@@ -11,6 +11,7 @@ from chatbot.application.trader_live_service import (
 )
 from chatbot.trader.config import TraderConfig
 from chatbot.trader.hedge_ledger import HedgeLedger
+from chatbot.trader.ig_connector import IgApiError
 from chatbot.trader.models import (
     LegRole,
     OrderPurpose,
@@ -1092,3 +1093,50 @@ def test_stream_skip_reloads_ledger_from_disk(tmp_path: Path):
     ]
     assert len(tps) == 1
     assert tps[0].deal_id == "attached:WO_E:tp"
+
+
+def test_sync_ledger_relgins_once_on_client_token_invalid(tmp_path: Path):
+    cfg = _cfg(ig_api_key="k", ig_username="u", ig_password="p", ig_account_id="A")
+    sched = LiveScheduler(
+        cfg, api_key="x", journal_dir=tmp_path / "j", dry_run=False, sleep_seconds=1
+    )
+    sched.ig._cst = "stale"
+    sched.ig._security = "stale"
+    auth_err = IgApiError(
+        "IG list_positions failed: HTTP 401\n"
+        "URL: https://demo-api.ig.com/gateway/deal/positions\n"
+        "IG errorCode: error.security.client-token-invalid"
+    )
+    sched.ig.list_open_positions = MagicMock(
+        side_effect=[
+            auth_err,
+            [
+                {
+                    "deal_id": "DI_OK",
+                    "epic": cfg.epic,
+                    "side": Side.SELL,
+                    "size": 1.0,
+                    "level": 8455.0,
+                }
+            ],
+        ]
+    )
+    sched.ig.list_working_orders = MagicMock(return_value=[])
+    sched._force_relogin_primary = MagicMock()  # type: ignore[method-assign]
+
+    out = sched._sync_ledger_from_ig()
+    assert out["ran"] is True
+    assert out["desync"] is False
+    assert out["repaired"] is True
+    assert "book_sync:relogin_after_auth_failure" in (out.get("warnings") or [])
+    sched._force_relogin_primary.assert_called_once()
+    assert sched.ig.list_open_positions.call_count == 2
+
+
+def test_is_ig_auth_failure_detects_401_and_token_codes():
+    assert LiveScheduler._is_ig_auth_failure(
+        IgApiError("IG list_positions failed: HTTP 401\nIG errorCode: error.security.client-token-invalid")
+    )
+    assert not LiveScheduler._is_ig_auth_failure(
+        IgApiError("IG list_positions failed: HTTP 403\nIG errorCode: error.security.api-key-disabled")
+    )

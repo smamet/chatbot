@@ -17,6 +17,7 @@ from chatbot.trader.models import (
     Side,
     WorkingOrder,
 )
+from chatbot.trader.point_size import infer_point_size, points_to_price
 
 logger = logging.getLogger(__name__)
 
@@ -456,7 +457,7 @@ class IgConnector:
         if bid is not None and offer is not None and bid > 0 and offer > 0:
             return float(bid), float(offer)
         mid = float(self.ledger.last_price or 0)
-        half = max(0.0, float(self.config.spread_points or 0) / 2.0)
+        half = points_to_price(self.config.spread_points, mid) / 2.0
         if mid <= 0:
             return 0.0, 0.0
         return mid - half, mid + half
@@ -488,8 +489,6 @@ class IgConnector:
                     mid = (bid + offer) / 2.0
             except (TypeError, ValueError):
                 mid = 0.0
-        from chatbot.trader.point_size import infer_point_size
-
         return infer_point_size(mid)
 
     def resolve_min_stop_or_limit_distance(self, *, epic: str | None = None) -> float:
@@ -1299,12 +1298,9 @@ class IgConnector:
             except (TypeError, ValueError):
                 pass
         if fill <= 0:
-            half = abs(self.config.spread_points) / 2.0
-            fill = (
-                float(self.ledger.last_price or 0) + half
-                if side == Side.BUY
-                else float(self.ledger.last_price or 0) - half
-            )
+            mid = float(self.ledger.last_price or 0)
+            half = points_to_price(self.config.spread_points, mid) / 2.0
+            fill = mid + half if side == Side.BUY else mid - half
         leg = self.ledger._open_leg(side, qty, fill, role, deal_id=deal_id)
         logger.info(
             "IG market open accepted %s size=%s dealRef=%s dealId=%s leg=%s",

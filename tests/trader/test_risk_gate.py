@@ -918,7 +918,7 @@ def _hedge_cover_count(ledger: HedgeLedger) -> int:
 
 
 def test_rejects_second_orphan_hedge_after_entry_rejected():
-    """Cycle 20260730_170044: linked hedge OK; rejected entry; orphan twin rejected."""
+    """Linked hedge OK; twin hedge at same level rejected (FX band is pips, not raw price)."""
     from chatbot.trader.models import LegRole
 
     cfg = TraderConfig(
@@ -962,7 +962,8 @@ def test_rejects_second_orphan_hedge_after_entry_rejected():
             ),
         )
     )
-    assert any("same_level_primary" in r for r in result.rejected)
+    # Entry @ 1.1530 is ~62 pips from 1.1468 — not same-level under a 15-pip band.
+    assert not any("same_level_primary" in r for r in result.rejected), result.rejected
     assert _hedge_cover_count(ledger) == 1
     assert any(any(tag in r for tag in _ORPHAN_HEDGE_REASONS) for r in result.rejected)
 
@@ -1123,3 +1124,49 @@ def test_global_default_2pt_nudge_on_index():
     )
     assert abs(hedge.level - 8098.0) < 1e-9
     assert any("hedge_nudged:" in n for n in result.notes)
+
+
+def test_eurusd_market_close_win_not_blocked_by_spread_points():
+    """spread_points are pips on FX — must not invent a losing close fill."""
+    from chatbot.trader.models import LegRole
+
+    cfg = TraderConfig(
+        allow_market_orders=True,
+        spread_points=1.5,
+        prevent_loss_exits=True,
+        point_value=1.0,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.15072
+    hedge = ledger._open_leg(Side.SELL, 1.0, 1.153, LegRole.HEDGE)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(_decision(LlmAction(op="market_close", position_id=hedge.id)))
+    assert result.executed, result.rejected
+    assert hedge.id not in ledger.positions
+    assert not any("loss_exit_blocked" in r for r in result.rejected)
+
+
+def test_eurusd_same_level_band_uses_pips_not_raw_price():
+    """15-point band ≈ 15 pips on EURUSD — 1.1535 vs 1.15 is 35 pips apart."""
+    from chatbot.trader.models import LegRole
+
+    cfg = TraderConfig(
+        order_size=1.0,
+        allow_market_orders=True,
+        spread_points=0,
+        max_open_positions=4,
+        llm_level_band_points=15.0,
+    )
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.15072
+    ledger._open_leg(Side.BUY, 1.0, 1.1535, LegRole.PRIMARY)
+    # Hedge so entry is not blocked as unhedged_open_book
+    ledger._open_leg(Side.SELL, 1.0, 1.153, LegRole.HEDGE)
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(
+            LlmAction(op="place_limit", side="BUY", level=1.15, size=1, purpose="entry"),
+            LlmAction(op="place_limit", side="SELL", level=1.1515, size=1, purpose="tp"),
+        )
+    )
+    assert not any("same_level_primary" in r for r in result.rejected), result.rejected

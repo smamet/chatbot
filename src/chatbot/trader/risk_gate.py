@@ -16,7 +16,7 @@ from chatbot.trader.models import (
     Side,
     WorkingOrder,
 )
-from chatbot.trader.point_size import infer_point_size
+from chatbot.trader.point_size import infer_point_size, points_to_price
 
 logger = logging.getLogger(__name__)
 
@@ -146,7 +146,8 @@ class RiskGate:
 
     def _same_level_primary(self, side: Side, level: float) -> bool:
         """True if an open same-side leg sits within llm_level_band_points of level."""
-        band = abs(float(self.config.llm_level_band_points or 15.0))
+        mid = float(self.ledger.last_price or level or 0.0)
+        band = points_to_price(self.config.llm_level_band_points or 15.0, mid)
         for leg in self.ledger.positions.values():
             if leg.side != side:
                 continue

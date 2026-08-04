@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from chatbot.trader.config import TraderConfig
 from chatbot.trader.models import OrderType, Side, WorkingOrder
+from chatbot.trader.point_size import points_to_price
 
 
 @dataclass(frozen=True)
@@ -13,15 +14,27 @@ class FillResult:
     reason: str
 
 
-def _half_spread(cfg: TraderConfig) -> float:
-    return abs(cfg.spread_points) / 2.0
+def _bar_mid(bar: dict) -> float:
+    try:
+        return float(bar.get("close") or bar.get("open") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _half_spread(cfg: TraderConfig, mid: float) -> float:
+    return points_to_price(cfg.spread_points, mid) / 2.0
+
+
+def _slippage(cfg: TraderConfig, mid: float) -> float:
+    return points_to_price(cfg.slippage_points, mid)
 
 
 def evaluate_limit_fill(order: WorkingOrder, bar: dict, cfg: TraderConfig) -> FillResult | None:
     """Limit fill if bar touches level. Fill at level +/- half spread (never better)."""
     o, h, l, c = bar["open"], bar["high"], bar["low"], bar["close"]
     level = order.level
-    half = _half_spread(cfg)
+    mid = float(c or o or level or 0.0)
+    half = _half_spread(cfg, mid)
 
     if order.side == Side.BUY:
         if l <= level:
@@ -55,7 +68,8 @@ def evaluate_stop_fill(order: WorkingOrder, bar: dict, cfg: TraderConfig) -> Fil
 
     o, h, l = bar["open"], bar["high"], bar["low"]
     level = order.level
-    slip = abs(cfg.slippage_points)
+    mid = _bar_mid(bar) or float(level or 0.0)
+    slip = _slippage(cfg, mid)
     breakout = order.purpose == OrderPurpose.HEDGE_COVER
 
     if order.side == Side.BUY:
@@ -94,7 +108,7 @@ def evaluate_order_fill(order: WorkingOrder, bar: dict, cfg: TraderConfig) -> Fi
         return evaluate_stop_fill(order, bar, cfg)
     if order.type == OrderType.MARKET:
         mid = (bar["open"] + bar["close"]) / 2.0
-        half = _half_spread(cfg)
+        half = _half_spread(cfg, mid)
         price = mid + half if order.side == Side.BUY else mid - half
         return FillResult(order.id, price, "market")
     return None

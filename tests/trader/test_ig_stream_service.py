@@ -20,6 +20,8 @@ from chatbot.application.trader_stream_service import (
     stream_bar_is_tradeable,
     stream_book_reconcile_is_fresh,
     stream_is_healthy,
+    stream_runtime_fingerprint,
+    sync_stream_runtimes,
 )
 from chatbot.trader.ig_session_cache import (
     CachedIgSession,
@@ -135,6 +137,109 @@ def test_stream_book_reconcile_is_fresh() -> None:
     assert stream_book_reconcile_is_fresh(status, now=now)
     status["last_reconcile_at"] = (now - timedelta(seconds=30)).isoformat()
     assert not stream_book_reconcile_is_fresh(status, now=now)
+
+
+def test_stream_runtime_fingerprint_changes_with_api_key() -> None:
+    cfg = TraderConfig(
+        ig_api_key="old-key",
+        ig_username="u",
+        ig_password="p",
+        ig_account_id="A1",
+        epic="CS.D.EURUSD.MINI.IP",
+    )
+    ig = {
+        "_connector_id": 1,
+        "api_key": "old-key",
+        "username": "u",
+        "password": "p",
+        "account_id": "A1",
+        "acc_type": "DEMO",
+    }
+    a = stream_runtime_fingerprint(ig, cfg)
+    ig2 = {**ig, "api_key": "new-key"}
+    cfg2 = TraderConfig(
+        ig_api_key="new-key",
+        ig_username="u",
+        ig_password="p",
+        ig_account_id="A1",
+        epic="CS.D.EURUSD.MINI.IP",
+    )
+    assert stream_runtime_fingerprint(ig2, cfg2) != a
+
+
+def test_sync_stream_runtimes_restarts_when_api_key_changes(tmp_path: Path) -> None:
+    from chatbot.config.settings import Settings
+
+    settings = Settings(data_root=tmp_path)
+    cfg_old = TraderConfig(
+        ig_api_key="old-key",
+        ig_username="u",
+        ig_password="p",
+        ig_account_id="A1",
+        epic="CS.D.EURUSD.MINI.IP",
+    )
+    ig_old = {
+        "_connector_id": 1,
+        "api_key": "old-key",
+        "username": "u",
+        "password": "p",
+        "account_id": "A1",
+        "acc_type": "DEMO",
+    }
+    started: list[str] = []
+    stopped: list[str] = []
+
+    class _FakeRuntime:
+        def __init__(self, **kwargs) -> None:
+            self.slug = kwargs["slug"]
+            self.cfg = kwargs["cfg"]
+            self.ig_config = kwargs["ig_config"]
+            self.fingerprint = stream_runtime_fingerprint(self.ig_config, self.cfg)
+            self._calendar_id = None
+            started.append(self.cfg.ig_api_key)
+
+        def start(self) -> None:
+            return None
+
+        def stop(self) -> None:
+            stopped.append(self.cfg.ig_api_key)
+
+    bot_old = {
+        "slug": "fx",
+        "mode": "live",
+        "ig_config": ig_old,
+        "cfg": cfg_old,
+        "calendar_id": "forex_ig",
+    }
+    runtimes: dict = {}
+    with patch(
+        "chatbot.application.trader_stream_service.BotStreamRuntime", _FakeRuntime
+    ):
+        sync_stream_runtimes(runtimes, [bot_old], settings=settings)
+        assert list(runtimes) == ["fx"]
+        assert started == ["old-key"]
+
+        cfg_new = TraderConfig(
+            ig_api_key="new-key",
+            ig_username="u",
+            ig_password="p",
+            ig_account_id="A1",
+            epic="CS.D.EURUSD.MINI.IP",
+        )
+        bot_new = {
+            **bot_old,
+            "ig_config": {**ig_old, "api_key": "new-key"},
+            "cfg": cfg_new,
+        }
+        sync_stream_runtimes(runtimes, [bot_new], settings=settings)
+        assert stopped == ["old-key"]
+        assert started == ["old-key", "new-key"]
+        assert runtimes["fx"].cfg.ig_api_key == "new-key"
+
+        # Unchanged key → no restart.
+        sync_stream_runtimes(runtimes, [bot_new], settings=settings)
+        assert stopped == ["old-key"]
+        assert started == ["old-key", "new-key"]
 
 
 def test_ig_stream_skips_bar_build_when_market_closed() -> None:

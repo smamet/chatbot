@@ -6,6 +6,7 @@ import pytest
 
 from chatbot.application.trader_live_service import (
     SYNC_LOG_MAX,
+    _config_hash,
     adapt_decision_for_replay,
     append_sync_log,
     append_sync_log_from_payload,
@@ -36,6 +37,32 @@ from chatbot.config.settings import Settings
 @pytest.fixture()
 def settings(tmp_path: Path) -> Settings:
     return Settings(DATA_ROOT=str(tmp_path), APP_SECRET_KEY="test-secret-key-32chars-minimum!!")
+
+
+def test_config_hash_changes_when_ig_api_key_changes() -> None:
+    """Credential edits must invalidate cached LiveScheduler digests."""
+    base = dict(
+        epic="CS.D.EURUSD.MINI.IP",
+        ig_api_key="old-key",
+        ig_username="demo",
+        ig_password="secret",
+        ig_account_id="ABC",
+        ig_acc_type="DEMO",
+    )
+    a = _config_hash(mode="live", connector_ids=[1], cfg=TraderConfig(**base))
+    b = _config_hash(
+        mode="live",
+        connector_ids=[1],
+        cfg=TraderConfig(**{**base, "ig_api_key": "new-key"}),
+    )
+    c = _config_hash(
+        mode="live",
+        connector_ids=[1],
+        cfg=TraderConfig(**{**base, "ig_password": "other"}),
+    )
+    assert a != b
+    assert a != c
+    assert a == _config_hash(mode="live", connector_ids=[1], cfg=TraderConfig(**base))
 
 
 def test_live_config_roundtrip(settings: Settings) -> None:
@@ -291,7 +318,14 @@ def test_get_live_report_from_journal_cycle(settings: Settings, tmp_path: Path) 
                 "cycle_dir": "20260721_120015",
                 "decision": {
                     "analysis": {"bias": "long", "support": 1, "resistance": 2},
-                    "actions": [{"op": "place"}],
+                    "actions": [
+                        {
+                            "op": "place_limit",
+                            "purpose": "entry",
+                            "level": 1.152,
+                        },
+                        {"op": "market_close", "position_id": "p1"},
+                    ],
                 },
                 "executed": ["ok"],
                 "rejected": [],
@@ -331,6 +365,13 @@ def test_get_live_report_from_journal_cycle(settings: Settings, tmp_path: Path) 
     assert cycles[0]["cycle_id"] == "20260721_120015"
     assert cycles[0]["has_charts"] is True
     assert cycles[0]["bias"] == "long"
+    assert cycles[0]["charts"]
+    assert cycles[0]["charts"][0]["tf"] == "15m"
+    assert "live/charts/20260721_120015/chart_15m.png" in cycles[0]["charts"][0]["url"]
+    assert cycles[0]["action_summary"] == [
+        "Entry place @ 1.152",
+        "Market close",
+    ]
 
     report = get_live_report(settings, "demo-bot")
     assert len(report["decisions"]) == 1

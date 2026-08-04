@@ -2181,9 +2181,28 @@ textarea {
 }
 
 .trader-cycles-scroll {
-  height: 22rem;
+  height: 36rem;
   overflow: auto;
   margin-bottom: 1rem;
+}
+
+.trader-run--with-charts {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.45rem;
+}
+
+.trader-run__row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem 1rem;
+  width: 100%;
+}
+
+.trader-run--with-charts .trader-chart-grid--preview {
+  margin-top: 0.15rem;
 }
 
 .trader-orders__table th {

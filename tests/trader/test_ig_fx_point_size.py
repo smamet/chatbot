@@ -191,3 +191,11 @@ def test_eurusd_clearance_uses_dealable_when_last_price_unset() -> None:
     )
     level, _tp, notes = ig.apply_working_order_clearance(order)
     assert abs(level - 1.1405) < 1e-9, (level, notes)
+
+
+def test_points_to_price_fx_vs_index() -> None:
+    from chatbot.trader.point_size import points_to_price
+
+    assert abs(points_to_price(1.5, 1.15) - 0.00015) < 1e-12
+    assert abs(points_to_price(15.0, 1.15) - 0.0015) < 1e-12
+    assert abs(points_to_price(1.5, 8000.0) - 1.5) < 1e-12

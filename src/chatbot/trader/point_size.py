@@ -14,3 +14,8 @@ def infer_point_size(price: float) -> float:
     if 0 < mid < 500:
         return 0.01
     return 1.0
+
+
+def points_to_price(points: float, mid: float) -> float:
+    """Convert config points (pips / index points) into a price delta at ``mid``."""
+    return abs(float(points or 0.0)) * infer_point_size(mid)

@@ -7,32 +7,62 @@
   {% if cycles %}
   <ul class="trader-runs__list trader-runs__list--compact" style="margin-bottom:0;">
     {% for c in cycles %}
-    <li class="trader-run trader-run--compact">
-      <div class="trader-run__main">
-        <a class="trader-run__id" href="/dashboard/bots/{{ slug }}/trader/live/report#cycle-{{ c.cycle_id }}" title="{{ c.cycle_id }}">{{ c.cycle_id }}</a>
-        {% if c.skipped %}<span class="badge off">skipped</span>
-        {% elif c.bias %}<span class="badge">{{ c.bias }}</span>
-        {% else %}<span class="badge">decision</span>{% endif %}
-        {% if c.has_charts %}<span class="badge done">charts</span>{% endif %}
-        {% if c.ts %}
-        <time class="text-muted js-local-datetime" datetime="{{ c.ts }}">{{ c.ts }}</time>
-        {% else %}
-        <span class="text-muted">—</span>
-        {% endif %}
+    {% set summary_chips = c.action_summary if c.action_summary is defined else [] %}
+    <li class="trader-run trader-run--compact trader-run--with-charts">
+      <div class="trader-run__row">
+        <div class="trader-run__main">
+          <a class="trader-run__id" href="/dashboard/bots/{{ slug }}/trader/live/report#cycle-{{ c.cycle_id }}" title="{{ c.cycle_id }}">{{ c.cycle_id }}</a>
+          {% if c.skipped %}<span class="badge off">skipped</span>
+          {% elif c.bias %}<span class="badge">{{ c.bias }}</span>
+          {% else %}<span class="badge">decision</span>{% endif %}
+          {% if not c.skipped %}
+          <span class="trader-decision__actions">
+            {% for chip in summary_chips[:4] %}
+            <span class="trader-decision__chip">{{ chip }}</span>
+            {% endfor %}
+            {% if summary_chips|length > 4 %}
+            <span class="trader-decision__chip trader-decision__chip--more">+{{ summary_chips|length - 4 }}</span>
+            {% endif %}
+          </span>
+          {% endif %}
+          {% if c.has_charts and not c.charts %}<span class="badge done">charts</span>{% endif %}
+          {% if c.ts %}
+          <time class="text-muted js-local-datetime" datetime="{{ c.ts }}">{{ c.ts }}</time>
+          {% else %}
+          <span class="text-muted">—</span>
+          {% endif %}
+        </div>
+        <div class="trader-run__metrics">
+          <span class="trader-run__metric">
+            <b>{{ c.executed_count }}</b>
+            <small>Accepted</small>
+          </span>
+          <span class="trader-run__metric">
+            <b>{{ c.rejected_count }}</b>
+            <small>Rejected</small>
+          </span>
+        </div>
+        <div class="trader-run__actions">
+          <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ slug }}/trader/live/report#cycle-{{ c.cycle_id }}">Open</a>
+        </div>
       </div>
-      <div class="trader-run__metrics">
-        <span class="trader-run__metric">
-          <b>{{ c.executed_count }}</b>
-          <small>Accepted</small>
-        </span>
-        <span class="trader-run__metric">
-          <b>{{ c.rejected_count }}</b>
-          <small>Rejected</small>
-        </span>
+      {% if c.charts %}
+      <div class="trader-chart-grid trader-chart-grid--preview">
+        {% for ch in c.charts %}
+        <figure class="trader-chart">
+          <figcaption>{{ ch.tf }}</figcaption>
+          <button type="button"
+                  class="trader-chart__open"
+                  data-src="{{ ch.url }}"
+                  data-caption="{{ ch.tf }} · {{ c.ts or c.cycle_id }}"
+                  data-filename="{{ ch.file }}"
+                  aria-label="Open chart {{ ch.tf }} fullscreen">
+            <img src="{{ ch.url }}" alt="Chart {{ ch.tf }} at {{ c.ts or c.cycle_id }}" loading="lazy">
+          </button>
+        </figure>
+        {% endfor %}
       </div>
-      <div class="trader-run__actions">
-        <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ slug }}/trader/live/report#cycle-{{ c.cycle_id }}">Open</a>
-      </div>
+      {% endif %}
     </li>
     {% endfor %}
   </ul>

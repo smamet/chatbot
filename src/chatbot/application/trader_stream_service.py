@@ -406,6 +406,7 @@ class BotStreamRuntime:
             "epic": cfg.epic,
             "account_id": str(ig_config.get("account_id") or ""),
         }
+        self.fingerprint = stream_runtime_fingerprint(self.ig_config, self.cfg)
 
     def start(self) -> None:
         ig = IgConnector(self.cfg, dry_run=False)
@@ -702,6 +703,89 @@ class BotStreamRuntime:
         if result.get("error"):
             self._status["error"] = f"reconcile:{result['error']}"
         write_stream_status(self.settings, self.slug, self._status)
+
+
+def stream_runtime_fingerprint(
+    ig_config: dict[str, Any],
+    cfg: TraderConfig,
+) -> tuple[str, ...]:
+    """Identity that forces a stream restart when IG credentials/epic change."""
+    return (
+        str(ig_config.get("_connector_id") or ""),
+        str(ig_config.get("api_key") or cfg.ig_api_key or "").strip(),
+        str(ig_config.get("username") or cfg.ig_username or "").strip().lower(),
+        str(ig_config.get("password") or cfg.ig_password or "").strip(),
+        str(ig_config.get("account_id") or cfg.ig_account_id or "").strip(),
+        str(ig_config.get("acc_type") or cfg.ig_acc_type or "DEMO").strip().upper(),
+        str(cfg.epic or "").strip(),
+    )
+
+
+def invalidate_stream_session_cache(cfg: TraderConfig) -> None:
+    from chatbot.trader.ig_session_cache import (
+        invalidate_cached_session,
+        session_cache_key,
+    )
+
+    invalidate_cached_session(
+        session_cache_key(
+            api_key=cfg.ig_api_key or "",
+            username=cfg.ig_username or "",
+            account_id=cfg.ig_account_id or "",
+            acc_type=cfg.ig_acc_type or "DEMO",
+        )
+    )
+
+
+def sync_stream_runtimes(
+    runtimes: dict[str, BotStreamRuntime],
+    bots: list[dict[str, Any]],
+    *,
+    settings: Settings,
+) -> None:
+    """Start/stop/restart stream runtimes to match armed bots + current IG config.
+
+    Credential or epic changes restart the Lightstreamer session so a dashboard
+    API-key edit is picked up without a worker process restart.
+    """
+    wanted = {b["slug"] for b in bots}
+    for slug in list(runtimes.keys()):
+        if slug not in wanted:
+            logger.info("Stopping stream for disarmed bot %s", slug)
+            rt = runtimes.pop(slug)
+            invalidate_stream_session_cache(rt.cfg)
+            rt.stop()
+
+    for bot in bots:
+        slug = str(bot["slug"])
+        cfg: TraderConfig = bot["cfg"]
+        ig_config = dict(bot["ig_config"])
+        fp = stream_runtime_fingerprint(ig_config, cfg)
+        existing = runtimes.get(slug)
+        if existing is not None and getattr(existing, "fingerprint", None) == fp:
+            existing._calendar_id = bot.get("calendar_id")  # type: ignore[attr-defined]
+            continue
+        if existing is not None:
+            logger.info(
+                "Restarting stream for %s (IG credentials/epic changed)", slug
+            )
+            invalidate_stream_session_cache(existing.cfg)
+            existing.stop()
+            runtimes.pop(slug, None)
+        else:
+            logger.info("Starting stream for %s epic=%s", slug, cfg.epic)
+        rt = BotStreamRuntime(
+            settings=settings,
+            slug=slug,
+            mode=bot["mode"],
+            ig_config=ig_config,
+            cfg=cfg,
+            enable_trade_reconcile=True,
+        )
+        rt.fingerprint = fp  # type: ignore[attr-defined]
+        rt.start()
+        rt._calendar_id = bot.get("calendar_id")  # type: ignore[attr-defined]
+        runtimes[slug] = rt
 
 
 def discover_armed_stream_bots(

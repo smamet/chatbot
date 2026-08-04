@@ -693,6 +693,20 @@ def _resolved_calendar_id(cfg: TraderConfig) -> str:
     return get_profile(cfg.market_profile).calendar_id
 
 
+def _ig_credentials_fingerprint(cfg: TraderConfig) -> str:
+    """Stable hash of IG secrets so credential edits invalidate cached schedulers."""
+    raw = "|".join(
+        [
+            str(cfg.ig_api_key or ""),
+            str(cfg.ig_username or ""),
+            str(cfg.ig_password or ""),
+            str(cfg.ig_account_id or ""),
+            str(cfg.ig_acc_type or "DEMO"),
+        ]
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:32]
+
+
 def _config_hash(
     *,
     mode: str,
@@ -706,6 +720,9 @@ def _config_hash(
         "epic": cfg.epic,
         "ig_account_id": cfg.ig_account_id,
         "ig_acc_type": cfg.ig_acc_type,
+        # Secrets are stripped from public strategy — fingerprint forces rebuild
+        # when the connector API key/password changes without a process restart.
+        "ig_creds": _ig_credentials_fingerprint(cfg),
     }
     raw = json.dumps(payload, sort_keys=True, default=str)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -935,6 +952,8 @@ def list_live_cycles(
     settings: Settings, slug: str, *, limit: int = 50
 ) -> list[dict[str, Any]]:
     """Recent live/paper cycles with LLM/charts (newest first). Matches report rows."""
+    from chatbot.application.trader_decision_ui import summarize_llm_actions
+
     journal = live_journal_dir(settings, slug)
     rows: list[dict[str, Any]] = []
     for cycle_json in journal.glob("*/cycle.json"):
@@ -945,19 +964,36 @@ def list_live_cycles(
         if not isinstance(raw, dict) or not _cycle_worth_showing(raw):
             continue
         dec = raw.get("decision") or {}
-        analysis = (dec.get("analysis") or {}) if isinstance(dec, dict) else {}
+        if not isinstance(dec, dict):
+            dec = {}
+        analysis = dec.get("analysis") or {}
+        if not isinstance(analysis, dict):
+            analysis = {}
+        actions = dec.get("actions") or []
+        if not isinstance(actions, list):
+            actions = []
+        snapshot = raw.get("snapshot") or {}
+        if not isinstance(snapshot, dict):
+            snapshot = {}
         chart_files = list(raw.get("chart_files") or [])
         if not chart_files:
             chart_dir = cycle_json.parent / "charts"
             if chart_dir.is_dir():
                 chart_files = sorted(p.name for p in chart_dir.glob("chart_*.png"))
+        charts = (
+            _live_chart_urls(slug, cycle_id, chart_files) if chart_files else []
+        )
         rows.append(
             {
                 "cycle_id": cycle_id,
                 "ts": raw.get("ts"),
                 "skipped": bool(raw.get("skipped")),
                 "has_charts": bool(chart_files),
+                "charts": charts,
                 "bias": analysis.get("bias"),
+                "action_summary": summarize_llm_actions(
+                    actions, working_orders=snapshot.get("working_orders")
+                ),
                 "executed_count": len(raw.get("executed") or []),
                 "rejected_count": len(raw.get("rejected") or []),
                 "dry_run": bool(raw.get("dry_run")),
@@ -1125,6 +1161,7 @@ def build_live_panel_snapshot(
                 "ts": c.get("ts"),
                 "skipped": c.get("skipped"),
                 "bias": c.get("bias"),
+                "action_summary": c.get("action_summary"),
                 "has_charts": c.get("has_charts"),
                 "executed_count": c.get("executed_count"),
                 "rejected_count": c.get("rejected_count"),

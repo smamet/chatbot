@@ -378,6 +378,9 @@
     </div>
     {% from "trader/_order_index.html" import order_index_table %}
     {{ order_index_table(order_index or [], tenant.slug, heading='Orders', embedded=true) }}
+    {% from "trader/_chart_lightbox.html" import chart_lightbox, chart_lightbox_script %}
+    {{ chart_lightbox(dialog_id='trader-live-lightbox') }}
+    {{ chart_lightbox_script(dialog_id='trader-live-lightbox', root_selector='#trader-live-poll') }}
   </div>
 
   <form id="trader-live-form" method="post" action="/dashboard/bots/{{ tenant.slug }}/trader/live/config" class="stack-form">

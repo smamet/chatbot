@@ -1,0 +1,104 @@
+{# Shared chart lightbox dialog + optional delegated JS init. #}
+{% macro chart_lightbox(dialog_id='trader-lightbox') %}
+<dialog id="{{ dialog_id }}" class="trader-lightbox" aria-label="Chart viewer">
+  <div class="trader-lightbox__bar">
+    <p class="trader-lightbox__caption" id="{{ dialog_id }}-caption"></p>
+    <div class="trader-lightbox__bar-actions">
+      <a class="btn-secondary" id="{{ dialog_id }}-download" href="#" download>Download</a>
+      <button type="button" class="btn-secondary" id="{{ dialog_id }}-close" aria-label="Close">Close</button>
+    </div>
+  </div>
+  <div class="trader-lightbox__stage">
+    <button type="button" class="trader-lightbox__hit trader-lightbox__hit--prev" id="{{ dialog_id }}-prev" aria-label="Previous chart"></button>
+    <img id="{{ dialog_id }}-img" class="trader-lightbox__img" alt="">
+    <button type="button" class="trader-lightbox__hit trader-lightbox__hit--next" id="{{ dialog_id }}-next" aria-label="Next chart"></button>
+  </div>
+</dialog>
+{% endmacro %}
+
+{% macro chart_lightbox_script(dialog_id='trader-lightbox', root_selector='') %}
+<script>
+(function () {
+  const dialogId = {{ dialog_id|tojson }};
+  const rootSelector = {{ root_selector|tojson }};
+  const dialog = document.getElementById(dialogId);
+  if (!dialog) return;
+  const img = document.getElementById(dialogId + '-img');
+  const caption = document.getElementById(dialogId + '-caption');
+  const download = document.getElementById(dialogId + '-download');
+  const btnClose = document.getElementById(dialogId + '-close');
+  const btnPrev = document.getElementById(dialogId + '-prev');
+  const btnNext = document.getElementById(dialogId + '-next');
+  const root = rootSelector ? document.querySelector(rootSelector) : document;
+  if (!root || !img || !caption || !download || !btnClose || !btnPrev || !btnNext) return;
+
+  let index = 0;
+
+  function openers() {
+    const scope = rootSelector ? root : document;
+    return Array.prototype.slice.call(scope.querySelectorAll('.trader-chart__open'));
+  }
+
+  function show(i) {
+    const list = openers();
+    if (!list.length) return;
+    index = (i + list.length) % list.length;
+    const el = list[index];
+    const src = el.dataset.src || '';
+    const name = el.dataset.filename || 'chart.png';
+    img.src = src;
+    img.alt = el.dataset.caption || name;
+    caption.textContent = el.dataset.caption || name;
+    const sep = src.includes('?') ? '&' : '?';
+    download.href = src + sep + 'download=1';
+    download.setAttribute('download', name);
+  }
+
+  function openAt(i) {
+    show(i);
+    if (typeof dialog.showModal === 'function') {
+      dialog.showModal();
+    } else {
+      dialog.setAttribute('open', '');
+    }
+  }
+
+  function close() {
+    if (typeof dialog.close === 'function') {
+      dialog.close();
+    } else {
+      dialog.removeAttribute('open');
+    }
+  }
+
+  root.addEventListener('click', function (e) {
+    const btn = e.target && e.target.closest ? e.target.closest('.trader-chart__open') : null;
+    if (!btn || (rootSelector && !root.contains(btn))) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const list = openers();
+    const i = list.indexOf(btn);
+    if (i >= 0) openAt(i);
+  });
+
+  btnPrev.addEventListener('click', function (e) {
+    e.stopPropagation();
+    show(index - 1);
+  });
+  btnNext.addEventListener('click', function (e) {
+    e.stopPropagation();
+    show(index + 1);
+  });
+  btnClose.addEventListener('click', close);
+  dialog.addEventListener('click', function (e) {
+    if (e.target === dialog) close();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (!dialog.open) return;
+    if (e.key === 'Escape') close();
+    else if (e.key === 'ArrowLeft') show(index - 1);
+    else if (e.key === 'ArrowRight') show(index + 1);
+  });
+})();
+</script>
+{% endmacro %}

@@ -4,6 +4,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Literal
 
+from chatbot.trader.point_size import points_to_price
+
 Zone = Literal["mid_range", "in_band", "beyond"]
 
 TRIGGER_BOOTSTRAP = "bootstrap"
@@ -25,6 +27,15 @@ class TriggerDecision:
 
 def _f(bar: dict[str, Any], key: str) -> float:
     return float(bar[key])
+
+
+def _band_price(bar: dict[str, Any], band_points: float) -> float:
+    """Convert config band points into price units using the bar mid."""
+    try:
+        mid = float(bar.get("close") or bar.get("open") or 0.0)
+    except (TypeError, ValueError, AttributeError):
+        mid = 0.0
+    return points_to_price(band_points, mid)
 
 
 def classify_support_zone(bar: dict[str, Any], support: float, band: float) -> Zone:
@@ -139,7 +150,7 @@ class LlmTrigger:
                 self.pending_reasons = list(reasons)
             return TriggerDecision(should_call=should, reasons=reasons)
 
-        band = max(0.0, float(self.band_points))
+        band = _band_price(bar, self.band_points)
         reasons: list[str] = list(self.pending_reasons)
 
         if support is None or resistance is None:
@@ -199,7 +210,7 @@ class LlmTrigger:
         """Advance zone state after a successful LLM + gate cycle."""
         self.pending_reasons = []
         self.book_change_pending = False
-        band = max(0.0, float(self.band_points))
+        band = _band_price(bar, self.band_points)
         if support is None or resistance is None:
             self._levels_key = (support, resistance)
             self.support_zone = "mid_range"
