@@ -807,11 +807,13 @@ class RiskGate:
                 result.rejected.append("market_close:invalid")
                 return
             leg = self.ledger.positions.get(action.position_id)
-            if leg is not None:
-                exit_px = self.ledger.market_close_fill_price(leg)
-                if self._loss_exit_blocked(leg, exit_px):
-                    result.rejected.append("market_close:loss_exit_blocked")
-                    return
+            if leg is None:
+                result.rejected.append("market_close:missing_position")
+                return
+            exit_px = self.ledger.market_close_fill_price(leg)
+            if self._loss_exit_blocked(leg, exit_px):
+                result.rejected.append("market_close:loss_exit_blocked")
+                return
             try:
                 if self.broker is not None:
                     self.broker.market_close(action.position_id)

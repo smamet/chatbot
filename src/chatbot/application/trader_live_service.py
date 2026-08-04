@@ -3348,14 +3348,59 @@ def run_live_cycle_now(
             }
 
 
-def adapt_decision_for_replay(decision: Any, ledger: Any) -> Any:
+def _replay_position_id_map(
+    ledger: Any, source: dict[str, Any] | None
+) -> dict[str, str]:
+    """Map source-cycle local position ids → current ledger ids via IG dealId."""
+    if not isinstance(source, dict):
+        return {}
+    old_to_deal: dict[str, str] = {}
+    for bucket in (
+        (source.get("snapshot") or {}).get("positions"),
+        (source.get("book_repair") or {}).get("imported_positions"),
+    ):
+        if not isinstance(bucket, list):
+            continue
+        for pos in bucket:
+            if not isinstance(pos, dict):
+                continue
+            pid = str(pos.get("id") or "").strip()
+            did = str(pos.get("deal_id") or "").strip()
+            if pid and did:
+                old_to_deal[pid] = did
+    if not old_to_deal:
+        return {}
+    deal_to_new: dict[str, str] = {}
+    for pid, leg in (getattr(ledger, "positions", None) or {}).items():
+        did = str(getattr(leg, "deal_id", None) or "").strip()
+        if did:
+            deal_to_new[did] = str(pid)
+    out: dict[str, str] = {}
+    for old_pid, did in old_to_deal.items():
+        new_pid = deal_to_new.get(did)
+        if new_pid and new_pid != old_pid:
+            out[old_pid] = new_pid
+    return out
+
+
+def adapt_decision_for_replay(
+    decision: Any,
+    ledger: Any,
+    *,
+    source: dict[str, Any] | None = None,
+) -> Any:
     """Rewrite a stored decision so replay can land on the *current* book.
 
     Stored cancels reference order ids from the source cycle (often remapped by
     book sync). Phantom cancels left muted IG working orders in place, then
     ``duplicate_entry`` blocked the intended re-place. When the decision places
     entry/hedge/tp, clear those resting purposes first.
+
+    ``market_close`` / bracket ``position_id`` values are remapped via dealId
+    from the source cycle snapshot when local ids changed after book repair.
     """
+    from dataclasses import replace
+
     from chatbot.trader.models import LlmAction, LlmDecision, OrderPurpose
 
     if not isinstance(decision, LlmDecision):
@@ -3363,6 +3408,8 @@ def adapt_decision_for_replay(decision: Any, ledger: Any) -> Any:
             decision if isinstance(decision, dict) else {}
         )
     working = getattr(ledger, "working_orders", None) or {}
+    pos_map = _replay_position_id_map(ledger, source)
+    open_ids = set(getattr(ledger, "positions", None) or {})
     places_bracket = any(
         (a.op or "") in ("place_limit", "place_stop")
         and str(a.purpose or "").strip().lower()
@@ -3399,6 +3446,9 @@ def adapt_decision_for_replay(decision: Any, ledger: Any) -> Any:
             new_actions.append(action)
             cleared.add(oid)
             continue
+        pid = str(action.position_id or "").strip()
+        if pid and pid not in open_ids and pid in pos_map:
+            action = replace(action, position_id=pos_map[pid])
         new_actions.append(action)
     return LlmDecision(
         analysis=decision.analysis,
@@ -3566,6 +3616,7 @@ def replay_live_decision(
                 force_llm=False,
                 replay_decision=decision,
                 replay_of=source_cycle or None,
+                replay_source=stored,
             )
             _persist_llm_schedule(sched, settings, slug)
             _write_json(live_state_path(settings, slug), sched.ig.ledger.to_state_dict())

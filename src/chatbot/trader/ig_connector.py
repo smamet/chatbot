@@ -1641,7 +1641,10 @@ class IgConnector:
         """Close a leg at market. Live: DELETE /positions/otc (via POST + _method); paper: ledger."""
         leg = self.ledger.positions.get(position_id)
         if not leg:
-            return
+            raise IgApiError(
+                f"market_close: unknown position_id {position_id!r} "
+                "(stale id after book sync?)"
+            )
         if self.dry_run or not self._cst:
             self.ledger.market_close(position_id)
             return

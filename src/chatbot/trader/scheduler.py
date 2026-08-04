@@ -185,6 +185,7 @@ class LiveScheduler:
         force_llm: bool = False,
         replay_decision: LlmDecision | None = None,
         replay_of: str | None = None,
+        replay_source: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """
         One live/paper cycle.
@@ -193,6 +194,7 @@ class LiveScheduler:
         call Gemini when OHLC is usable and the book is not in unresolved desync.
 
         ``replay_decision``: skip Gemini and re-apply a stored decision (dev tool).
+        ``replay_source``: full source cycle.json (for remapping stale position ids).
 
         When the FR40 session is closed, returns an idle heartbeat without IG
         login, OHLC, charts, or LLM — full path resumes on the next open poll.
@@ -366,10 +368,13 @@ class LiveScheduler:
             decision = replay_decision
             assert decision is not None
             # After IG book sync, local ids differ from the source cycle — rewrite
-            # stale cancels and clear resting brackets so re-place can land.
+            # stale cancels / position ids and clear resting brackets so re-place
+            # (and market_close) can land on the current book.
             from chatbot.application.trader_live_service import adapt_decision_for_replay
 
-            decision = adapt_decision_for_replay(decision, self.ig.ledger)
+            decision = adapt_decision_for_replay(
+                decision, self.ig.ledger, source=replay_source
+            )
             gate_result = gate.apply(decision)
             self._mirror_orders_to_ig(gate_result)
             self._last_decision_summary = summarize_decision(decision)

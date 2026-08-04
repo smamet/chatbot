@@ -1179,6 +1179,45 @@ def test_adapt_decision_for_replay_clears_resting_brackets() -> None:
     assert any(a.op == "place_limit" and a.level == 1.1405 for a in adapted.actions)
 
 
+def test_adapt_decision_for_replay_remaps_position_ids_by_deal_id() -> None:
+    """Book repair renumbers legs — market_close must target the current id."""
+    from chatbot.trader.models import LlmAction, LlmAnalysis, LlmDecision
+
+    ledger = HedgeLedger(config=TraderConfig(symbol="EURUSD"), symbol="EURUSD")
+    ledger.last_price = 1.1507
+    new_leg = ledger._open_leg(
+        Side.SELL, 1.0, 1.153, LegRole.HEDGE, deal_id="DIAAAAX766DKMAZ"
+    )
+    stored = LlmDecision(
+        analysis=LlmAnalysis(support=1.15, resistance=1.152, bias="long"),
+        actions=[
+            LlmAction(
+                op="market_close",
+                side="BUY",
+                size=1.0,
+                position_id="p1889",
+                purpose="close",
+            ),
+        ],
+    )
+    source = {
+        "snapshot": {
+            "positions": [
+                {
+                    "id": "p1889",
+                    "side": "SELL",
+                    "deal_id": "DIAAAAX766DKMAZ",
+                    "entry": 1.153,
+                }
+            ]
+        }
+    }
+    adapted = adapt_decision_for_replay(stored, ledger, source=source)
+    close = next(a for a in adapted.actions if a.op == "market_close")
+    assert close.position_id == new_leg.id
+    assert close.position_id != "p1889"
+
+
 def test_build_live_order_index_from_journal(settings: Settings) -> None:
     from chatbot.application.trader_live_service import (
         build_live_order_index,

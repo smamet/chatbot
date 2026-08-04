@@ -313,6 +313,20 @@ def test_replace_open_quarantines_phantom():
     assert OrderPurpose.HEDGE_COVER in purposes
 
 
+def test_market_close_unknown_leg_raises(tmp_path: Path):
+    cfg = _cfg()
+    from chatbot.trader.ig_connector import IgConnector
+
+    conn = IgConnector(cfg, dry_run=False)
+    conn._cst = "cst"
+    conn._security = "sec"
+    try:
+        conn.market_close("p_missing")
+        raise AssertionError("expected IgApiError")
+    except IgApiError as exc:
+        assert "unknown position_id" in str(exc)
+
+
 def test_market_close_live_posts_ig(tmp_path: Path):
     cfg = _cfg()
     from chatbot.trader.ig_connector import IgConnector

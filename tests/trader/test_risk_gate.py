@@ -1102,6 +1102,19 @@ def test_market_close_without_position_id_disabled():
     assert any("market_disabled" in r for r in result.rejected)
 
 
+def test_market_close_stale_position_id_rejected_not_executed():
+    """Missing legs must not be reported as executed (silent broker no-op)."""
+    cfg = TraderConfig(allow_market_orders=True, spread_points=0)
+    ledger = HedgeLedger(config=cfg)
+    ledger.last_price = 1.15
+    gate = RiskGate(cfg, ledger)
+    result = gate.apply(
+        _decision(LlmAction(op="market_close", position_id="p1889", side="BUY", size=1))
+    )
+    assert result.executed == []
+    assert "market_close:missing_position" in result.rejected
+
+
 def test_global_default_2pt_nudge_on_index():
     cfg = TraderConfig(
         order_size=1.0,
