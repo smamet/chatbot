@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from chatbot.application.customer_access_gate import (
+from evenor.application.customer_access_gate import (
     CustomerAccessGate,
     CustomerContext,
     build_channel_session_id,

@@ -4,11 +4,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.adapters.google.oauth import (
+from evenor.adapters.google.oauth import (
     OAuthTokens,
     build_authorize_url,
 )
-from chatbot.adapters.microsoft.oauth import (
+from evenor.adapters.microsoft.oauth import (
     OAuthTokens as MsOAuthTokens,
     build_authorize_url as ms_build_authorize_url,
     exchange_code as ms_exchange_code,
@@ -62,7 +62,7 @@ def test_google_authorize_url_offline_consent() -> None:
     assert "mail.google.com" in url
 
 
-@patch("chatbot.adapters.microsoft.oauth.httpx.Client")
+@patch("evenor.adapters.microsoft.oauth.httpx.Client")
 def test_microsoft_exchange_code(mock_client_cls) -> None:
     response = MagicMock()
     response.json.return_value = {
@@ -83,7 +83,7 @@ def test_microsoft_exchange_code(mock_client_cls) -> None:
     assert tokens.refresh_token == "rt"
 
 
-@patch("chatbot.adapters.google.oauth.httpx.Client")
+@patch("evenor.adapters.google.oauth.httpx.Client")
 def test_google_refresh_access_token(mock_client_cls) -> None:
     response = MagicMock()
     response.json.return_value = {
@@ -92,7 +92,7 @@ def test_google_refresh_access_token(mock_client_cls) -> None:
     }
     mock_client_cls.return_value.__enter__.return_value.post.return_value = response
 
-    from chatbot.adapters.google.oauth import refresh_access_token as google_refresh
+    from evenor.adapters.google.oauth import refresh_access_token as google_refresh
 
     tokens = google_refresh(
         refresh_token="rt",

@@ -5,11 +5,11 @@ import uuid
 import pytest
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource, SettingsConfigDict
 
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.tenant_service import TenantService
-from chatbot.config.settings import Settings, reset_settings_cache_for_tests
-from chatbot.domain.models.tenant import Tenant, TenantConfig
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.tenant_service import TenantService
+from evenor.config.settings import Settings, reset_settings_cache_for_tests
+from evenor.domain.models.tenant import Tenant, TenantConfig
 
 
 class TestSettings(Settings):

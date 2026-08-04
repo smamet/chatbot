@@ -6,18 +6,18 @@ from unittest.mock import MagicMock
 import pytest
 from cryptography.fernet import Fernet
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.validation_translate_service import (
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.validation_translate_service import (
     ValidationTranslateError,
     translate_pending_reply_draft,
 )
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.fulfillment import FulfillmentKind
-from chatbot.domain.models.tenant import TenantConfig
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.fulfillment import FulfillmentKind
+from evenor.domain.models.tenant import TenantConfig
 
 
 @pytest.fixture
@@ -31,7 +31,7 @@ def translate_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "admin")
     monkeypatch.setenv("GEMINI_API_KEY", "fake")
     reset_settings_cache_for_tests()
-    from chatbot.config.settings import get_settings
+    from evenor.config.settings import get_settings
 
     settings = get_settings()
     engine = create_db_engine(settings, for_tests=True)

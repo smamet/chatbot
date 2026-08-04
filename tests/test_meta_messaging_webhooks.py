@@ -10,11 +10,11 @@ from fastapi.testclient import TestClient
 
 from datetime import UTC, datetime
 
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.interfaces.api.deps import get_connector_service, get_webhook_chat_service, get_webhook_tenant
-from chatbot.interfaces.api.main import create_app
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.domain.models.connector import Connector, ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.interfaces.api.deps import get_connector_service, get_webhook_chat_service, get_webhook_tenant
+from evenor.interfaces.api.main import create_app
 
 WEBHOOK_SLUG = "meta-bot"
 
@@ -65,7 +65,7 @@ def meta_client(monkeypatch: pytest.MonkeyPatch, tmp_path) -> TestClient:
     monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "verify-shared")
     monkeypatch.setenv("WHATSAPP_APP_SECRET", "meta-secret")
     reset_settings_cache_for_tests()
-    from chatbot.config.settings import get_settings
+    from evenor.config.settings import get_settings
 
     settings = get_settings()
     engine = create_db_engine(settings, for_tests=True)
@@ -136,7 +136,7 @@ def test_instagram_post_rejects_bad_signature(meta_client: TestClient) -> None:
 
 def test_messenger_post_text_inbound_ok(meta_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "chatbot.interfaces.api.routers.messenger_webhook.messenger_meta.send_messenger_text",
+        "evenor.interfaces.api.routers.messenger_webhook.messenger_meta.send_messenger_text",
         lambda **kwargs: None,
     )
     body = {
@@ -164,7 +164,7 @@ def test_messenger_post_text_inbound_ok(meta_client: TestClient, monkeypatch: py
 
 def test_instagram_post_text_inbound_ok(meta_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "chatbot.interfaces.api.routers.instagram_webhook.instagram_meta.send_instagram_text",
+        "evenor.interfaces.api.routers.instagram_webhook.instagram_meta.send_instagram_text",
         lambda **kwargs: None,
     )
     body = {

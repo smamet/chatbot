@@ -3,9 +3,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from chatbot.application.outbound_orchestrator import queue_after_chat
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.fulfillment import FulfillmentKind
+from evenor.application.outbound_orchestrator import queue_after_chat
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.fulfillment import FulfillmentKind
 
 
 def _email_connector():
@@ -36,22 +36,22 @@ def test_queue_after_chat_precreates_quote_when_enabled() -> None:
     pending = SimpleNamespace(id=99)
 
     with patch(
-        "chatbot.application.outbound_orchestrator._erpnext_client_for_tenant",
+        "evenor.application.outbound_orchestrator._erpnext_client_for_tenant",
         return_value=MagicMock(),
     ), patch(
-        "chatbot.application.outbound_orchestrator.resolved_lines_to_json",
+        "evenor.application.outbound_orchestrator.resolved_lines_to_json",
         return_value=created.resolved_json,
     ), patch(
-        "chatbot.application.outbound_orchestrator.erpnext_integration_for_tenant",
+        "evenor.application.outbound_orchestrator.erpnext_integration_for_tenant",
         return_value=(MagicMock(), {"allow_create_quotation": True}),
     ), patch(
-        "chatbot.application.quote_fulfillment_service.create_quote_for_session",
+        "evenor.application.quote_fulfillment_service.create_quote_for_session",
         return_value=created,
     ), patch(
-        "chatbot.application.outbound_orchestrator._queue_quote_pending",
+        "evenor.application.outbound_orchestrator._queue_quote_pending",
         return_value=pending,
     ) as queue_mock, patch(
-        "chatbot.application.outbound_orchestrator.SqlAlchemyPendingReplyRepository",
+        "evenor.application.outbound_orchestrator.SqlAlchemyPendingReplyRepository",
     ) as repo_cls:
         status, out = queue_after_chat(
             session,
@@ -86,16 +86,16 @@ def test_queue_after_chat_keeps_manual_validation_when_creation_disabled() -> No
     pending = SimpleNamespace(id=1)
 
     with patch(
-        "chatbot.application.outbound_orchestrator._erpnext_client_for_tenant",
+        "evenor.application.outbound_orchestrator._erpnext_client_for_tenant",
         return_value=MagicMock(),
     ), patch(
-        "chatbot.application.outbound_orchestrator.resolved_lines_to_json",
+        "evenor.application.outbound_orchestrator.resolved_lines_to_json",
         return_value='[{"requested_label":"Widget","qty":1,"item_code":"SKU-1","status":"resolved"}]',
     ), patch(
-        "chatbot.application.outbound_orchestrator.erpnext_integration_for_tenant",
+        "evenor.application.outbound_orchestrator.erpnext_integration_for_tenant",
         return_value=(MagicMock(), {"allow_create_quotation": False}),
     ), patch(
-        "chatbot.application.outbound_orchestrator._queue_quote_pending",
+        "evenor.application.outbound_orchestrator._queue_quote_pending",
         return_value=pending,
     ) as queue_mock:
         status, out = queue_after_chat(

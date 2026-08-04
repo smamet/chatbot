@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from chatbot.application.email_thread_disambiguator import EmailThreadDisambiguator
+from evenor.application.email_thread_disambiguator import EmailThreadDisambiguator
 
 
 def test_disambiguator_disabled_returns_new_thread() -> None:

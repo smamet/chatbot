@@ -4,7 +4,7 @@ from pathlib import Path
 
 from docx import Document
 
-from chatbot.adapters.rag.parsers.registry import parse_file, supported_suffixes
+from evenor.adapters.rag.parsers.registry import parse_file, supported_suffixes
 
 
 def test_parse_docx_roundtrip(tmp_path: Path) -> None:

@@ -7,11 +7,11 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.application.customer_provisioning_service import CustomerProvisioningError
-from chatbot.application.quote_fulfillment_service import QuoteFulfillmentError, QuoteFulfillmentService
-from chatbot.config.settings import get_settings
-from chatbot.domain.models.fulfillment import FulfillmentKind
-from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
+from evenor.application.customer_provisioning_service import CustomerProvisioningError
+from evenor.application.quote_fulfillment_service import QuoteFulfillmentError, QuoteFulfillmentService
+from evenor.config.settings import get_settings
+from evenor.domain.models.fulfillment import FulfillmentKind
+from evenor.domain.models.pending_reply import PendingReply, PendingReplyStatus
 
 
 def _quote_reply(*, session_id: str = "email:alice@example.com") -> PendingReply:
@@ -54,7 +54,7 @@ def test_fulfill_blocks_when_quotation_creation_disabled() -> None:
     client = MagicMock()
 
     with patch(
-        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        "evenor.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, integration_config),
     ):
         with pytest.raises(QuoteFulfillmentError, match="Quotation creation is disabled"):
@@ -74,23 +74,23 @@ def test_fulfill_creates_customer_submits_and_redownloads_pdf() -> None:
     client.download_quotation_pdf.return_value = b"%PDF"
 
     with patch(
-        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        "evenor.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, integration_config),
     ), patch(
-        "chatbot.application.quote_fulfillment_service.ensure_erpnext_customer",
+        "evenor.application.quote_fulfillment_service.ensure_erpnext_customer",
         return_value="New Customer",
     ) as ensure_mock, patch(
-        "chatbot.application.quote_fulfillment_service.quotation_erp_modified",
+        "evenor.application.quote_fulfillment_service.quotation_erp_modified",
         return_value="2026-06-15 14:17:39",
     ), patch(
-        "chatbot.application.quote_fulfillment_service.approve_pending_reply",
+        "evenor.application.quote_fulfillment_service.approve_pending_reply",
         return_value=reply,
     ), patch(
-        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+        "evenor.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
     ) as repo_cls, patch(
-        "chatbot.application.quote_fulfillment_service.delete_attachment_files",
+        "evenor.application.quote_fulfillment_service.delete_attachment_files",
     ) as delete_files, patch(
-        "chatbot.application.quote_fulfillment_service.store_quote_pdf",
+        "evenor.application.quote_fulfillment_service.store_quote_pdf",
         return_value=settings.data_root / "quotes" / "bot" / "QTN-0001.pdf",
     ):
         repo = repo_cls.return_value
@@ -118,10 +118,10 @@ def test_fulfill_fails_when_customer_missing_and_creation_disabled() -> None:
     client.find_customer.return_value = None
 
     with patch(
-        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        "evenor.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, integration_config),
     ), patch(
-        "chatbot.application.quote_fulfillment_service.ensure_erpnext_customer",
+        "evenor.application.quote_fulfillment_service.ensure_erpnext_customer",
         side_effect=CustomerProvisioningError("Customer creation is disabled for this connector"),
     ):
         with pytest.raises(QuoteFulfillmentError, match="Customer creation is disabled"):
@@ -146,20 +146,20 @@ def test_fulfill_precreated_quote_submits_and_redownloads_without_recreating() -
     client.download_quotation_pdf.return_value = b"%PDF-new"
 
     with patch(
-        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        "evenor.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, integration_config),
     ), patch(
-        "chatbot.application.quote_fulfillment_service.quotation_erp_modified",
+        "evenor.application.quote_fulfillment_service.quotation_erp_modified",
         return_value="2026-06-15 14:17:39",
     ), patch(
-        "chatbot.application.quote_fulfillment_service.approve_pending_reply",
+        "evenor.application.quote_fulfillment_service.approve_pending_reply",
         return_value=reply,
     ) as approve_mock, patch(
-        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+        "evenor.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
     ) as repo_cls, patch(
-        "chatbot.application.quote_fulfillment_service.delete_attachment_files",
+        "evenor.application.quote_fulfillment_service.delete_attachment_files",
     ) as delete_files, patch(
-        "chatbot.application.quote_fulfillment_service.store_quote_pdf",
+        "evenor.application.quote_fulfillment_service.store_quote_pdf",
         return_value=settings.data_root / "quotes" / "bot" / "QTN-0001.pdf",
     ):
         repo = repo_cls.return_value
@@ -182,15 +182,15 @@ def test_fulfill_aborts_when_submit_fails() -> None:
     client.submit_quotation.return_value = "Submit failed"
 
     with patch(
-        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        "evenor.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, integration_config),
     ), patch(
-        "chatbot.application.quote_fulfillment_service.quotation_erp_modified",
+        "evenor.application.quote_fulfillment_service.quotation_erp_modified",
         return_value="2026-06-15 14:17:39",
     ), patch(
-        "chatbot.application.quote_fulfillment_service.approve_pending_reply",
+        "evenor.application.quote_fulfillment_service.approve_pending_reply",
     ) as approve_mock, patch(
-        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+        "evenor.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
     ) as repo_cls:
         repo = repo_cls.return_value
         with pytest.raises(QuoteFulfillmentError, match="Submit failed"):
@@ -200,7 +200,7 @@ def test_fulfill_aborts_when_submit_fails() -> None:
 
 
 def test_refresh_quote_pdf_returns_attachments_and_modified(test_settings) -> None:
-    from chatbot.application.quote_fulfillment_service import refresh_quote_pdf
+    from evenor.application.quote_fulfillment_service import refresh_quote_pdf
 
     session = MagicMock()
     client = MagicMock()
@@ -208,13 +208,13 @@ def test_refresh_quote_pdf_returns_attachments_and_modified(test_settings) -> No
     client.get_quotation.return_value = {"modified": "2026-06-15 14:18:15"}
 
     with patch(
-        "chatbot.application.quote_fulfillment_service.erpnext_integration_for_tenant",
+        "evenor.application.quote_fulfillment_service.erpnext_integration_for_tenant",
         return_value=(client, {}),
     ), patch(
-        "chatbot.application.quote_fulfillment_service.store_quote_pdf",
+        "evenor.application.quote_fulfillment_service.store_quote_pdf",
         return_value=test_settings.data_root / "quotes" / "bot" / "QTN-0001.pdf",
     ), patch(
-        "chatbot.application.quote_fulfillment_service.quotation_erp_modified",
+        "evenor.application.quote_fulfillment_service.quotation_erp_modified",
         return_value="2026-06-15 14:18:15",
     ):
         attachments_json, erp_modified = refresh_quote_pdf(
@@ -242,13 +242,13 @@ def test_retry_quote_fulfillment_creates_when_missing() -> None:
     )
 
     with patch(
-        "chatbot.application.quote_fulfillment_service.create_quote_for_pending_reply",
+        "evenor.application.quote_fulfillment_service.create_quote_for_pending_reply",
         return_value=created,
     ), patch(
-        "chatbot.application.quote_fulfillment_service._merge_manual_and_quote_attachments",
+        "evenor.application.quote_fulfillment_service._merge_manual_and_quote_attachments",
         return_value=created.attachments_json,
     ) as merge_mock, patch(
-        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+        "evenor.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
     ) as repo_cls:
         repo = repo_cls.return_value
         svc.retry_quote_fulfillment(reply)
@@ -271,10 +271,10 @@ def test_retry_quote_fulfillment_refreshes_pdf_when_quote_exists() -> None:
     reply = replace(_quote_reply(), quote_external_id="QTN-0001")
 
     with patch(
-        "chatbot.application.quote_fulfillment_service.refresh_quote_pdf",
+        "evenor.application.quote_fulfillment_service.refresh_quote_pdf",
         return_value=('[{"filename":"QTN-0001.pdf","path":"/tmp/q.pdf"}]', "2026-06-15 14:18:15"),
     ), patch(
-        "chatbot.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
+        "evenor.application.quote_fulfillment_service.SqlAlchemyPendingReplyRepository"
     ) as repo_cls:
         repo = repo_cls.return_value
         svc.retry_quote_fulfillment(reply)

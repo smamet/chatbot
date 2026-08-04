@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% block body %}
+<div class="page-header">
+  <h1>Bots</h1>
+  {% if user.role == 'client_operator' %}
+  <p class="subtitle">Select a bot to open validation</p>
+  {% else %}
+  <p class="subtitle">Manage your Evenor bots</p>
+  {% endif %}
+</div>
+<div class="actions-bar">
+  {% if user.role == 'admin' %}
+  <a href="/dashboard/bots/new" class="btn btn-primary">New bot</a>
+  {% endif %}
+  {% if user.role in ('admin', 'client_admin') %}
+  <a href="/dashboard/bots/import" class="btn btn-secondary">Import bot</a>
+  {% endif %}
+</div>
+<div class="table-wrap">
+  <table class="data-table validation-table">
+    <thead><tr><th>Name</th><th>Slug</th><th>Hooks</th><th></th></tr></thead>
+    <tbody>
+    {% for t in tenants %}
+    <tr class="validation-row validation-inbox-row"
+        data-href="/dashboard/bots/{{ t.slug }}{% if user.role == 'client_operator' %}?tab=validation{% endif %}"
+        tabindex="0"
+        role="link">
+      <td><strong>{{ t.name }}</strong></td>
+      <td><code>{{ t.slug }}</code></td>
+      <td>{% if t.hooks_enabled %}<span class="badge on">ON</span>{% else %}<span class="badge off">OFF</span>{% endif %}</td>
+      <td class="validation-row-chevron" aria-hidden="true">▶</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="4" class="empty-state">No bots yet</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}

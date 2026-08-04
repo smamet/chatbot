@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from chatbot.application.quote_sync_state import (
+from evenor.application.quote_sync_state import (
     normalize_erpnext_modified,
     quote_pdf_is_stale,
     quote_pdf_stale_context,

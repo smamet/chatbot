@@ -5,10 +5,10 @@ from decimal import Decimal
 
 import pytest
 
-from chatbot.application.usage_cost_service import UsageCostService
-from chatbot.config.settings import Settings
-from chatbot.domain.models.api_usage import ApiUsageDayEntry
-from chatbot.domain.models.tenant import Tenant, TenantConfig
+from evenor.application.usage_cost_service import UsageCostService
+from evenor.config.settings import Settings
+from evenor.domain.models.api_usage import ApiUsageDayEntry
+from evenor.domain.models.tenant import Tenant, TenantConfig
 
 
 def _settings() -> Settings:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from chatbot.adapters.rag.parsers.registry import parse_file, supported_suffixes
+from evenor.adapters.rag.parsers.registry import parse_file, supported_suffixes
 
 
 def test_parse_markdown_roundtrip(tmp_path: Path) -> None:

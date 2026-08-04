@@ -6,21 +6,21 @@ from unittest.mock import MagicMock
 import pytest
 from cryptography.fernet import Fernet
 
-from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.validation_regenerate_service import (
+from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.validation_regenerate_service import (
     ValidationRegenerateError,
     generate_pending_reply_from_raw,
 )
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.fulfillment import FulfillmentKind
-from chatbot.domain.models.mail_draft import MailDraftStatus
-from chatbot.domain.models.message import ChatMessage, MessageRole
-from chatbot.domain.models.tenant import TenantConfig
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.fulfillment import FulfillmentKind
+from evenor.domain.models.mail_draft import MailDraftStatus
+from evenor.domain.models.message import ChatMessage, MessageRole
+from evenor.domain.models.tenant import TenantConfig
 
 
 @pytest.fixture
@@ -34,7 +34,7 @@ def regenerate_env(tmp_path, monkeypatch):
     monkeypatch.setenv("ADMIN_TOKEN", "admin")
     monkeypatch.setenv("GEMINI_API_KEY", "fake")
     reset_settings_cache_for_tests()
-    from chatbot.config.settings import get_settings
+    from evenor.config.settings import get_settings
 
     settings = get_settings()
     engine = create_db_engine(settings, for_tests=True)
@@ -48,7 +48,7 @@ def regenerate_env(tmp_path, monkeypatch):
             config=TenantConfig(),
         )
         tenant_id = tenant.id
-        from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+        from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 
         connector = SqlAlchemyConnectorRepository(session).create(
             tenant_id=tenant_id,
@@ -134,7 +134,7 @@ def test_generate_sends_prior_history_plus_full_raw_body(regenerate_env) -> None
     captured: dict = {}
 
     with factory() as session:
-        from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+        from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 
         connector = SqlAlchemyConnectorRepository(session).create(
             tenant_id=tenant_id,
@@ -201,7 +201,7 @@ def test_generate_sends_prior_history_plus_full_raw_body(regenerate_env) -> None
 def test_generate_rejects_quote(regenerate_env) -> None:
     factory, settings, tenant_id, reply_id = regenerate_env
     with factory() as session:
-        from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+        from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 
         connector = SqlAlchemyConnectorRepository(session).create(
             tenant_id=tenant_id,

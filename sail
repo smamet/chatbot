@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Sail-like wrapper around Docker Compose for the chatbot platform.
+# Sail-like wrapper around Docker Compose for the evenor platform.
 # Usage: ./sail [command] [args...]
 #        ./sail up -d
-#        ./sail chatbot tenant-create "Acme" --slug acme
+#        ./sail evenor tenant-create "Acme" --slug acme
 #        ./sail test
 #        ./sail shell
 
@@ -32,7 +32,7 @@ WORKER_SERVICE="${SAIL_WORKER_SERVICE:-worker-automation}"
 
 sail_help() {
   cat <<'EOF'
-Chatbot Sail — Docker Compose shortcuts
+Evenor Sail — Docker Compose shortcuts
 
   ./sail up [-d] [--profile dev] [--profile caddy]
                               Start stack (dev: GreenMail/Mailpit; caddy: TLS reverse proxy)
@@ -43,8 +43,8 @@ Chatbot Sail — Docker Compose shortcuts
   ./sail logs [service]       Follow logs (default: all)
 
   ./sail shell                Bash in API container
-  ./sail mysql                MySQL CLI (chatbot database)
-  ./sail chatbot <args>       Run `chatbot` CLI in API container
+  ./sail mysql                MySQL CLI (evenor database)
+  ./sail evenor <args>       Run `evenor` CLI in API container
   ./sail migrate              alembic upgrade head
   ./sail test [pytest args]   Run tests in API container
   ./sail exec <svc> <cmd>     docker compose exec
@@ -56,9 +56,9 @@ Chatbot Sail — Docker Compose shortcuts
     ./sail up -d
     ./sail up -d --profile dev
     ./sail up -d --profile caddy
-    ./sail chatbot user-create admin@example.com -p 'your-password' --role admin
-    ./sail chatbot tenant-create "My Bot" --slug my-bot
-    ./sail chatbot sync my-bot /app/data/docs --fresh
+    ./sail evenor user-create admin@example.com -p 'your-password' --role admin
+    ./sail evenor tenant-create "My Bot" --slug my-bot
+    ./sail evenor sync my-bot /app/data/docs --fresh
 
   Environment: COMPOSE_FILE, SAIL_SERVICE (default: api)
 EOF
@@ -106,14 +106,14 @@ case "${1:-}" in
     compose exec "$API_SERVICE" bash
     ;;
   mysql)
-    compose exec "$DB_SERVICE" mysql -u"${MYSQL_USER:-chatbot}" -p"${MYSQL_PASSWORD:-chatbot}" "${MYSQL_DATABASE:-chatbot}"
+    compose exec "$DB_SERVICE" mysql -u"${MYSQL_USER:-evenor}" -p"${MYSQL_PASSWORD:-evenor}" "${MYSQL_DATABASE:-evenor}"
     ;;
-  chatbot|artisan)
+  evenor|chatbot|artisan)
     shift
     if [ -t 0 ] && [ -t 1 ]; then
-      compose exec -it "$API_SERVICE" chatbot "$@"
+      compose exec -it "$API_SERVICE" evenor "$@"
     else
-      compose exec -T "$API_SERVICE" chatbot "$@"
+      compose exec -T "$API_SERVICE" evenor "$@"
     fi
     ;;
   migrate)

@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
-from chatbot.application.integration_service import IntegrationService
-from chatbot.domain.models.integration import IntegrationType
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+from evenor.application.integration_service import IntegrationService
+from evenor.domain.models.integration import IntegrationType
 
 
 def test_integration_upsert_and_find(test_settings, test_tenant) -> None:

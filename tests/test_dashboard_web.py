@@ -11,25 +11,25 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
-from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.adapters.persistence.user_repository import SqlAlchemyUserRepository
-from chatbot.application.integration_service import IntegrationService
-from chatbot.application.tenant_service import TenantService
-from chatbot.application.user_service import UserService
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.context_debug import ContextDebugInfo
-from chatbot.domain.models.fulfillment import FulfillmentKind
-from chatbot.domain.models.hook import HookStatus
-from chatbot.domain.models.integration import IntegrationType
-from chatbot.domain.models.message import ChatMessage, MessageRole
-from chatbot.domain.models.user import UserRole
-from chatbot.interfaces.api.deps import _build_chat_service
-from chatbot.interfaces.api.main import create_app, refresh_genai_clients_if_needed
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
+from evenor.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.adapters.persistence.user_repository import SqlAlchemyUserRepository
+from evenor.application.integration_service import IntegrationService
+from evenor.application.tenant_service import TenantService
+from evenor.application.user_service import UserService
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.context_debug import ContextDebugInfo
+from evenor.domain.models.fulfillment import FulfillmentKind
+from evenor.domain.models.hook import HookStatus
+from evenor.domain.models.integration import IntegrationType
+from evenor.domain.models.message import ChatMessage, MessageRole
+from evenor.domain.models.user import UserRole
+from evenor.interfaces.api.deps import _build_chat_service
+from evenor.interfaces.api.main import create_app, refresh_genai_clients_if_needed
 
 
 def _validation_inbox_row(html: str, reply_id: int) -> str:
@@ -54,7 +54,7 @@ def dashboard_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("APP_SECRET_KEY", secret)
     monkeypatch.setenv("SESSION_SECRET", "test-session-secret")
     reset_settings_cache_for_tests()
-    from chatbot.config.settings import get_settings
+    from evenor.config.settings import get_settings
 
     settings = get_settings()
     engine = create_db_engine(settings, for_tests=True)
@@ -117,7 +117,7 @@ def dashboard_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
 
         return _Wrapper()
 
-    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+    import evenor.interfaces.api.routers.dashboard_web as dash_mod
 
     dash_mod._build_chat_service = _patched_build  # type: ignore[attr-defined]
 
@@ -171,7 +171,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
     )
     assert r.status_code == 303
     with factory() as session:
-        from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+        from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 
         saved = SqlAlchemyTenantRepository(session).find_by_slug(slug)
         assert saved is not None
@@ -190,7 +190,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
         def embed_texts(self, texts: list[str]) -> list[list[float]]:
             return [[0.0] * self.dim for _ in texts]
 
-    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+    import evenor.interfaces.api.routers.dashboard_web as dash_mod
 
     old_embedder = dash_mod.GeminiEmbedder
     dash_mod.GeminiEmbedder = _FakeEmbedder  # type: ignore[misc, assignment]
@@ -208,7 +208,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
 
     with factory() as session:
         conn_svc_repo = SqlAlchemyConnectorRepository(session)
-        from chatbot.application.connector_service import ConnectorService
+        from evenor.application.connector_service import ConnectorService
 
         svc = ConnectorService(conn_svc_repo)
         conn = svc.upsert(
@@ -229,7 +229,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
     r = client.get(f"/dashboard/bots/{slug}?tab=connectors")
     assert "inactive" in r.text
     with factory() as session:
-        from chatbot.application.connector_service import ConnectorService
+        from evenor.application.connector_service import ConnectorService
 
         conn = ConnectorService(SqlAlchemyConnectorRepository(session)).get(conn_id)
         assert conn is not None
@@ -266,7 +266,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
     assert "echo:hello dash" not in r.text
 
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
 
@@ -294,7 +294,7 @@ def test_admin_bot_crud(dashboard_env) -> None:
 def test_history_shows_context_debug_without_bot_dev_mode(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
 
@@ -387,7 +387,7 @@ def test_bot_export_import(dashboard_env) -> None:
     (docs_dir / "sample.md").write_text("sample doc", encoding="utf-8")
 
     with factory() as session:
-        from chatbot.application.connector_service import ConnectorService
+        from evenor.application.connector_service import ConnectorService
 
         ConnectorService(SqlAlchemyConnectorRepository(session)).upsert(
             tenant_id=tenant_id,
@@ -396,7 +396,7 @@ def test_bot_export_import(dashboard_env) -> None:
             mode=ConnectorMode.DIRECT,
             config={"verify_token": "export-vt"},
         )
-        from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+        from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 
         tenant_svc = TenantService(SqlAlchemyTenantRepository(session))
         tenant_svc.update_tenant(
@@ -707,7 +707,7 @@ def test_validation_pending_hides_mailpit_hint_without_dev_mode(dashboard_env, m
     assert "sent via Mailpit in dev" not in r.text
 
 
-@patch("chatbot.interfaces.api.routers.dashboard_web.inject_test_email")
+@patch("evenor.interfaces.api.routers.dashboard_web.inject_test_email")
 def test_email_test_send_ok(mock_inject, dashboard_env, monkeypatch) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     monkeypatch.setenv("DEV_MODE", "true")
@@ -734,7 +734,7 @@ def test_email_test_send_ok(mock_inject, dashboard_env, monkeypatch) -> None:
     assert call_args[0][1]["username"] == "bot@test.local"
 
 
-@patch("chatbot.interfaces.api.routers.dashboard_web.poll_tenant_now")
+@patch("evenor.interfaces.api.routers.dashboard_web.poll_tenant_now")
 def test_email_test_poll_ok(mock_poll, dashboard_env, monkeypatch) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     monkeypatch.setenv("DEV_MODE", "true")
@@ -771,13 +771,13 @@ def test_validation_tab_renders_quill_editor_for_email(dashboard_env) -> None:
                 "from_addr": "bot@test.local",
             },
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
-        from chatbot.domain.models.message import ChatMessage, MessageRole
+        from evenor.domain.models.message import ChatMessage, MessageRole
 
         SqlAlchemyConversationRepository(session, tenant_id).append_message(
             "email:client@example.com",
@@ -813,11 +813,11 @@ def test_validation_tab_renders_quill_editor_for_email(dashboard_env) -> None:
 def test_validation_retry_quote_clears_error(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.domain.models.integration import IntegrationType
+        from evenor.domain.models.integration import IntegrationType
 
         SqlAlchemyIntegrationRepository(session).create(
             tenant_id=tenant_id,
@@ -875,7 +875,7 @@ def test_validation_retry_quote_clears_error(dashboard_env) -> None:
     assert "customer_create_failed" in detail.text
 
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web.QuoteFulfillmentService"
+        "evenor.interfaces.api.routers.dashboard_web.QuoteFulfillmentService"
     ) as svc_cls:
         svc_cls.return_value.retry_quote_fulfillment.side_effect = None
         r = client.post(
@@ -886,8 +886,8 @@ def test_validation_retry_quote_clears_error(dashboard_env) -> None:
     svc_cls.return_value.retry_quote_fulfillment.assert_called_once()
 
     with factory() as session:
-        from chatbot.application.validation_audit_service import ValidationAuditService
-        from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+        from evenor.application.validation_audit_service import ValidationAuditService
+        from evenor.domain.models.pending_reply_audit import ValidationAuditAction
 
         saved = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
         activity = ValidationAuditService(session).list_activity(tenant_id, limit=10)
@@ -905,7 +905,7 @@ def test_validation_retry_quote_requires_error(dashboard_env) -> None:
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -928,8 +928,8 @@ def test_validation_retry_quote_requires_error(dashboard_env) -> None:
 
 
 def test_validation_inbox_shows_quote_and_attachment_flags(dashboard_env) -> None:
-    from chatbot.application.quote_pdf_storage import attachment_entry, encode_attachments_json
-    from chatbot.adapters.persistence.pending_reply_repository import (
+    from evenor.application.quote_pdf_storage import attachment_entry, encode_attachments_json
+    from evenor.adapters.persistence.pending_reply_repository import (
         SqlAlchemyPendingReplyRepository,
     )
 
@@ -1016,7 +1016,7 @@ def test_validation_tab_renders_markdown_and_session_label(dashboard_env) -> Non
             mode=ConnectorMode.VALIDATION,
             config={"phone_number_id": "123", "access_token": "tok"},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -1050,13 +1050,13 @@ def test_validation_save_draft_updates_html_and_message(dashboard_env) -> None:
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"},
         )
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.domain.models.message import ChatMessage, MessageRole
+        from evenor.domain.models.message import ChatMessage, MessageRole
 
         pending = SqlAlchemyPendingReplyRepository(session).create(
             tenant_id=tenant_id,
@@ -1084,7 +1084,7 @@ def test_validation_save_draft_updates_html_and_message(dashboard_env) -> None:
     assert r.headers["location"].endswith(f"/validation/{reply_id}")
 
     with factory() as session:
-        from chatbot.adapters.persistence.orm import PendingReplyEditRow
+        from evenor.adapters.persistence.orm import PendingReplyEditRow
         from sqlalchemy import select
 
         reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
@@ -1096,7 +1096,7 @@ def test_validation_save_draft_updates_html_and_message(dashboard_env) -> None:
         assert len(edits) == 1
 
 
-@patch("chatbot.interfaces.api.routers.dashboard_web.translate_pending_reply_draft")
+@patch("evenor.interfaces.api.routers.dashboard_web.translate_pending_reply_draft")
 def test_validation_translate_returns_json(mock_translate, dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     mock_translate.return_value = {
@@ -1111,7 +1111,7 @@ def test_validation_translate_returns_json(mock_translate, dashboard_env) -> Non
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -1154,7 +1154,7 @@ def test_validation_translate_rejects_quote(dashboard_env) -> None:
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -1197,7 +1197,7 @@ def test_validation_detail_shows_translate_buttons(dashboard_env) -> None:
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -1238,7 +1238,7 @@ def test_delete_connector_removes_pending_replies(dashboard_env) -> None:
                 "from_addr": "bot@test.local",
             },
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -1261,10 +1261,10 @@ def test_delete_connector_removes_pending_replies(dashboard_env) -> None:
     assert r.status_code == 303
 
     with factory() as session:
-        from chatbot.application.connector_service import ConnectorService
+        from evenor.application.connector_service import ConnectorService
 
         assert ConnectorService(SqlAlchemyConnectorRepository(session)).get(conn_id) is None
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -1289,7 +1289,7 @@ def test_outbound_email_connector_defaults_to_validation_mode(dashboard_env) -> 
     )
     assert r.status_code == 303
     with factory() as session:
-        from chatbot.application.connector_service import ConnectorService
+        from evenor.application.connector_service import ConnectorService
 
         conn = ConnectorService(SqlAlchemyConnectorRepository(session)).find(
             tenant_id,
@@ -1319,8 +1319,8 @@ def test_email_in_connector_sets_process_since_on_save(dashboard_env) -> None:
     )
     assert r.status_code == 303
     with factory() as session:
-        from chatbot.application.connector_service import ConnectorService
-        from chatbot.mail.process_since import parse_process_since
+        from evenor.application.connector_service import ConnectorService
+        from evenor.mail.process_since import parse_process_since
 
         conn = ConnectorService(SqlAlchemyConnectorRepository(session)).find(
             tenant_id,
@@ -1348,10 +1348,10 @@ def test_connectors_page_exposes_process_since_default(dashboard_env) -> None:
 def test_chat_test_reset_rejects_production_session(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
-        from chatbot.domain.models.message import ChatMessage, MessageRole
+        from evenor.domain.models.message import ChatMessage, MessageRole
 
         SqlAlchemyConversationRepository(session, tenant_id).append_message(
             "email:foo@bar.com",
@@ -1368,7 +1368,7 @@ def test_chat_test_reset_rejects_production_session(dashboard_env) -> None:
     assert r.status_code == 403
 
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
 
@@ -1382,13 +1382,13 @@ def test_chat_test_reset_rejects_production_session(dashboard_env) -> None:
 def test_chat_test_reset_rejects_identity_test_session_even_when_registered(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.test_chat_session_repository import (
+        from evenor.adapters.persistence.test_chat_session_repository import (
             TestChatSessionRepository,
         )
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
-        from chatbot.domain.models.message import ChatMessage, MessageRole
+        from evenor.domain.models.message import ChatMessage, MessageRole
 
         TestChatSessionRepository(session, tenant_id).upsert("email:foo@bar.com")
         SqlAlchemyConversationRepository(session, tenant_id).append_message(
@@ -1409,13 +1409,13 @@ def test_chat_test_reset_rejects_identity_test_session_even_when_registered(dash
 def test_chat_sidebar_lists_test_chat_registry_not_prod_only(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
-        from chatbot.adapters.persistence.test_chat_session_repository import (
+        from evenor.adapters.persistence.test_chat_session_repository import (
             TestChatSessionRepository,
         )
-        from chatbot.domain.models.message import ChatMessage, MessageRole
+        from evenor.domain.models.message import ChatMessage, MessageRole
 
         repo = SqlAlchemyConversationRepository(session, tenant_id)
         repo.append_message(
@@ -1453,7 +1453,7 @@ def test_chat_sidebar_shows_dashboard_user_for_anonymous_session(dashboard_env) 
     assert f"test_session={test_sid.replace(':', '%3A')}" in r.text or test_sid in r.text
 
     with factory() as session:
-        from chatbot.adapters.persistence.test_chat_session_repository import (
+        from evenor.adapters.persistence.test_chat_session_repository import (
             TestChatSessionRepository,
         )
 
@@ -1482,7 +1482,7 @@ def test_client_admin_test_chat_minimal_ui(dashboard_env) -> None:
     assert "chat-session-label" not in r.text
     chat_section = r.text.split('class="history-layout chat-test-layout', 1)[1][:800]
     assert "Sessions" not in chat_section
-    assert "chatbot_test_anon_" in (r.headers.get("set-cookie") or "")
+    assert "evenor_test_anon_" in (r.headers.get("set-cookie") or "")
 
 
 def test_client_admin_test_chat_persists_messages(dashboard_env) -> None:
@@ -1501,7 +1501,7 @@ def test_client_admin_test_chat_persists_messages(dashboard_env) -> None:
     assert "hello" in r2.text
     assert "echo:hello" in r2.text
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
 
@@ -1546,11 +1546,11 @@ def test_client_admin_test_chat_reset_clears_cookie(dashboard_env) -> None:
     )
     assert r.status_code == 303
     set_cookie = r.headers.get("set-cookie") or ""
-    assert "chatbot_test_anon_" in set_cookie
+    assert "evenor_test_anon_" in set_cookie
     assert "Max-Age=0" in set_cookie or '=""' in set_cookie
 
 
-@patch("chatbot.application.connector_test_service.ImapMailClient")
+@patch("evenor.application.connector_test_service.ImapMailClient")
 def test_connector_test_endpoint_imap(mock_imap_cls, dashboard_env) -> None:
     client, admin, _, slug, _tenant_id, _data, _factory = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -1588,13 +1588,13 @@ def test_microsoft_connect_deprecated(dashboard_env) -> None:
     assert "deprecated" in loc.lower() or "Mail connection" in loc
 
 
-@patch("chatbot.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
+@patch("evenor.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
 def test_microsoft_oauth_callback_persists_refresh_token(
     mock_exchange, dashboard_env, monkeypatch
 ) -> None:
-    from chatbot.adapters.microsoft.oauth import OAuthTokens
-    from chatbot.adapters.oauth_state import sign_connector_oauth_state
-    from chatbot.application.connector_service import ConnectorService
+    from evenor.adapters.microsoft.oauth import OAuthTokens
+    from evenor.adapters.oauth_state import sign_connector_oauth_state
+    from evenor.application.connector_service import ConnectorService
 
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -1638,13 +1638,13 @@ def test_microsoft_oauth_callback_persists_refresh_token(
         assert conn.config.get("oauth_refresh_token") == "refresh-tok"
 
 
-@patch("chatbot.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
+@patch("evenor.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
 def test_mail_connection_oauth_callback_persists_refresh_token(
     mock_exchange, dashboard_env, monkeypatch
 ) -> None:
-    from chatbot.adapters.microsoft.oauth import OAuthTokens
-    from chatbot.adapters.oauth_state import sign_mail_connection_oauth_state
-    from chatbot.application.mail_connection_service import MailConnectionService
+    from evenor.adapters.microsoft.oauth import OAuthTokens
+    from evenor.adapters.oauth_state import sign_mail_connection_oauth_state
+    from evenor.application.mail_connection_service import MailConnectionService
 
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -1689,13 +1689,13 @@ def test_mail_connection_oauth_callback_persists_refresh_token(
         assert conn.config.get("oauth_refresh_token") == "refresh-tok"
 
 
-@patch("chatbot.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
+@patch("evenor.interfaces.api.routers.dashboard_web.microsoft_exchange_code")
 def test_mail_connection_oauth_legacy_callback_persists_refresh_token(
     mock_exchange, dashboard_env
 ) -> None:
-    from chatbot.adapters.microsoft.oauth import OAuthTokens
-    from chatbot.adapters.oauth_state import sign_mail_connection_oauth_state
-    from chatbot.application.mail_connection_service import MailConnectionService
+    from evenor.adapters.microsoft.oauth import OAuthTokens
+    from evenor.adapters.oauth_state import sign_mail_connection_oauth_state
+    from evenor.application.mail_connection_service import MailConnectionService
 
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -1736,8 +1736,8 @@ def test_mail_connection_oauth_legacy_callback_persists_refresh_token(
 
 
 def test_mail_connection_oauth_admin_consent_error_redirects(dashboard_env) -> None:
-    from chatbot.adapters.oauth_state import sign_mail_connection_oauth_state
-    from chatbot.application.mail_connection_service import MailConnectionService
+    from evenor.adapters.oauth_state import sign_mail_connection_oauth_state
+    from evenor.application.mail_connection_service import MailConnectionService
 
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -1771,11 +1771,11 @@ def test_mail_connection_oauth_admin_consent_error_redirects(dashboard_env) -> N
     assert "admin" in loc.lower()
 
 
-@patch("chatbot.interfaces.api.routers.dashboard_web.microsoft_build_authorize_url")
+@patch("evenor.interfaces.api.routers.dashboard_web.microsoft_build_authorize_url")
 def test_mail_connection_connect_uses_platform_env_credentials(
     mock_authorize, dashboard_env, monkeypatch
 ) -> None:
-    from chatbot.application.mail_connection_service import MailConnectionService
+    from evenor.application.mail_connection_service import MailConnectionService
 
     monkeypatch.setenv("MICROSOFT_MAIL_CLIENT_ID", "platform-cid")
     monkeypatch.setenv("MICROSOFT_MAIL_CLIENT_SECRET", "platform-sec")
@@ -1828,7 +1828,7 @@ def test_mail_connection_save_and_connect_redirects(dashboard_env) -> None:
 
 
 def test_mail_connection_crud_and_connector_reference(dashboard_env) -> None:
-    from chatbot.application.mail_connection_service import MailConnectionService
+    from evenor.application.mail_connection_service import MailConnectionService
 
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -1859,7 +1859,7 @@ def test_mail_connection_crud_and_connector_reference(dashboard_env) -> None:
         follow_redirects=False,
     )
     with factory() as session:
-        from chatbot.application.connector_service import ConnectorService
+        from evenor.application.connector_service import ConnectorService
 
         conn = ConnectorService(SqlAlchemyConnectorRepository(session)).find(
             tenant_id,
@@ -1872,10 +1872,10 @@ def test_mail_connection_crud_and_connector_reference(dashboard_env) -> None:
         assert conn.config.get("auth_type") == "google_oauth"
 
 
-@patch("chatbot.application.connector_test_service.ImapMailClient")
+@patch("evenor.application.connector_test_service.ImapMailClient")
 def test_mail_connection_test_endpoint_imap(mock_imap_cls, dashboard_env) -> None:
-    from chatbot.adapters.microsoft.oauth import OAuthTokens
-    from chatbot.application.mail_connection_service import MailConnectionService
+    from evenor.adapters.microsoft.oauth import OAuthTokens
+    from evenor.application.mail_connection_service import MailConnectionService
 
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -1941,7 +1941,7 @@ def test_chat_test_works_without_identity_when_integration_active(dashboard_env)
     )
     assert r.status_code == 200
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
 
@@ -1955,10 +1955,10 @@ def test_test_chat_does_not_load_legacy_dashboard_session(dashboard_env) -> None
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
-        from chatbot.domain.models.message import ChatMessage, MessageRole
+        from evenor.domain.models.message import ChatMessage, MessageRole
 
         repo = SqlAlchemyConversationRepository(session, tenant_id)
         legacy_sid = f"dashboard:{admin.id}"
@@ -1985,7 +1985,7 @@ def test_chat_test_lists_previous_sessions(dashboard_env) -> None:
     assert "history-layout" in r.text
     assert "client@example.com" in r.text
     with factory() as session:
-        from chatbot.adapters.persistence.test_chat_session_repository import (
+        from evenor.adapters.persistence.test_chat_session_repository import (
             TestChatSessionRepository,
         )
 
@@ -2004,7 +2004,7 @@ def test_chat_test_uses_identity_session_id(dashboard_env) -> None:
     )
     assert r.status_code == 200
     with factory() as session:
-        from chatbot.adapters.persistence.conversation_repository import (
+        from evenor.adapters.persistence.conversation_repository import (
             SqlAlchemyConversationRepository,
         )
 
@@ -2032,7 +2032,7 @@ def test_create_customer_endpoint_respects_permission(dashboard_env) -> None:
     assert body["ok"] is False
     assert body["error"] == "creation_disabled"
 
-    with patch("chatbot.interfaces.api.routers.dashboard_web.create_erpnext_customer_for_test") as mock_create:
+    with patch("evenor.interfaces.api.routers.dashboard_web.create_erpnext_customer_for_test") as mock_create:
         mock_create.return_value = {
             "ok": True,
             "message": "Customer created: New Corp",
@@ -2075,7 +2075,7 @@ def test_create_quotation_endpoint_respects_permission(dashboard_env) -> None:
     assert body["ok"] is False
     assert body["error"] == "creation_disabled"
 
-    with patch("chatbot.interfaces.api.routers.dashboard_web.create_erpnext_quotation_for_test") as mock_create:
+    with patch("evenor.interfaces.api.routers.dashboard_web.create_erpnext_quotation_for_test") as mock_create:
         mock_create.return_value = {
             "ok": True,
             "message": "Quotation created: QTN-0001",
@@ -2121,7 +2121,7 @@ def test_create_quotation_stream_ndjson(dashboard_env) -> None:
         }
 
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web.create_erpnext_quotation_for_test",
+        "evenor.interfaces.api.routers.dashboard_web.create_erpnext_quotation_for_test",
         side_effect=fake_create,
     ):
         r = client.post(
@@ -2169,7 +2169,7 @@ def test_chat_test_auto_creates_quote_when_resolved(dashboard_env) -> None:
         follow_redirects=False,
     )
 
-    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+    import evenor.interfaces.api.routers.dashboard_web as dash_mod
 
     original_run = dash_mod._run_dashboard_chat
 
@@ -2199,13 +2199,13 @@ def test_chat_test_auto_creates_quote_when_resolved(dashboard_env) -> None:
     dash_mod._run_dashboard_chat = _hook_run  # type: ignore[assignment]
     try:
         with patch(
-            "chatbot.interfaces.api.routers.dashboard_web.resolve_quote_hook",
+            "evenor.interfaces.api.routers.dashboard_web.resolve_quote_hook",
             return_value=(
                 SimpleNamespace(lines=(SimpleNamespace(product="Widget", qty=1, item_code=None),), notes=None),
                 '[{"requested_label":"Widget","qty":1,"item_code":"SKU-1","status":"resolved"}]',
             ),
         ), patch(
-            "chatbot.interfaces.api.routers.dashboard_web.create_quote_for_session",
+            "evenor.interfaces.api.routers.dashboard_web.create_quote_for_session",
             return_value=created,
         ):
             r = client.post(
@@ -2224,7 +2224,7 @@ def test_chat_test_auto_creates_quote_when_resolved(dashboard_env) -> None:
     assert body["pdf_url"] == created.pdf_url
     assert body["quote_name"] == "QTN-TEST"
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2252,7 +2252,7 @@ def test_chat_test_queues_quote_hook_when_unresolved(dashboard_env) -> None:
         follow_redirects=False,
     )
 
-    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+    import evenor.interfaces.api.routers.dashboard_web as dash_mod
 
     original_run = dash_mod._run_dashboard_chat
 
@@ -2275,7 +2275,7 @@ def test_chat_test_queues_quote_hook_when_unresolved(dashboard_env) -> None:
     dash_mod._run_dashboard_chat = _hook_run  # type: ignore[assignment]
     try:
         with patch(
-            "chatbot.application.outbound_orchestrator.resolved_lines_to_json",
+            "evenor.application.outbound_orchestrator.resolved_lines_to_json",
             return_value='[{"requested_label":"Widget","qty":1,"status":"ambiguous"}]',
         ):
             r = client.post(
@@ -2293,7 +2293,7 @@ def test_chat_test_queues_quote_hook_when_unresolved(dashboard_env) -> None:
     assert body["queued"] is True
     assert body["hook_type"] == "quote.create"
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2321,7 +2321,7 @@ def test_chat_test_simulates_email_channel_queues_plain_reply(dashboard_env) -> 
         follow_redirects=False,
     )
 
-    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+    import evenor.interfaces.api.routers.dashboard_web as dash_mod
 
     original_run = dash_mod._run_dashboard_chat
 
@@ -2360,7 +2360,7 @@ def test_chat_test_simulates_email_channel_queues_plain_reply(dashboard_env) -> 
     assert body["hook_type"] is None
     assert "email" in (body["message"] or "").lower()
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2390,7 +2390,7 @@ def test_chat_test_simulates_email_channel_queues_with_draft_html(dashboard_env)
         follow_redirects=False,
     )
 
-    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+    import evenor.interfaces.api.routers.dashboard_web as dash_mod
 
     original_run = dash_mod._run_dashboard_chat
 
@@ -2413,13 +2413,13 @@ def test_chat_test_simulates_email_channel_queues_with_draft_html(dashboard_env)
     dash_mod._run_dashboard_chat = _hook_run  # type: ignore[assignment]
     try:
         with patch(
-            "chatbot.interfaces.api.routers.dashboard_web.resolve_quote_hook",
+            "evenor.interfaces.api.routers.dashboard_web.resolve_quote_hook",
             return_value=(
                 SimpleNamespace(lines=(SimpleNamespace(product="Widget", qty=1, item_code=None),), notes=None),
                 '[{"requested_label":"Widget","qty":1,"item_code":"SKU-1","status":"resolved"}]',
             ),
         ), patch(
-            "chatbot.interfaces.api.routers.dashboard_web.create_quote_for_session",
+            "evenor.interfaces.api.routers.dashboard_web.create_quote_for_session",
         ) as create_mock:
             r = client.post(
                 f"/dashboard/bots/{slug}/chat-test/send",
@@ -2439,7 +2439,7 @@ def test_chat_test_simulates_email_channel_queues_with_draft_html(dashboard_env)
     assert body["pdf_url"] is None
     assert "email" in (body["message"] or "").lower()
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2466,7 +2466,7 @@ def test_chat_test_simulated_email_requires_email_connector(dashboard_env) -> No
         follow_redirects=False,
     )
 
-    import chatbot.interfaces.api.routers.dashboard_web as dash_mod
+    import evenor.interfaces.api.routers.dashboard_web as dash_mod
 
     original_run = dash_mod._run_dashboard_chat
 
@@ -2496,7 +2496,7 @@ def test_chat_test_simulated_email_requires_email_connector(dashboard_env) -> No
     assert body["queued"] is False
     assert "email" in (body["message"] or "").lower()
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2508,7 +2508,7 @@ def test_sync_catalog_endpoint_starts_background_job(dashboard_env) -> None:
     _login(client, admin.email, "admin-pass")
     _save_erpnext_integration(client, slug)
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web._run_catalog_sync_background"
+        "evenor.interfaces.api.routers.dashboard_web._run_catalog_sync_background"
     ) as mock_run:
         r = client.post(f"/dashboard/bots/{slug}/integrations/erpnext/sync-catalog")
     assert r.status_code == 200
@@ -2540,9 +2540,9 @@ def test_catalog_inspector_page_and_data(dashboard_env) -> None:
     assert "Catalog price inspector" in page.text
 
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web.build_inspector_page"
+        "evenor.interfaces.api.routers.dashboard_web.build_inspector_page"
     ) as mock_build:
-        from chatbot.application.catalog_inspector_service import InspectorPage, InspectorRow
+        from evenor.application.catalog_inspector_service import InspectorPage, InspectorRow
 
         mock_build.return_value = InspectorPage(
             rows=[
@@ -2584,7 +2584,7 @@ def test_catalog_inspector_page_and_data(dashboard_env) -> None:
     assert body["rows"][0]["item_code"] == "ITEM-1"
 
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web.build_inspector_page"
+        "evenor.interfaces.api.routers.dashboard_web.build_inspector_page"
     ) as mock_build:
         mock_build.return_value = InspectorPage(
             rows=[],
@@ -2608,7 +2608,7 @@ def test_catalog_inspector_page_and_data(dashboard_env) -> None:
     assert mock_build.call_args.kwargs["price_filter"] == "without"
 
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web.build_inspector_page"
+        "evenor.interfaces.api.routers.dashboard_web.build_inspector_page"
     ) as mock_build:
         mock_build.return_value = InspectorPage(
             rows=[],
@@ -2637,9 +2637,9 @@ def test_catalog_inspector_refresh_invoices(dashboard_env) -> None:
     _login(client, admin.email, "admin-pass")
     _save_erpnext_integration(client, slug)
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web.fetch_and_cache_invoice_rates"
+        "evenor.interfaces.api.routers.dashboard_web.fetch_and_cache_invoice_rates"
     ) as mock_refresh:
-        from chatbot.application.catalog_inspector_service import InvoicePriceCache
+        from evenor.application.catalog_inspector_service import InvoicePriceCache
 
         mock_refresh.return_value = InvoicePriceCache(
             cached_at="2026-06-23T12:00:00+00:00",
@@ -2655,7 +2655,7 @@ def test_erpnext_invoice_price_test_endpoint(dashboard_env) -> None:
     client, admin, _, slug, _, _data, _ = dashboard_env
     _login(client, admin.email, "admin-pass")
     _save_erpnext_integration(client, slug)
-    with patch("chatbot.interfaces.api.routers.dashboard_web.ErpNextClient") as mock_cls:
+    with patch("evenor.interfaces.api.routers.dashboard_web.ErpNextClient") as mock_cls:
         mock_cls.return_value.probe_invoice_prices.return_value = {
             "ok": True,
             "message": "Item Price (Standard Selling) OK — 2 invoice rate(s)",
@@ -2709,7 +2709,7 @@ def test_purge_catalog_endpoint(dashboard_env) -> None:
 
 
 def test_upload_documents_auto_syncs(dashboard_env) -> None:
-    from chatbot.application.sync_service import IngestSyncService
+    from evenor.application.sync_service import IngestSyncService
 
     client, admin, _, slug, _, data, _ = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -2737,7 +2737,7 @@ def test_upload_documents_auto_syncs(dashboard_env) -> None:
 
 
 def test_delete_document_auto_syncs(dashboard_env) -> None:
-    from chatbot.application.sync_service import IngestSyncService
+    from evenor.application.sync_service import IngestSyncService
 
     client, admin, _, slug, _, data, _ = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -2774,7 +2774,7 @@ def test_validation_detail_upload_and_delete_attachment(dashboard_env) -> None:
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2815,7 +2815,7 @@ def test_validation_detail_upload_and_delete_attachment(dashboard_env) -> None:
 
 
 def test_approve_non_quote_email_with_attachment(dashboard_env) -> None:
-    from chatbot.application.quote_pdf_storage import (
+    from evenor.application.quote_pdf_storage import (
         attachment_entry,
         encode_attachments_json,
     )
@@ -2834,7 +2834,7 @@ def test_approve_non_quote_email_with_attachment(dashboard_env) -> None:
                 "from_addr": "bot@test.local",
             },
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2861,7 +2861,7 @@ def test_approve_non_quote_email_with_attachment(dashboard_env) -> None:
         session.commit()
 
     _login(client, admin.email, "admin-pass")
-    with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
+    with patch("evenor.application.channel_outbound.send_email_reply") as send_mock:
         r = client.post(
             f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
             follow_redirects=False,
@@ -2875,7 +2875,7 @@ def test_approve_non_quote_email_with_attachment(dashboard_env) -> None:
 def test_validation_detail_shows_editable_subject(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2908,7 +2908,7 @@ def test_validation_detail_shows_editable_subject(dashboard_env) -> None:
 def test_validation_save_draft_subject(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2945,12 +2945,12 @@ def test_validation_save_draft_subject(dashboard_env) -> None:
 
 
 def test_approve_email_uses_re_subject_when_connector_default_empty(dashboard_env) -> None:
-    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     draft_text = "Thanks for your message"
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -2988,7 +2988,7 @@ def test_approve_email_uses_re_subject_when_connector_default_empty(dashboard_en
         reply_id = pending.id
 
     _login(client, admin.email, "admin-pass")
-    with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
+    with patch("evenor.application.channel_outbound.send_email_reply") as send_mock:
         r = client.post(
             f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
             follow_redirects=False,
@@ -3001,7 +3001,7 @@ def test_approve_email_uses_re_subject_when_connector_default_empty(dashboard_en
 def test_approve_email_uses_custom_subject_after_save(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -3037,7 +3037,7 @@ def test_approve_email_uses_custom_subject_after_save(dashboard_env) -> None:
         follow_redirects=False,
     )
     assert save.status_code == 303
-    with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
+    with patch("evenor.application.channel_outbound.send_email_reply") as send_mock:
         r = client.post(
             f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
             follow_redirects=False,
@@ -3050,10 +3050,10 @@ def test_approve_email_uses_custom_subject_after_save(dashboard_env) -> None:
 def test_approve_rejects_unsaved_draft_html(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.domain.models.pending_reply import PendingReplyStatus
+        from evenor.domain.models.pending_reply import PendingReplyStatus
 
         connector = SqlAlchemyConnectorRepository(session).create(
             tenant_id=tenant_id,
@@ -3081,7 +3081,7 @@ def test_approve_rejects_unsaved_draft_html(dashboard_env) -> None:
 
     edited_html = "<p>VDtec est spécialisée dans les systèmes de sécurité.</p>"
     _login(client, admin.email, "admin-pass")
-    with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
+    with patch("evenor.application.channel_outbound.send_email_reply") as send_mock:
         r = client.post(
             f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
             data={"draft_html": edited_html, "draft_subject": "Rép. : Question"},
@@ -3103,7 +3103,7 @@ def test_approve_rejects_unsaved_draft_html(dashboard_env) -> None:
 def test_approve_email_sends_saved_draft_html(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -3139,7 +3139,7 @@ def test_approve_email_sends_saved_draft_html(dashboard_env) -> None:
         follow_redirects=False,
     )
     assert save.status_code == 303
-    with patch("chatbot.application.channel_outbound.send_email_reply") as send_mock:
+    with patch("evenor.application.channel_outbound.send_email_reply") as send_mock:
         r = client.post(
             f"/dashboard/bots/{slug}/validation/{reply_id}/approve",
             follow_redirects=False,
@@ -3153,11 +3153,11 @@ def test_approve_email_sends_saved_draft_html(dashboard_env) -> None:
 def test_validation_detail_shows_stale_banner_when_quote_changed(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, data, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.domain.models.integration import IntegrationType
+        from evenor.domain.models.integration import IntegrationType
 
         SqlAlchemyIntegrationRepository(session).create(
             tenant_id=tenant_id,
@@ -3207,7 +3207,7 @@ def test_validation_detail_shows_stale_banner_when_quote_changed(dashboard_env) 
 
     _login(client, admin.email, "admin-pass")
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web.erpnext_integration_for_tenant"
+        "evenor.interfaces.api.routers.dashboard_web.erpnext_integration_for_tenant"
     ) as integration_mock:
         erp_client = MagicMock()
         erp_client.get_quotation.return_value = {"modified": "2026-06-15 14:18:15"}
@@ -3223,11 +3223,11 @@ def test_validation_detail_shows_stale_banner_when_quote_changed(dashboard_env) 
 def test_approve_quote_redirects_with_warning_when_stale_unconfirmed(dashboard_env) -> None:
     client, admin, _, slug, tenant_id, _data, factory = dashboard_env
     with factory() as session:
-        from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.domain.models.integration import IntegrationType
+        from evenor.domain.models.integration import IntegrationType
 
         SqlAlchemyIntegrationRepository(session).create(
             tenant_id=tenant_id,
@@ -3271,9 +3271,9 @@ def test_approve_quote_redirects_with_warning_when_stale_unconfirmed(dashboard_e
 
     _login(client, admin.email, "admin-pass")
     with patch(
-        "chatbot.interfaces.api.routers.dashboard_web.erpnext_integration_for_tenant"
+        "evenor.interfaces.api.routers.dashboard_web.erpnext_integration_for_tenant"
     ) as integration_mock, patch(
-        "chatbot.interfaces.api.routers.dashboard_web.QuoteFulfillmentService"
+        "evenor.interfaces.api.routers.dashboard_web.QuoteFulfillmentService"
     ) as fulfill_cls:
         erp_client = MagicMock()
         erp_client.get_quotation.return_value = {"modified": "2026-06-15 14:18:15"}
@@ -3289,7 +3289,7 @@ def test_approve_quote_redirects_with_warning_when_stale_unconfirmed(dashboard_e
 
 
 def test_validation_attachment_file_view(dashboard_env) -> None:
-    from chatbot.application.quote_pdf_storage import attachment_entry, encode_attachments_json
+    from evenor.application.quote_pdf_storage import attachment_entry, encode_attachments_json
 
     client, admin, _, slug, tenant_id, data, factory = dashboard_env
     with factory() as session:
@@ -3300,7 +3300,7 @@ def test_validation_attachment_file_view(dashboard_env) -> None:
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -3388,7 +3388,7 @@ def test_client_operator_can_validate_email_reply(dashboard_env) -> None:
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -3420,7 +3420,7 @@ def test_client_operator_reject_creates_audit(dashboard_env) -> None:
             mode=ConnectorMode.VALIDATION,
             config={},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -3438,7 +3438,7 @@ def test_client_operator_reject_creates_audit(dashboard_env) -> None:
     r = client.post(f"/dashboard/bots/{slug}/validation/1/reject", follow_redirects=False)
     assert r.status_code == 303
     with factory() as session:
-        from chatbot.application.validation_audit_service import ValidationAuditService
+        from evenor.application.validation_audit_service import ValidationAuditService
 
         saved = SqlAlchemyPendingReplyRepository(session).find_by_id(1)
         assert saved is not None
@@ -3467,7 +3467,7 @@ def _create_pending_reply(
             mode=ConnectorMode.VALIDATION,
             config={"from_addr": "bot@test.local"} if channel == "email" else {},
         )
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
 
@@ -3518,10 +3518,10 @@ def test_bulk_reject_emails_happy_path(dashboard_env) -> None:
     assert inbox.status_code == 200
     assert "Rejected 2 emails." in inbox.text
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.domain.models.pending_reply import PendingReplyStatus
+        from evenor.domain.models.pending_reply import PendingReplyStatus
 
         for reply_id in (email_a, email_b):
             reply = SqlAlchemyPendingReplyRepository(session).find_by_id(reply_id)
@@ -3551,10 +3551,10 @@ def test_bulk_reject_skips_non_email(dashboard_env) -> None:
     assert "Rejected 1 email." in inbox.text
     assert f"#{whatsapp_id} (not email)" in inbox.text
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.domain.models.pending_reply import PendingReplyStatus
+        from evenor.domain.models.pending_reply import PendingReplyStatus
 
         email = SqlAlchemyPendingReplyRepository(session).find_by_id(email_id)
         whatsapp = SqlAlchemyPendingReplyRepository(session).find_by_id(whatsapp_id)
@@ -3607,10 +3607,10 @@ def test_client_operator_can_bulk_reject_emails(dashboard_env) -> None:
     )
     assert r.status_code == 303
     with factory() as session:
-        from chatbot.adapters.persistence.pending_reply_repository import (
+        from evenor.adapters.persistence.pending_reply_repository import (
             SqlAlchemyPendingReplyRepository,
         )
-        from chatbot.domain.models.pending_reply import PendingReplyStatus
+        from evenor.domain.models.pending_reply import PendingReplyStatus
 
         reply = SqlAlchemyPendingReplyRepository(session).find_by_id(email_id)
         assert reply is not None
@@ -3626,9 +3626,9 @@ def test_admin_monitoring_global_page(dashboard_env) -> None:
     (docs / "note.md").write_text("x", encoding="utf-8")
 
     with factory() as session:
-        from chatbot.application.usage_recorder_service import UsageRecorderService
-        from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
-        from chatbot.domain.contracts.llm_client import LlmUsage
+        from evenor.application.usage_recorder_service import UsageRecorderService
+        from evenor.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
+        from evenor.domain.contracts.llm_client import LlmUsage
 
         UsageRecorderService(SqlAlchemyApiUsageRepository(session)).record(
             tenant_id,
@@ -3706,7 +3706,7 @@ def test_non_admin_cannot_open_global_monitoring(dashboard_env) -> None:
 
 
 def _seed_api_usage_rows(factory, tenant_id: int, rows: list[tuple]) -> None:
-    from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
+    from evenor.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
 
     with factory() as session:
         repo = SqlAlchemyApiUsageRepository(session)
@@ -3833,10 +3833,10 @@ def test_client_billing_redirect_preserves_monitoring_filter(dashboard_env) -> N
 
 
 def test_validation_inbox_shows_thread_resolution_badge(dashboard_env) -> None:
-    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-    from chatbot.application.email_thread_resolution import audit_to_json
-    from chatbot.application.email_thread_resolution import ThreadResolutionAudit
+    from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from evenor.application.email_thread_resolution import audit_to_json
+    from evenor.application.email_thread_resolution import ThreadResolutionAudit
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
@@ -3883,8 +3883,8 @@ def test_validation_inbox_shows_thread_resolution_badge(dashboard_env) -> None:
 
 
 def test_validation_detail_header_and_body_toggle(dashboard_env) -> None:
-    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
@@ -3927,7 +3927,7 @@ def test_validation_detail_header_and_body_toggle(dashboard_env) -> None:
 
 
 def test_validation_inbox_uses_channel_icon_not_kind_columns(dashboard_env) -> None:
-    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
@@ -3956,12 +3956,12 @@ def test_validation_inbox_uses_channel_icon_not_kind_columns(dashboard_env) -> N
 
 
 def test_validation_regenerate_from_raw(dashboard_env) -> None:
-    from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-    from chatbot.application.validation_audit_service import ValidationAuditService
-    from chatbot.domain.models.message import ChatMessage, MessageRole
-    from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+    from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+    from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from evenor.application.validation_audit_service import ValidationAuditService
+    from evenor.domain.models.message import ChatMessage, MessageRole
+    from evenor.domain.models.pending_reply_audit import ValidationAuditAction
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     raw_body = "RAW inbound body for regenerate"
@@ -4025,12 +4025,12 @@ def test_validation_regenerate_from_raw(dashboard_env) -> None:
 
 
 def test_validation_save_after_regenerate_logs_audit(dashboard_env) -> None:
-    from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-    from chatbot.application.validation_audit_service import ValidationAuditService
-    from chatbot.domain.models.message import ChatMessage, MessageRole
-    from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+    from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+    from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from evenor.application.validation_audit_service import ValidationAuditService
+    from evenor.domain.models.message import ChatMessage, MessageRole
+    from evenor.domain.models.pending_reply_audit import ValidationAuditAction
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     raw_body = "RAW inbound body for save audit"
@@ -4095,7 +4095,7 @@ def test_validation_save_after_regenerate_logs_audit(dashboard_env) -> None:
 
 
 def test_validation_regenerate_hidden_for_quote(dashboard_env) -> None:
-    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
@@ -4124,9 +4124,9 @@ def test_validation_regenerate_hidden_for_quote(dashboard_env) -> None:
 
 
 def test_history_tab_shows_raw_toggle_for_email_draft(dashboard_env) -> None:
-    from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-    from chatbot.domain.models.message import ChatMessage, MessageRole
+    from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+    from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from evenor.domain.models.message import ChatMessage, MessageRole
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     session_id = "email:history@example.com"
@@ -4154,12 +4154,12 @@ def test_history_tab_shows_raw_toggle_for_email_draft(dashboard_env) -> None:
 
 
 def test_reject_blacklist_adds_sender_and_audits(dashboard_env) -> None:
-    from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-    from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-    from chatbot.application.tenant_service import TenantService
-    from chatbot.application.validation_audit_service import ValidationAuditService
-    from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+    from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+    from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+    from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from evenor.application.tenant_service import TenantService
+    from evenor.application.validation_audit_service import ValidationAuditService
+    from evenor.domain.models.pending_reply_audit import ValidationAuditAction
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     with factory() as session:
@@ -4212,7 +4212,7 @@ def test_reject_blacklist_adds_sender_and_audits(dashboard_env) -> None:
 
 
 def test_email_blacklist_config_save_normalizes(dashboard_env) -> None:
-    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 
     client, admin, _, slug, tenant_id, _, factory = dashboard_env
     _login(client, admin.email, "admin-pass")
@@ -4231,8 +4231,8 @@ def test_email_blacklist_config_save_normalizes(dashboard_env) -> None:
 def test_validation_blacklist_tab_loads(dashboard_env) -> None:
     client, admin, _, slug, _, _, factory = dashboard_env
     with factory() as session:
-        from chatbot.application.tenant_service import TenantService
-        from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+        from evenor.application.tenant_service import TenantService
+        from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
 
         tenant = SqlAlchemyTenantRepository(session).find_by_slug(slug)
         assert tenant is not None

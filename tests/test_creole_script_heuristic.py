@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from chatbot.adapters.rag.creole_script_heuristic import creole_markers_hit, looks_like_mauritian_creole_script
+from evenor.adapters.rag.creole_script_heuristic import creole_markers_hit, looks_like_mauritian_creole_script
 
 
 @pytest.mark.parametrize(

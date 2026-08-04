@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-from chatbot.adapters.mail.body_format import (
+from evenor.adapters.mail.body_format import (
     email_draft_html_from_markdown,
     prepare_email_draft_html_for_editor,
 )

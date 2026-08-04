@@ -1,0 +1,13 @@
+---
+description: Multi-tenant evenor platform conventions
+globs: src/**/*.py, tests/**/*.py
+---
+
+# Evenor platform rules
+
+- Keep hexagonal boundaries: domain has no FastAPI/SQLAlchemy imports.
+- Every DB query on tenant data MUST filter by `tenant_id` (repos take `tenant_id` in `__init__`).
+- LanceDB path: `data/lancedb/{slug}/` only — never a shared index across tenants.
+- Public chat: `POST /c/{slug}/chat` + Bearer token; reject if token tenant slug != path slug.
+- Admin routes: `Authorization: Bearer ADMIN_TOKEN`.
+- One Alembic revision per schema change; tests use `create_db_engine(..., for_tests=True)`.

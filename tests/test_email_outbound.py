@@ -4,15 +4,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.adapters.mail.factory import build_email_sender
-from chatbot.adapters.mail.mailgun_sender import MailgunEmailSender
-from chatbot.adapters.mail.mailjet_sender import MailjetEmailSender
-from chatbot.adapters.mail.smtp_sender import EmailSendError, SmtpEmailSender
-from chatbot.adapters.mail.types import EmailMessage
-from chatbot.application.channel_outbound import dispatch_channel_reply
-from chatbot.application.email_outbound import send_email_reply
-from chatbot.domain.models.connector import ConnectorType
-from chatbot.domain.models.connector_schema import (
+from evenor.adapters.mail.factory import build_email_sender
+from evenor.adapters.mail.mailgun_sender import MailgunEmailSender
+from evenor.adapters.mail.mailjet_sender import MailjetEmailSender
+from evenor.adapters.mail.smtp_sender import EmailSendError, SmtpEmailSender
+from evenor.adapters.mail.types import EmailMessage
+from evenor.application.channel_outbound import dispatch_channel_reply
+from evenor.application.email_outbound import send_email_reply
+from evenor.domain.models.connector import ConnectorType
+from evenor.domain.models.connector_schema import (
     EmailOutboundProvider,
     fields_for,
     resolve_email_outbound_provider,
@@ -88,7 +88,7 @@ def test_email_out_fields_filtered_by_provider() -> None:
     assert "smtp_host" not in mailjet_keys
 
 
-@patch("chatbot.application.email_outbound.build_email_sender")
+@patch("evenor.application.email_outbound.build_email_sender")
 def test_send_email_reply_uses_factory(mock_build) -> None:
     mock_sender = MagicMock()
     mock_sender.send.return_value = "<sent@example.com>"
@@ -115,7 +115,7 @@ def test_send_email_reply_uses_factory(mock_build) -> None:
     assert sent_id == "<sent@example.com>"
 
 
-@patch("chatbot.application.channel_outbound.send_email_reply")
+@patch("evenor.application.channel_outbound.send_email_reply")
 def test_dispatch_channel_reply_email(mock_send) -> None:
     dispatch_channel_reply(
         channel=ConnectorType.EMAIL.value,
@@ -158,7 +158,7 @@ def test_build_email_sender_smtp_oauth_access_token_fallback() -> None:
     assert sender._access_token == "stored-token"
 
 
-@patch("chatbot.adapters.mail.mailjet_sender.httpx.Client")
+@patch("evenor.adapters.mail.mailjet_sender.httpx.Client")
 def test_mailjet_sender_posts(mock_client_cls) -> None:
     mock_client = MagicMock()
     mock_response = MagicMock()

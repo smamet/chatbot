@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.application.email_subject import normalize_subject, subject_similarity
+from evenor.application.email_subject import normalize_subject, subject_similarity
 
 
 def test_normalize_subject_strips_re_fwd_loop() -> None:

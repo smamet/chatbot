@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.adapters.mail.body_format import (
+from evenor.adapters.mail.body_format import (
     email_draft_html_from_markdown,
     format_email_bodies,
     html_to_plain,
@@ -171,7 +171,7 @@ def test_normalize_email_draft_html_splits_br_separated_signature_block() -> Non
 
 
 def test_prepare_email_draft_html_for_editor_normalizes_stored_ul() -> None:
-    from chatbot.adapters.mail.body_format import prepare_email_draft_html_for_editor
+    from evenor.adapters.mail.body_format import prepare_email_draft_html_for_editor
 
     html = prepare_email_draft_html_for_editor(
         "<ul><li><strong>Sales Executive</strong></li></ul>"

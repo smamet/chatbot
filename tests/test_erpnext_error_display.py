@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.application.erpnext_error_display import format_erpnext_error_message
+from evenor.application.erpnext_error_display import format_erpnext_error_message
 
 
 def test_format_erpnext_error_message_truncates_microseconds() -> None:

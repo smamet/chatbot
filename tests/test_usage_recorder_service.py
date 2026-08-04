@@ -5,11 +5,11 @@ from datetime import UTC, date, datetime
 import pytest
 from sqlalchemy.orm import Session
 
-from chatbot.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.application.usage_recorder_service import UsageRecorderService
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.domain.contracts.llm_client import LlmUsage
+from evenor.adapters.persistence.api_usage_repository import SqlAlchemyApiUsageRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.application.usage_recorder_service import UsageRecorderService
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.domain.contracts.llm_client import LlmUsage
 
 
 @pytest.fixture
@@ -17,7 +17,7 @@ def usage_session(tmp_path, monkeypatch: pytest.MonkeyPatch) -> Session:
     db = tmp_path / "usage.db"
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db}")
     reset_settings_cache_for_tests()
-    from chatbot.config.settings import get_settings
+    from evenor.config.settings import get_settings
 
     engine = create_db_engine(get_settings(), for_tests=True)
     factory = session_factory(engine)

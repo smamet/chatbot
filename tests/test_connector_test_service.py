@@ -4,15 +4,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.application.connector_test_service import run_connector_connection_test
+from evenor.application.connector_test_service import run_connector_connection_test
 
 
 @patch.object(
-    __import__("chatbot.adapters.mail.imap_client", fromlist=["ImapMailClient"]).ImapMailClient,
+    __import__("evenor.adapters.mail.imap_client", fromlist=["ImapMailClient"]).ImapMailClient,
     "connect",
 )
 @patch.object(
-    __import__("chatbot.adapters.mail.imap_client", fromlist=["ImapMailClient"]).ImapMailClient,
+    __import__("evenor.adapters.mail.imap_client", fromlist=["ImapMailClient"]).ImapMailClient,
     "close",
 )
 def test_connector_test_imap_password(mock_close, mock_connect) -> None:
@@ -30,13 +30,13 @@ def test_connector_test_imap_password(mock_close, mock_connect) -> None:
     assert "IMAP" in result.message
 
 
-@patch("chatbot.application.connector_test_service.prepare_oauth_mail_config")
+@patch("evenor.application.connector_test_service.prepare_oauth_mail_config")
 @patch.object(
-    __import__("chatbot.adapters.mail.imap_client", fromlist=["ImapMailClient"]).ImapMailClient,
+    __import__("evenor.adapters.mail.imap_client", fromlist=["ImapMailClient"]).ImapMailClient,
     "connect",
 )
 @patch.object(
-    __import__("chatbot.adapters.mail.imap_client", fromlist=["ImapMailClient"]).ImapMailClient,
+    __import__("evenor.adapters.mail.imap_client", fromlist=["ImapMailClient"]).ImapMailClient,
     "close",
 )
 def test_connector_test_imap_oauth(mock_close, mock_connect, mock_prepare) -> None:
@@ -53,7 +53,7 @@ def test_connector_test_imap_oauth(mock_close, mock_connect, mock_prepare) -> No
     assert "OAuth" in result.message
 
 
-@patch("chatbot.adapters.mail.smtp_sender.SmtpEmailSender.verify_connection")
+@patch("evenor.adapters.mail.smtp_sender.SmtpEmailSender.verify_connection")
 def test_connector_test_smtp(mock_verify) -> None:
     result = run_connector_connection_test(
         "email",
@@ -69,7 +69,7 @@ def test_connector_test_smtp(mock_verify) -> None:
     mock_verify.assert_called_once()
 
 
-@patch("chatbot.adapters.mail.mailjet_sender.httpx.Client")
+@patch("evenor.adapters.mail.mailjet_sender.httpx.Client")
 def test_connector_test_mailjet(mock_client_cls) -> None:
     response = MagicMock()
     mock_client_cls.return_value.__enter__.return_value.get.return_value = response

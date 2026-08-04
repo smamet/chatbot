@@ -5,13 +5,13 @@ from decimal import Decimal
 
 import pytest
 
-from chatbot.application.monitoring_format import format_count, format_count_compact, format_usd
-from chatbot.application.monitoring_series import (
+from evenor.application.monitoring_format import format_count, format_count_compact, format_usd
+from evenor.application.monitoring_series import (
     disk_pie_chart_payload,
     fill_token_series,
     multi_disk_chart_payload,
 )
-from chatbot.domain.models.api_usage import DiskDayPoint, TokenDayPoint
+from evenor.domain.models.api_usage import DiskDayPoint, TokenDayPoint
 
 
 def test_format_count_large_numbers() -> None:

@@ -7,10 +7,10 @@ from unittest.mock import MagicMock, Mock
 import pytest
 from sqlalchemy import select
 
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.orm import IngestedFileRow
-from chatbot.application.sync_service import IngestSyncService
-from chatbot.domain.contracts.vector_store import RetrievedChunk, VectorRecord
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.orm import IngestedFileRow
+from evenor.application.sync_service import IngestSyncService
+from evenor.domain.contracts.vector_store import RetrievedChunk, VectorRecord
 from tests.conftest import TestSettings as SettingsForTests
 
 
@@ -310,7 +310,7 @@ def test_purge_under_root_removes_vectors_keeps_files(
             return None
 
     with factory() as session:
-        from chatbot.adapters.persistence.orm import IngestedFileRow
+        from evenor.adapters.persistence.orm import IngestedFileRow
 
         session.add(
             IngestedFileRow(
@@ -321,7 +321,7 @@ def test_purge_under_root_removes_vectors_keeps_files(
         )
         session.commit()
 
-        from chatbot.application.sync_service import IngestSyncService
+        from evenor.application.sync_service import IngestSyncService
 
         svc = IngestSyncService(
             settings=test_settings,

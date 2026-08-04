@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from chatbot.mail.process_since import (
+from evenor.mail.process_since import (
     format_for_datetime_local,
     format_process_since_display,
     imap_since_date,

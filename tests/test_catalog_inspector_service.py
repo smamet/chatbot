@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.application.catalog_inspector_service import (
+from evenor.application.catalog_inspector_service import (
     RagCatalogRow,
     _description_for_table,
     _format_converted_hint,
@@ -25,7 +25,7 @@ from chatbot.application.catalog_inspector_service import (
     read_invoice_cache,
     write_invoice_cache,
 )
-from chatbot.application.erpnext_catalog_sync_service import render_item_markdown
+from evenor.application.erpnext_catalog_sync_service import render_item_markdown
 
 
 SAMPLE_MD = render_item_markdown(
@@ -116,7 +116,7 @@ def test_merge_inspector_rows_detects_mismatch() -> None:
 
 
 def test_filter_rows_matches_description() -> None:
-    from chatbot.application.catalog_inspector_service import InspectorRow
+    from evenor.application.catalog_inspector_service import InspectorRow
 
     rows = [
         InspectorRow(
@@ -166,7 +166,7 @@ def _inspector_row(
     *,
     rag_price_display: str = "not available",
 ) -> "InspectorRow":
-    from chatbot.application.catalog_inspector_service import InspectorRow
+    from evenor.application.catalog_inspector_service import InspectorRow
 
     return InspectorRow(
         item_code=item_code,
@@ -201,7 +201,7 @@ def test_filter_by_rag_price() -> None:
 
 
 def _inspector_row_mismatch(item_code: str, *, mismatch: bool) -> "InspectorRow":
-    from chatbot.application.catalog_inspector_service import InspectorRow
+    from evenor.application.catalog_inspector_service import InspectorRow
 
     return InspectorRow(
         item_code=item_code,
@@ -256,7 +256,7 @@ def test_description_for_table_strips_html_and_duplicate_title() -> None:
 
 
 def test_format_numeric_amount_uses_thousands_separator() -> None:
-    from chatbot.application.catalog_inspector_service import _format_numeric_amount
+    from evenor.application.catalog_inspector_service import _format_numeric_amount
 
     assert _format_numeric_amount(2492.01) == "2,492.01"
     assert _format_numeric_amount(119270.47) == "119,270.47"
@@ -284,7 +284,7 @@ def test_format_converted_hint_shows_target_amount() -> None:
 def test_merge_inspector_shows_fx_conversion_for_usd() -> None:
     from unittest.mock import MagicMock
 
-    from chatbot.application.catalog_inspector_service import InvoicePriceCache
+    from evenor.application.catalog_inspector_service import InvoicePriceCache
 
     fx = MagicMock()
     fx.convert.return_value = 115000.0
@@ -375,7 +375,7 @@ def test_build_inspector_page_with_mocked_erp(tmp_path: Path) -> None:
 def test_expected_price_entry_highest_price_picks_invoice() -> None:
     from unittest.mock import MagicMock
 
-    from chatbot.application.catalog_inspector_service import (
+    from evenor.application.catalog_inspector_service import (
         InvoicePriceCache,
         _expected_price_entry,
     )

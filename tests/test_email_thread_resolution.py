@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.application.email_thread_resolution import (
+from evenor.application.email_thread_resolution import (
     ThreadResolutionAudit,
     ThreadResolutionLlmMeta,
     audit_from_json,

@@ -3,8 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
-from chatbot.adapters.mail.imap_client import ImapMailClient, InboxPreviewMessage
-from chatbot.application.mail_inbox_preview_service import _skip_reason_for_message
+from evenor.adapters.mail.imap_client import ImapMailClient, InboxPreviewMessage
+from evenor.application.mail_inbox_preview_service import _skip_reason_for_message
 
 
 def test_list_recent_messages_returns_newest_first() -> None:

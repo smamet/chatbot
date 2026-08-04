@@ -5,8 +5,8 @@ from datetime import date, timedelta
 import pytest
 from fastapi import HTTPException
 
-from chatbot.adapters.persistence.disk_usage_repository import today_utc
-from chatbot.application.monitoring_date_range import (
+from evenor.adapters.persistence.disk_usage_repository import today_utc
+from evenor.application.monitoring_date_range import (
     MONITORING_DEFAULT_DAYS,
     default_monitoring_range,
     monitoring_query_string,

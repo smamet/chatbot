@@ -4,8 +4,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from chatbot.application.customer_access_gate import can_create_customer, can_create_quotation
-from chatbot.application.customer_provisioning_service import (
+from evenor.application.customer_access_gate import can_create_customer, can_create_quotation
+from evenor.application.customer_provisioning_service import (
     CustomerProvisioningError,
     create_erpnext_customer_for_test,
     ensure_erpnext_customer,

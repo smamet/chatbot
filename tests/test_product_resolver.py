@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.application.product_resolver import ProductResolver, normalize_product_key
+from evenor.application.product_resolver import ProductResolver, normalize_product_key
 
 
 class _FakeErpClient:

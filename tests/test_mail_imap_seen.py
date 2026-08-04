@@ -3,15 +3,15 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.application.channel_outbound import approve_pending_reply
-from chatbot.application.mail_imap_seen_service import mark_imap_seen_for_pending_reply
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.fulfillment import FulfillmentKind
-from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.application.channel_outbound import approve_pending_reply
+from evenor.application.mail_imap_seen_service import mark_imap_seen_for_pending_reply
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.fulfillment import FulfillmentKind
+from evenor.domain.models.pending_reply import PendingReply, PendingReplyStatus
 
 
 def _pending_reply(**overrides) -> PendingReply:
@@ -63,8 +63,8 @@ def _email_connectors(session, tenant_id: int) -> tuple[int, int]:
     return in_conn.id, out_conn.id
 
 
-@patch("chatbot.application.mail_imap_seen_service.imap_client")
-@patch("chatbot.application.mail_imap_seen_service.prepare_email_connector_config")
+@patch("evenor.application.mail_imap_seen_service.imap_client")
+@patch("evenor.application.mail_imap_seen_service.prepare_email_connector_config")
 def test_mark_imap_seen_for_pending_reply(mock_prepare, mock_imap_ctx, test_settings, test_tenant) -> None:
     tenant, _token = test_tenant
     engine = create_db_engine(test_settings, for_tests=True)
@@ -98,8 +98,8 @@ def test_mark_imap_seen_for_pending_reply(mock_prepare, mock_imap_ctx, test_sett
     imap.mark_seen.assert_called_once_with("42")
 
 
-@patch("chatbot.application.channel_outbound.mark_imap_seen_for_pending_reply")
-@patch("chatbot.application.channel_outbound.dispatch_channel_reply")
+@patch("evenor.application.channel_outbound.mark_imap_seen_for_pending_reply")
+@patch("evenor.application.channel_outbound.dispatch_channel_reply")
 def test_approve_pending_reply_marks_imap_seen(mock_dispatch, mock_mark_seen, test_settings, test_tenant) -> None:
     tenant, _token = test_tenant
     engine = create_db_engine(test_settings, for_tests=True)

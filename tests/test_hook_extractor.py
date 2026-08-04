@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import json
 
-from chatbot.application.hook_extractor import extract_hook
-from chatbot.domain.constants import HOOK_MARKER, LEGACY_HOOK_MARKER
+from evenor.application.hook_extractor import extract_hook
+from evenor.domain.constants import HOOK_MARKER, LEGACY_HOOK_MARKER
 
 
 def test_extract_hook_no_marker() -> None:

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.application.progress_log import ProgressLog
+from evenor.application.progress_log import ProgressLog
 
 
 def test_progress_log_collects_and_emits() -> None:

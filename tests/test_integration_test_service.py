@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from chatbot.application.integration_test_service import run_integration_test
+from evenor.application.integration_test_service import run_integration_test
 
 
 def test_run_integration_test_missing_identity() -> None:
@@ -26,13 +26,13 @@ def test_run_integration_test_success() -> None:
     client.get_orders.return_value = [{"name": "SO-1", "transaction_date": "2026-01-01", "status": "Open", "grand_total": 1}]
     client.get_quotations.return_value = []
 
-    from chatbot.application import integration_test_service as mod
+    from evenor.application import integration_test_service as mod
 
     original = mod._gate_for_type
 
     def fake_gate(integration_type: str, config: dict):
         _ = integration_type, config
-        from chatbot.application.customer_access_gate import CustomerAccessGate
+        from evenor.application.customer_access_gate import CustomerAccessGate
 
         return CustomerAccessGate(
             client,

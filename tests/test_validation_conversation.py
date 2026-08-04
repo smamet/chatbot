@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.message import ChatMessage, MessageRole
-from chatbot.interfaces.api.routers.dashboard_web import _conversation_history_for_pending_reply
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.message import ChatMessage, MessageRole
+from evenor.interfaces.api.routers.dashboard_web import _conversation_history_for_pending_reply
 
 
 def test_conversation_history_excludes_current_draft(test_settings, test_tenant) -> None:

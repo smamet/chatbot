@@ -4,8 +4,8 @@ from unittest.mock import patch
 
 from typer.testing import CliRunner
 
-from chatbot.__main__ import app
-from chatbot.application.erpnext_catalog_sync_service import CatalogRagIndexPlan
+from evenor.__main__ import app
+from evenor.application.erpnext_catalog_sync_service import CatalogRagIndexPlan
 
 
 runner = CliRunner()
@@ -23,10 +23,10 @@ def test_catalog_rag_rebuild_dry_run(test_settings, test_tenant, monkeypatch) ->
         already_indexed=[catalog_dir / "B.md"],
     )
 
-    with patch("chatbot.__main__.get_settings", return_value=test_settings), patch(
-        "chatbot.__main__.catalog_rag_index_plan",
+    with patch("evenor.__main__.get_settings", return_value=test_settings), patch(
+        "evenor.__main__.catalog_rag_index_plan",
         return_value=plan,
-    ), patch("chatbot.__main__.reconcile_catalog_rag") as mock_reconcile:
+    ), patch("evenor.__main__.reconcile_catalog_rag") as mock_reconcile:
         result = runner.invoke(app, ["catalog-rag", "rebuild", tenant.slug, "--dry-run"])
 
     assert result.exit_code == 0

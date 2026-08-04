@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from chatbot.application.email_body_sanitize import (
+from evenor.application.email_body_sanitize import (
     looks_like_html,
     prepare_email_body_new,
     sanitize_plain,
 )
-from chatbot.application.email_text_tokens import estimate_text_tokens, reduction_percent
+from evenor.application.email_text_tokens import estimate_text_tokens, reduction_percent
 
 
 def test_sanitize_plain_unescapes_nbsp() -> None:

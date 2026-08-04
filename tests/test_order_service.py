@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.order_repository import SqlAlchemyOrderRepository
-from chatbot.adapters.persistence.orm import OrderEventRow
-from chatbot.automation.handlers.order_service import OrderService
-from chatbot.domain.models.message import ChatMessage, MessageRole
-from chatbot.domain.models.order import OrderAction, OrderCommand, OrderItem
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.order_repository import SqlAlchemyOrderRepository
+from evenor.adapters.persistence.orm import OrderEventRow
+from evenor.automation.handlers.order_service import OrderService
+from evenor.domain.models.message import ChatMessage, MessageRole
+from evenor.domain.models.order import OrderAction, OrderCommand, OrderItem
 
 
 class _Clock:

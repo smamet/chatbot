@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.application.context_debug import (
+from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.application.context_debug import (
     context_debug_from_json,
     context_debug_to_json,
     format_context_debug_label,
 )
-from chatbot.domain.models.context_debug import ContextDebugInfo
-from chatbot.domain.models.message import ChatMessage, MessageRole
+from evenor.domain.models.context_debug import ContextDebugInfo
+from evenor.domain.models.message import ChatMessage, MessageRole
 
 
 def test_context_debug_json_roundtrip() -> None:

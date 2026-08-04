@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from chatbot.adapters.quickbooks.client import QuickBooksClient
+from evenor.adapters.quickbooks.client import QuickBooksClient
 
 
 def _config() -> dict:

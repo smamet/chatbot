@@ -5,12 +5,12 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.tenant_service import TenantService
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.interfaces.api.deps import get_chat_service
-from chatbot.interfaces.api.main import create_app, refresh_genai_clients_if_needed
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.tenant_service import TenantService
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.interfaces.api.deps import get_chat_service
+from evenor.interfaces.api.main import create_app, refresh_genai_clients_if_needed
 
 
 def test_healthz() -> None:
@@ -42,7 +42,7 @@ def tenant_chat_client(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("DATA_ROOT", str(data))
     monkeypatch.setenv("LANCEDB_ROOT", str(data / "lancedb"))
     monkeypatch.setenv("ADMIN_TOKEN", "admin-secret")
-    from chatbot.config.settings import get_settings
+    from evenor.config.settings import get_settings
 
     reset_settings_cache_for_tests()
     engine = create_db_engine(get_settings(), for_tests=True)

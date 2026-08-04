@@ -1,14 +1,14 @@
-# Agent guide — chatbot platform
+# Agent guide — Evenor platform
 
 ## Architecture
 
 - **Hexagonal layout**: `domain/` (models + contracts), `application/` (use cases), `adapters/` (SQLAlchemy, LanceDB, Gemini), `interfaces/` (FastAPI, web dashboard, workers).
 - **Multi-tenant**: every row scoped by `tenant_id`; LanceDB under `data/lancedb/{slug}/`.
 - **RAG sources**: uploaded docs in `data/docs/{slug}/`; ERPNext catalogue snapshots in `data/catalog/{slug}/` (one `.md` per item, isolated from document sync).
-- **Auth**: `POST /c/{slug}/chat` with `Authorization: Bearer <tenant_token>` (token must match slug). Admin API: `ADMIN_TOKEN`. Dashboard: session cookie (`/auth/login`) plus optional **Remember me** (`chatbot_remember` cookie + `users.remember_token_hash`; Laravel-style silent re-auth when session expires). Config: `SESSION_MAX_AGE_DAYS` (default 14), `REMEMBER_ME_MAX_AGE_DAYS` (default 400). Run `./sail migrate` after pull for `025_user_remember_token`. Dashboard roles — see **Dashboard roles** below.
+- **Auth**: `POST /c/{slug}/chat` with `Authorization: Bearer <tenant_token>` (token must match slug). Admin API: `ADMIN_TOKEN`. Dashboard: session cookie (`/auth/login`) plus optional **Remember me** (`evenor_remember` cookie + `users.remember_token_hash`; Laravel-style silent re-auth when session expires). Config: `SESSION_MAX_AGE_DAYS` (default 14), `REMEMBER_ME_MAX_AGE_DAYS` (default 400). Run `./sail migrate` after pull for `025_user_remember_token`. Dashboard roles — see **Dashboard roles** below.
 - **Hooks**: LLM appends global marker `===HOOK===` + JSON → `hook_events` → `worker-automation` dispatches **automation modules** (`core.orders` → local DB; `erpnext.quote` → validation queue + ERPNext on approve). Module list per bot in `config_json.automation_modules`. Run `./sail migrate` after pull for `013_validation_audit` (validation audit + `client_operator` role rename).
-- **ERPNext catalog → RAG**: `worker-catalog` polls tenants with active ERPNext + `sync_catalog_to_rag`; fetches paginated Item + Bin (stock aggregate) + Item Price (`catalog_price_list`, default Standard Selling), writes `data/catalog/{slug}/*.md`, then `reconcile_catalog_rag()` → `IngestSyncService.ingest_paths_batched()` on that folder only (never `data/docs/`). Price line: Item Price → standard_rate → `not available`. Config in integration schema (`sync_catalog_to_rag`, `catalog_sync_interval_minutes`, `catalog_include_stock`, `catalog_price_list`); runtime metadata in encrypted config (`catalog_last_sync_at`, `catalog_last_item_count`, `catalog_last_error`) — merge-safe, not in schema fields. Manual sync: dashboard **Sync catalog now** or `./sail chatbot catalog-rag sync {slug}`. Resume partial RAG index: `./sail chatbot catalog-rag rebuild {slug}` (uses `catalog_rag_index_plan()` for missing/changed files). Embedding retries (429/503) live in `GeminiEmbedder` only — shared by UI, workers, CLI, document sync.
-- **Connectors**: per-tenant channel creds in `connectors.config_enc` (Fernet via `APP_SECRET_KEY`). Email connectors support **password**, **Microsoft OAuth**, or **Google OAuth** (`auth_type`). OAuth mailboxes use reusable **`mail_connections`** rows (one Connect covers IMAP + SMTP); email IN/OUT connectors reference `mail_connection_id` in config. Platform OAuth app credentials optional in `.env` (`MICROSOFT_MAIL_CLIENT_ID`/`SECRET`, `GOOGLE_MAIL_CLIENT_ID`/`SECRET`) — override per-connection client ID/secret for enterprise tenants. Refresh tokens live on the **connection** row. Single OAuth redirect URI for the platform: `{PUBLIC_BASE_URL}/dashboard/mail-oauth/callback` (register once in Entra/Google; legacy per-connection callback path still works). Password/GreenMail and Mailjet/Mailgun stay inline on the connector. Dashboard **Connectors** tab: **Mail connections** panel (create, Connect, Test IMAP/SMTP) + connector form with connection dropdown. Gmail SMTP: port 587 STARTTLS only (not 465). Mailbox owner must complete OAuth consent. Migrate legacy per-connector OAuth: `./sail chatbot mail-connection-migrate {slug}`. Run `./sail migrate` after pull for `017_mail_connections`. **Inbound email filter** `skip_cc_only` (IN connector, default on): ignore messages where the mailbox `username` is not in the `To` header (CC/BCC-only copies recorded as `mail_imap_uids.disposition=skipped`).
+- **ERPNext catalog → RAG**: `worker-catalog` polls tenants with active ERPNext + `sync_catalog_to_rag`; fetches paginated Item + Bin (stock aggregate) + Item Price (`catalog_price_list`, default Standard Selling), writes `data/catalog/{slug}/*.md`, then `reconcile_catalog_rag()` → `IngestSyncService.ingest_paths_batched()` on that folder only (never `data/docs/`). Price line: Item Price → standard_rate → `not available`. Config in integration schema (`sync_catalog_to_rag`, `catalog_sync_interval_minutes`, `catalog_include_stock`, `catalog_price_list`); runtime metadata in encrypted config (`catalog_last_sync_at`, `catalog_last_item_count`, `catalog_last_error`) — merge-safe, not in schema fields. Manual sync: dashboard **Sync catalog now** or `./sail evenor catalog-rag sync {slug}`. Resume partial RAG index: `./sail evenor catalog-rag rebuild {slug}` (uses `catalog_rag_index_plan()` for missing/changed files). Embedding retries (429/503) live in `GeminiEmbedder` only — shared by UI, workers, CLI, document sync.
+- **Connectors**: per-tenant channel creds in `connectors.config_enc` (Fernet via `APP_SECRET_KEY`). Email connectors support **password**, **Microsoft OAuth**, or **Google OAuth** (`auth_type`). OAuth mailboxes use reusable **`mail_connections`** rows (one Connect covers IMAP + SMTP); email IN/OUT connectors reference `mail_connection_id` in config. Platform OAuth app credentials optional in `.env` (`MICROSOFT_MAIL_CLIENT_ID`/`SECRET`, `GOOGLE_MAIL_CLIENT_ID`/`SECRET`) — override per-connection client ID/secret for enterprise tenants. Refresh tokens live on the **connection** row. Single OAuth redirect URI for the platform: `{PUBLIC_BASE_URL}/dashboard/mail-oauth/callback` (register once in Entra/Google; legacy per-connection callback path still works). Password/GreenMail and Mailjet/Mailgun stay inline on the connector. Dashboard **Connectors** tab: **Mail connections** panel (create, Connect, Test IMAP/SMTP) + connector form with connection dropdown. Gmail SMTP: port 587 STARTTLS only (not 465). Mailbox owner must complete OAuth consent. Migrate legacy per-connector OAuth: `./sail evenor mail-connection-migrate {slug}`. Run `./sail migrate` after pull for `017_mail_connections`. **Inbound email filter** `skip_cc_only` (IN connector, default on): ignore messages where the mailbox `username` is not in the `To` header (CC/BCC-only copies recorded as `mail_imap_uids.disposition=skipped`).
 - **Monitoring**: Gemini calls wrapped with `MeteredLlmClient` / `MeteredEmbedder` → daily rollups in `api_usage_daily` (`UsageRecorderService`). Live disk scan via `DiskUsageService`; nightly history in `disk_usage_daily` (`DiskSnapshotService`, triggered from `worker-catalog` once per UTC day). Dashboard: admin `/dashboard/monitoring` + per-bot `?tab=monitoring`. Cost estimates from local list prices (`gemini_pricing.py`, default model `gemini-2.5-flash` at $0.30/$2.50 per 1M in/out) — Google has no per-model pricing API. Two-tier billing: **internal** (per-model Google rates, admin only) vs **client billable** (flat $/M from `CLIENT_BILLING_*` env + optional per-tenant override on `tenants.client_billing_*`, admin-only — not in `config_json`). Run `./sail migrate` after pull for `014_api_usage_daily`, `015_disk_usage_daily`, `016_tenant_client_billing`.
 - **Email threading**: `email_threads` table (per-sender thread, `thread_key` = 12-char hex). New inbound mail → `session_id` = `email:{addr}~{thread_key}`; legacy `email:{addr}` sessions are not migrated. `EmailThreadResolver`: RFC headers (`Message-ID` / `In-Reply-To` / `References`) → normalized subject → LLM (`REWRITE_MODEL`, operation `email_thread`) when ambiguous and `EMAIL_THREAD_LLM_ENABLED=true`. `EmailReplyParser` extracts `body_new` (quoted text stripped) — only `body_new` goes to the chat LLM; raw body stays in `mail_drafts.body_in`. Resolution audit persisted on `mail_drafts.thread_resolution_json`; validation inbox shows green/yellow ● (tooltip = method; yellow = LLM called). On validation approve, outbound SMTP/Mailjet/Mailgun includes `In-Reply-To` + `References`; `outbound_email_messages` records sent `Message-ID`. **Regenerate from raw** (email pending, non-quote): `POST …/validation/{id}/regenerate` re-runs LLM with full history + `body_in` as last user turn; updates draft + messages; audit `regenerated`. **Blocked senders**: `TenantConfig.email_blocked_senders` (Config tab); listener skips before thread/LLM (`mail_imap_uids.disposition=blacklisted`); operators **Reject & Blacklist** on validation detail; Validation sub-tab **Blacklist** lists addresses (+ Unblock for editors). Run `./sail migrate` after pull for `019_email_threads`, `020_mail_draft_thread_resolution`, `021_resanitize_mail_draft_body_new` (one-time backfill of `body_new` from `body_in`), `022_backfill_html_body_new` (HTML→plain backfill for existing drafts).
 
@@ -16,10 +16,10 @@
 
 ```bash
 ./sail up -d
-./sail chatbot user-create admin@example.com -p 'your-password' --role admin
-./sail chatbot user-set-password admin@example.com -p 'new-password'  # if user already exists
-./sail chatbot tenant-create "Name" --slug my-client
-./sail chatbot sync my-client /app/data/docs
+./sail evenor user-create admin@example.com -p 'your-password' --role admin
+./sail evenor user-set-password admin@example.com -p 'new-password'  # if user already exists
+./sail evenor tenant-create "Name" --slug my-client
+./sail evenor sync my-client /app/data/docs
 ./sail test
 ./sail shell
 ```
@@ -42,11 +42,11 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `work
 
 - **Login home** (`client_operator`): one assigned bot → validation inbox; two or more → bot picker (**Open** → validation); none → empty list.
 - **Permissions**: `UserService.can_edit` (bot config) vs `can_validate` (validation mutations). Operators have `can_validate` but not `can_edit`. **Test chat**: `UserService.can_use_full_test_chat` — admin only (identity email/phone, channel simulation, multi-session sidebar). `client_admin` gets anonymous test chat only (cookie-persisted `test:` session, messages loaded on tab open, minimal UI).
-- **CLI**: `./sail chatbot user-create … --role client_operator` (also `admin`, `client_admin`). Assign bots on dashboard **Users** → user detail (admin only).
+- **CLI**: `./sail evenor user-create … --role client_operator` (also `admin`, `client_admin`). Assign bots on dashboard **Users** → user detail (admin only).
 
 ### Add a tenant
 
-1. Dashboard **Bots** → open bot, or `./sail chatbot tenant-create "Name" --slug my-client`
+1. Dashboard **Bots** → open bot, or `./sail evenor tenant-create "Name" --slug my-client`
 2. Save the token shown once.
 3. Upload docs (dashboard or admin API), run **Sync** (documents only — `data/docs/{slug}/`).
 4. Configure **Connectors** (WhatsApp/Meta) for webhook URLs `/webhooks/{channel}/{slug}`.
@@ -54,11 +54,11 @@ Compose services: `db` (MySQL), `api`, `worker-automation`, `worker-mail`, `work
 
 ### Flush bot operational data (keep RAG)
 
-Service: `src/chatbot/application/tenant_flush_service.py` (`TenantFlushService.flush`).
+Service: `src/evenor/application/tenant_flush_service.py` (`TenantFlushService.flush`).
 
 ```bash
-./sail chatbot bot-flush {slug} --yes
-./sail chatbot bot-restore {slug} data/backups/{slug}/{timestamp} --yes
+./sail evenor bot-flush {slug} --yes
+./sail evenor bot-restore {slug} data/backups/{slug}/{timestamp} --yes
 ```
 
 Clears messages, `hook_events`, validation queue (`pending_replies` + edits + audit), orders, `mail_drafts`, `email_threads`, `outbound_email_messages`, `test_chat_sessions`, `mail_imap_uids`, tenant monitoring rows (`api_usage_daily`, `disk_usage_daily` for that bot only — not host snapshots), and runtime dirs `data/attachments/{slug}/`, `data/quotes/{slug}/`. **Does not** delete the tenant, connectors, integrations, `ingested_files`, LanceDB, `data/docs/` or `data/catalog/`. Token unchanged. Destructive — requires `--yes` without a TTY or slug confirmation on a TTY.
@@ -69,18 +69,18 @@ Clears messages, `hook_events`, validation queue (`pending_replies` + edits + au
 
 ### ERPNext catalog sync
 
-- Service: `src/chatbot/application/erpnext_catalog_sync_service.py`; client pagination in `ErpNextClient.list_catalog_items` / `fetch_stock_totals` / `fetch_price_list_rates`.
-- Worker: `python -m chatbot.interfaces.worker_catalog` (`--once` for a single poll). Poll interval: `CATALOG_POLL_SECONDS`; per-bot interval: `catalog_sync_interval_minutes` in integration config.
+- Service: `src/evenor/application/erpnext_catalog_sync_service.py`; client pagination in `ErpNextClient.list_catalog_items` / `fetch_stock_totals` / `fetch_price_list_rates`.
+- Worker: `python -m evenor.interfaces.worker_catalog` (`--once` for a single poll). Poll interval: `CATALOG_POLL_SECONDS`; per-bot interval: `catalog_sync_interval_minutes` in integration config.
 - `catalog_price_list`: defaults to `Standard Selling` (blank/absent included). Default price resolution: Item Price → `standard_rate` → latest invoice `rate` (only when `catalog_invoice_price_fallback` is enabled; **off by default**) → `not available`. When `catalog_use_highest_price` is enabled: compare Item Price vs latest invoice per item (FX conversion via `FxRateService`, USD pivot cache `data/.fx-rates-cache.json`, 24 h TTL, Frankfurter + open.er-api fallback), keep the higher amount in compare currency (default MUR). Ignores invoice fallback. Never emit price `0.0` in markdown.
 - Do not call document `reconcile_root` on `data/catalog/` or vice versa — separate roots, separate `IngestSyncService` runs.
 - Metadata keys (`catalog_last_*`) are outside the integration schema; `_merge_integration_config` preserves them on dashboard save. Worker re-reads config before writing metadata.
 - **CLI (same pipeline as dashboard/worker):**
   ```bash
-  ./sail chatbot catalog-rag rebuild {slug}           # resume: embed missing/changed only
-  ./sail chatbot catalog-rag rebuild {slug} --dry-run
-  ./sail chatbot catalog-rag rebuild {slug} --all     # force full catalog scan (unchanged skip embed)
-  ./sail chatbot catalog-rag sync {slug}              # ERPNext fetch + RAG reconcile
-  ./sail chatbot catalog-rag sync {slug} --files-only # ERPNext fetch only (no RAG ingest)
+  ./sail evenor catalog-rag rebuild {slug}           # resume: embed missing/changed only
+  ./sail evenor catalog-rag rebuild {slug} --dry-run
+  ./sail evenor catalog-rag rebuild {slug} --all     # force full catalog scan (unchanged skip embed)
+  ./sail evenor catalog-rag sync {slug}              # ERPNext fetch + RAG reconcile
+  ./sail evenor catalog-rag sync {slug} --files-only # ERPNext fetch only (no RAG ingest)
   ```
 - **Catalog price inspector** (dashboard): Integrations → ERPNext → Catalog RAG sync → **Inspect catalog prices**. Compares RAG snapshot markdown vs live ERPNext Item Price / `standard_rate`; invoice column loads on demand into `data/catalog/{slug}/.invoice-price-cache.json` (timestamp shown, refresh button). Mismatch rows highlighted when RAG rate ≠ expected resolution for the bot config.
 - `catalog_rag_index_plan()` → `needs_embed` / `already_indexed` (content hash vs `ingested_files`). `reconcile_catalog_rag(..., on_file_done, commit_each_batch)` — auto `commit_each_batch` when >50 files.
@@ -115,10 +115,10 @@ Clears messages, `hook_events`, validation queue (`pending_replies` + edits + au
 ```bash
 pip install -e ".[dev]"
 mkdir -p data
-uvicorn chatbot.interfaces.api.main:app --reload
-python -m chatbot.interfaces.worker_automation
-python -m chatbot.interfaces.worker_mail
-python -m chatbot.interfaces.worker_catalog
+uvicorn evenor.interfaces.api.main:app --reload
+python -m evenor.interfaces.worker_automation
+python -m evenor.interfaces.worker_mail
+python -m evenor.interfaces.worker_catalog
 ```
 
 Dashboard: http://127.0.0.1:8000/auth/login

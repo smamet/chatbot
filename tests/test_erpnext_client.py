@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-from chatbot.adapters.erpnext.client import ErpNextClient, _phone_variants
+from evenor.adapters.erpnext.client import ErpNextClient, _phone_variants
 
 
 def _config() -> dict:
@@ -688,7 +688,7 @@ def test_probe_invoice_prices_reports_item_price_permission_error() -> None:
         response_ok.json.return_value = {"data": [{"name": "SINV-0001"}]}
         return response_ok
 
-    with patch("chatbot.adapters.erpnext.client.httpx.Client") as mock_client:
+    with patch("evenor.adapters.erpnext.client.httpx.Client") as mock_client:
         mock_client.return_value.__enter__.return_value.get.side_effect = fake_get
         with patch.object(client, "fetch_latest_invoice_rates", return_value={"A": {"rate": 1.0}}):
             result = client.probe_invoice_prices()
@@ -718,7 +718,7 @@ def test_probe_invoice_prices_reports_invoice_permission_error() -> None:
             return response_ok
         raise err
 
-    with patch("chatbot.adapters.erpnext.client.httpx.Client") as mock_client:
+    with patch("evenor.adapters.erpnext.client.httpx.Client") as mock_client:
         mock_client.return_value.__enter__.return_value.get.side_effect = fake_get
         result = client.probe_invoice_prices()
     assert result["ok"] is False
@@ -749,7 +749,7 @@ def test_probe_invoice_prices_success() -> None:
             response.json.return_value = detail_payload
         return response
 
-    with patch("chatbot.adapters.erpnext.client.httpx.Client") as mock_client:
+    with patch("evenor.adapters.erpnext.client.httpx.Client") as mock_client:
         mock_client.return_value.__enter__.return_value.get.side_effect = fake_get
         with patch.object(
             client,

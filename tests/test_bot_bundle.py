@@ -6,20 +6,20 @@ import zipfile
 
 import pytest
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.tenant_paths import tenant_docs_dir
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.bot_bundle_service import (
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.tenant_paths import tenant_docs_dir
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.bot_bundle_service import (
     BLACKLIST_NAME,
     ImportMode,
     build_export,
     import_bundle,
 )
-from chatbot.application.connector_service import ConnectorService
-from chatbot.application.tenant_service import TenantService
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.tenant import TenantConfig
+from evenor.application.connector_service import ConnectorService
+from evenor.application.tenant_service import TenantService
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.tenant import TenantConfig
 
 
 @pytest.fixture

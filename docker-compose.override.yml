@@ -7,7 +7,7 @@ services:
     volumes:
       - ./src:/app/src
       - ./migrations:/app/migrations
-    command: sh -c "alembic upgrade head && uvicorn chatbot.interfaces.api.main:app --host 0.0.0.0 --port 8000 --reload"
+    command: sh -c "alembic upgrade head && uvicorn evenor.interfaces.api.main:app --host 0.0.0.0 --port 8000 --reload"
 
   worker-automation:
     volumes:

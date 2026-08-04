@@ -4,7 +4,7 @@ from unittest.mock import patch
 
 import pytest
 
-from chatbot.application.mail_oauth_service import (
+from evenor.application.mail_oauth_service import (
     MailOAuthError,
     apply_oauth_tokens_to_config,
     get_oauth_access_token,
@@ -12,9 +12,9 @@ from chatbot.application.mail_oauth_service import (
     prepare_oauth_mail_config,
     resolve_mail_oauth_credentials,
 )
-from chatbot.adapters.microsoft.oauth import OAuthTokens
-from chatbot.config.settings import Settings
-from chatbot.domain.models.mail_connection import MailConnection, MailConnectionProvider
+from evenor.adapters.microsoft.oauth import OAuthTokens
+from evenor.config.settings import Settings
+from evenor.domain.models.mail_connection import MailConnection, MailConnectionProvider
 
 
 def test_is_oauth_connected() -> None:
@@ -38,7 +38,7 @@ def test_get_oauth_access_token_uses_cached_token() -> None:
     assert result.updated_config is None
 
 
-@patch("chatbot.application.mail_oauth_service.microsoft_oauth.refresh_access_token")
+@patch("evenor.application.mail_oauth_service.microsoft_oauth.refresh_access_token")
 def test_get_oauth_access_token_refreshes_when_expired(mock_refresh) -> None:
     mock_refresh.return_value = OAuthTokens(
         access_token="new",
@@ -114,7 +114,7 @@ def test_resolve_mail_oauth_credentials_falls_back_to_connection() -> None:
     assert client_secret == "row-sec"
 
 
-@patch("chatbot.application.mail_oauth_service.microsoft_oauth.refresh_access_token")
+@patch("evenor.application.mail_oauth_service.microsoft_oauth.refresh_access_token")
 def test_get_oauth_access_token_uses_platform_env_on_refresh(mock_refresh) -> None:
     mock_refresh.return_value = OAuthTokens(
         access_token="new",

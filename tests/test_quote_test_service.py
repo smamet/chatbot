@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from chatbot.application.progress_log import ProgressLog
-from chatbot.application.quote_test_service import create_erpnext_quotation_for_test
-from chatbot.config.settings import get_settings
+from evenor.application.progress_log import ProgressLog
+from evenor.application.quote_test_service import create_erpnext_quotation_for_test
+from evenor.config.settings import get_settings
 
 
 def test_create_quotation_disabled() -> None:
@@ -33,7 +33,7 @@ def test_create_quotation_happy_path() -> None:
     client.download_quotation_pdf.return_value = b"%PDF"
     settings = get_settings()
 
-    with patch("chatbot.application.quote_test_service.store_quote_pdf") as store_pdf:
+    with patch("evenor.application.quote_test_service.store_quote_pdf") as store_pdf:
         store_pdf.return_value = settings.data_root / "quotes" / "bot" / "QTN-0001.pdf"
         out = create_erpnext_quotation_for_test(
             client,
@@ -68,7 +68,7 @@ def test_create_quotation_emits_progress_logs() -> None:
     settings = get_settings()
     progress = ProgressLog()
 
-    with patch("chatbot.application.quote_test_service.store_quote_pdf"):
+    with patch("evenor.application.quote_test_service.store_quote_pdf"):
         create_erpnext_quotation_for_test(
             client,
             {"allow_create_quotation": True},

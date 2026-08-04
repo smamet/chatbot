@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 
-from chatbot.adapters.channels import whatsapp_meta
+from evenor.adapters.channels import whatsapp_meta
 
 
 def test_verify_signature_accepts_valid() -> None:

@@ -10,7 +10,7 @@ import sqlalchemy as sa
 from alembic import op
 from sqlalchemy import inspect
 
-from chatbot.application.email_body_sanitize import prepare_email_body_new
+from evenor.application.email_body_sanitize import prepare_email_body_new
 
 revision: str = "021"
 down_revision: Union[str, None] = "020"

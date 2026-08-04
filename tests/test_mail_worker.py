@@ -6,18 +6,18 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.adapters.mail.imap_client import IncomingMail
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-from chatbot.adapters.persistence.mail_imap_uid_repository import SqlAlchemyMailImapUidRepository
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.connector_service import ConnectorService
-from chatbot.config.settings import get_settings, reset_settings_cache_for_tests
-from chatbot.application.tenant_service import TenantService
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.mail import listener as mail_listener
-from chatbot.mail.process_since import parse_process_since
+from evenor.adapters.mail.imap_client import IncomingMail
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from evenor.adapters.persistence.mail_imap_uid_repository import SqlAlchemyMailImapUidRepository
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.connector_service import ConnectorService
+from evenor.config.settings import get_settings, reset_settings_cache_for_tests
+from evenor.application.tenant_service import TenantService
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.mail import listener as mail_listener
+from evenor.mail.process_since import parse_process_since
 
 
 @pytest.fixture
@@ -93,12 +93,12 @@ def _mail(
     )
 
 
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_blacklisted_sender_skips_llm(mock_imap_ctx, mail_env) -> None:
     factory, settings, tenant_id, _, _ = mail_env
     with factory() as session:
-        from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-        from chatbot.application.tenant_service import TenantService
+        from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+        from evenor.application.tenant_service import TenantService
 
         TenantService(SqlAlchemyTenantRepository(session)).update_blocked_senders(
             tenant_id, ["blocked@evil.com"]
@@ -109,13 +109,13 @@ def test_run_once_blacklisted_sender_skips_llm(mock_imap_ctx, mail_env) -> None:
     imap.fetch_pending.return_value = [_mail("blk-1", from_addr="blocked@evil.com")]
     mock_imap_ctx.return_value.__enter__.return_value = imap
 
-    with patch("chatbot.mail.listener.build_chat_service_for_worker") as mock_build:
+    with patch("evenor.mail.listener.build_chat_service_for_worker") as mock_build:
         n = mail_listener.run_once(factory, settings)
         mock_build.assert_not_called()
 
     assert n == 0
     with factory() as session:
-        from chatbot.adapters.persistence.mail_imap_uid_repository import (
+        from evenor.adapters.persistence.mail_imap_uid_repository import (
             SqlAlchemyMailImapUidRepository,
         )
 
@@ -123,9 +123,9 @@ def test_run_once_blacklisted_sender_skips_llm(mock_imap_ctx, mail_env) -> None:
         assert uid_repo.exists_by_uid("blk-1")
 
 
-@patch("chatbot.mail.listener.queue_after_chat")
-@patch("chatbot.mail.listener.build_chat_service_for_worker")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.queue_after_chat")
+@patch("evenor.mail.listener.build_chat_service_for_worker")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_processes_mail(mock_imap_ctx, mock_build_chat, mock_queue, mail_env) -> None:
     factory, settings, tenant_id, _, _ = mail_env
     imap = MagicMock()
@@ -145,7 +145,7 @@ def test_run_once_processes_mail(mock_imap_ctx, mock_build_chat, mock_queue, mai
     mock_queue.assert_called_once()
 
 
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_tenant_failure_does_not_block_other(mock_imap_ctx, mail_env) -> None:
     factory, settings, tenant_id, _, _ = mail_env
     with factory() as session:
@@ -195,9 +195,9 @@ def test_run_once_tenant_failure_does_not_block_other(mock_imap_ctx, mail_env) -
     assert call_count["n"] == 2
 
 
-@patch("chatbot.mail.listener.queue_after_chat")
-@patch("chatbot.mail.listener.build_chat_service_for_worker")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.queue_after_chat")
+@patch("evenor.mail.listener.build_chat_service_for_worker")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_mail_failure_continues(mock_imap_ctx, mock_build_chat, mock_queue, mail_env) -> None:
     factory, settings, tenant_id, _, _ = mail_env
     imap = MagicMock()
@@ -222,9 +222,9 @@ def test_run_once_mail_failure_continues(mock_imap_ctx, mock_build_chat, mock_qu
     imap.mark_seen.assert_not_called()
 
 
-@patch("chatbot.mail.listener.queue_after_chat")
-@patch("chatbot.mail.listener.build_chat_service_for_worker")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.queue_after_chat")
+@patch("evenor.mail.listener.build_chat_service_for_worker")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_skips_mail_before_process_since(
     mock_imap_ctx, mock_build_chat, mock_queue, mail_env
 ) -> None:
@@ -264,9 +264,9 @@ def test_run_once_skips_mail_before_process_since(
         assert not draft_repo.exists_by_uid("old-1")
 
 
-@patch("chatbot.mail.listener.queue_after_chat")
-@patch("chatbot.mail.listener.build_chat_service_for_worker")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.queue_after_chat")
+@patch("evenor.mail.listener.build_chat_service_for_worker")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_direct_mode_marks_seen(mock_imap_ctx, mock_build_chat, mock_queue, mail_env) -> None:
     factory, settings, tenant_id, _, out_id = mail_env
     with factory() as session:
@@ -292,7 +292,7 @@ def test_run_once_direct_mode_marks_seen(mock_imap_ctx, mock_build_chat, mock_qu
     imap.mark_seen.assert_called_once_with("1")
 
 
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_persists_process_since_for_existing_connector(mock_imap_ctx, mail_env) -> None:
     factory, settings, tenant_id, in_id, _ = mail_env
     imap = MagicMock()
@@ -317,7 +317,7 @@ def test_is_cc_only_disabled_when_config_off() -> None:
     assert mail_listener._is_cc_only(mail, {"skip_cc_only": False}, "bot@test.local") is False
 
 
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_skips_cc_only_mail_by_default(mock_imap_ctx, mail_env) -> None:
     factory, settings, tenant_id, _, _ = mail_env
     imap = MagicMock()
@@ -331,7 +331,7 @@ def test_run_once_skips_cc_only_mail_by_default(mock_imap_ctx, mail_env) -> None
     ]
     mock_imap_ctx.return_value.__enter__.return_value = imap
 
-    with patch("chatbot.mail.listener.build_chat_service_for_worker") as mock_build:
+    with patch("evenor.mail.listener.build_chat_service_for_worker") as mock_build:
         n = mail_listener.run_once(factory, settings)
         mock_build.assert_not_called()
 
@@ -343,9 +343,9 @@ def test_run_once_skips_cc_only_mail_by_default(mock_imap_ctx, mail_env) -> None
         assert not draft_repo.exists_by_uid("cc-1")
 
 
-@patch("chatbot.mail.listener.queue_after_chat")
-@patch("chatbot.mail.listener.build_chat_service_for_worker")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.queue_after_chat")
+@patch("evenor.mail.listener.build_chat_service_for_worker")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_processes_mail_when_mailbox_in_to(
     mock_imap_ctx, mock_build_chat, mock_queue, mail_env
 ) -> None:
@@ -371,9 +371,9 @@ def test_run_once_processes_mail_when_mailbox_in_to(
     assert n == 1
 
 
-@patch("chatbot.mail.listener.queue_after_chat")
-@patch("chatbot.mail.listener.build_chat_service_for_worker")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.queue_after_chat")
+@patch("evenor.mail.listener.build_chat_service_for_worker")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_processes_cc_only_when_filter_disabled(
     mock_imap_ctx, mock_build_chat, mock_queue, mail_env
 ) -> None:
@@ -409,9 +409,9 @@ def test_run_once_processes_cc_only_when_filter_disabled(
     assert n == 1
 
 
-@patch("chatbot.mail.listener.queue_after_chat")
-@patch("chatbot.mail.listener.build_chat_service_for_worker")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.queue_after_chat")
+@patch("evenor.mail.listener.build_chat_service_for_worker")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_processes_mail_when_mailbox_in_to_and_cc(
     mock_imap_ctx, mock_build_chat, mock_queue, mail_env
 ) -> None:
@@ -438,12 +438,12 @@ def test_run_once_processes_mail_when_mailbox_in_to_and_cc(
     assert n == 1
 
 
-@patch("chatbot.application.mail_connection_service.prepare_oauth_mail_config")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.application.mail_connection_service.prepare_oauth_mail_config")
+@patch("evenor.mail.listener.imap_client")
 def test_run_once_skips_cc_only_with_mail_connection(
     mock_imap_ctx, mock_oauth, mail_env
 ) -> None:
-    from chatbot.application.mail_connection_service import MailConnectionService
+    from evenor.application.mail_connection_service import MailConnectionService
 
     mock_oauth.side_effect = lambda cfg, **kwargs: (cfg, None)
     factory, settings, tenant_id, in_id, _ = mail_env
@@ -481,7 +481,7 @@ def test_run_once_skips_cc_only_with_mail_connection(
     ]
     mock_imap_ctx.return_value.__enter__.return_value = imap
 
-    with patch("chatbot.mail.listener.build_chat_service_for_worker") as mock_build:
+    with patch("evenor.mail.listener.build_chat_service_for_worker") as mock_build:
         n = mail_listener.run_once(factory, settings)
         mock_build.assert_not_called()
 

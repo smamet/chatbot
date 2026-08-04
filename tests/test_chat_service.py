@@ -2,17 +2,17 @@ from __future__ import annotations
 
 import uuid
 
-from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
-from chatbot.application.chat_service import ChatService
-from chatbot.application.rag_orchestrator import RagPipeline
-from chatbot.domain.contracts.llm_client import LlmResult, LlmUsage
-from chatbot.domain.models.attachment import Attachment
-from chatbot.domain.models.message import ChatMessage, MessageRole
+from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
+from evenor.application.chat_service import ChatService
+from evenor.application.rag_orchestrator import RagPipeline
+from evenor.domain.contracts.llm_client import LlmResult, LlmUsage
+from evenor.domain.models.attachment import Attachment
+from evenor.domain.models.message import ChatMessage, MessageRole
 from dataclasses import replace
 
-from chatbot.domain.models.tenant import TenantConfig
+from evenor.domain.models.tenant import TenantConfig
 
 
 class FakeLlm:
@@ -108,7 +108,7 @@ def test_chat_service_persists_attachment_notes_and_forwards_to_llm(
 
 
 def test_chat_service_includes_rag_context(test_settings, test_tenant) -> None:
-    from chatbot.domain.contracts.vector_store import RetrievedChunk, VectorRecord
+    from evenor.domain.contracts.vector_store import RetrievedChunk, VectorRecord
 
     tenant, _token = test_tenant
     tenant = replace(
@@ -180,7 +180,7 @@ def test_chat_service_includes_rag_context(test_settings, test_tenant) -> None:
 
 
 def test_chat_service_rag_includes_source_paths_when_dev_mode(test_settings, test_tenant) -> None:
-    from chatbot.domain.contracts.vector_store import RetrievedChunk, VectorRecord
+    from evenor.domain.contracts.vector_store import RetrievedChunk, VectorRecord
 
     tenant, _token = test_tenant
     tenant = replace(
@@ -252,7 +252,7 @@ def test_chat_service_rag_includes_source_paths_when_dev_mode(test_settings, tes
 
 
 def test_chat_service_always_returns_context_debug(test_settings, test_tenant) -> None:
-    from chatbot.domain.contracts.vector_store import RetrievedChunk, VectorRecord
+    from evenor.domain.contracts.vector_store import RetrievedChunk, VectorRecord
 
     tenant, _token = test_tenant
     tenant = replace(
@@ -454,7 +454,7 @@ def test_chat_service_injects_erp_context(test_settings, test_tenant) -> None:
 
 
 def test_chat_service_strips_marker_and_persists_hook(test_settings, test_tenant) -> None:
-    from chatbot.domain.models.hook import HookStatus
+    from evenor.domain.models.hook import HookStatus
 
     tenant, _token = test_tenant
     engine = create_db_engine(test_settings, for_tests=True)

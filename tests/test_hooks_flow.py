@@ -3,16 +3,16 @@ from __future__ import annotations
 import json
 import uuid
 
-from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
-from chatbot.application.chat_service import ChatService
-from chatbot.application.hook_extractor import extract_hook
-from chatbot.automation.handlers import dispatch_hook
-from chatbot.domain.constants import HOOK_MARKER
-from chatbot.domain.contracts.llm_client import LlmResult, LlmUsage
-from chatbot.domain.models.hook import HookStatus
-from chatbot.domain.models.message import ChatMessage, MessageRole
+from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
+from evenor.application.chat_service import ChatService
+from evenor.application.hook_extractor import extract_hook
+from evenor.automation.handlers import dispatch_hook
+from evenor.domain.constants import HOOK_MARKER
+from evenor.domain.contracts.llm_client import LlmResult, LlmUsage
+from evenor.domain.models.hook import HookStatus
+from evenor.domain.models.message import ChatMessage, MessageRole
 
 
 class FakeLlm:
@@ -82,7 +82,7 @@ def test_worker_dispatch_order(test_settings, test_tenant) -> None:
             session2.commit()
         finally:
             session2.close()
-        from chatbot.adapters.persistence.order_repository import SqlAlchemyOrderRepository
+        from evenor.adapters.persistence.order_repository import SqlAlchemyOrderRepository
 
         order = SqlAlchemyOrderRepository(session, tenant.id).find_latest_order(customer_key="23057770000")
     finally:
@@ -98,10 +98,10 @@ def test_hook_events_tenant_isolation(test_settings, test_tenant) -> None:
     session = factory()
     try:
         svc = __import__(
-            "chatbot.application.tenant_service", fromlist=["TenantService"]
+            "evenor.application.tenant_service", fromlist=["TenantService"]
         ).TenantService(
             __import__(
-                "chatbot.adapters.persistence.tenant_repository",
+                "evenor.adapters.persistence.tenant_repository",
                 fromlist=["SqlAlchemyTenantRepository"],
             ).SqlAlchemyTenantRepository(session)
         )

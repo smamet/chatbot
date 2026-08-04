@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.adapters.channels.text_format import (
+from evenor.adapters.channels.text_format import (
     format_for_instagram,
     format_for_messenger,
     format_for_whatsapp,

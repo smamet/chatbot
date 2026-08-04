@@ -5,17 +5,17 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from chatbot.adapters.persistence.email_thread_repository import SqlAlchemyEmailThreadRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-from chatbot.adapters.persistence.outbound_email_message_repository import (
+from evenor.adapters.persistence.email_thread_repository import SqlAlchemyEmailThreadRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from evenor.adapters.persistence.outbound_email_message_repository import (
     SqlAlchemyOutboundEmailMessageRepository
 )
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.email_thread_disambiguator import EmailThreadDisambiguator
-from chatbot.application.email_thread_resolver import EmailThreadResolver, InboundEmailHeaders
-from chatbot.application.tenant_service import TenantService
-from chatbot.config.settings import get_settings, reset_settings_cache_for_tests
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.email_thread_disambiguator import EmailThreadDisambiguator
+from evenor.application.email_thread_resolver import EmailThreadResolver, InboundEmailHeaders
+from evenor.application.tenant_service import TenantService
+from evenor.config.settings import get_settings, reset_settings_cache_for_tests
 
 
 @pytest.fixture

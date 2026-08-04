@@ -6,14 +6,14 @@ import pytest
 from cryptography.fernet import Fernet
 from fastapi.testclient import TestClient
 
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.orm import UserRow
-from chatbot.adapters.persistence.user_repository import SqlAlchemyUserRepository
-from chatbot.application.remember_me_service import REMEMBER_COOKIE_NAME, RememberMeService
-from chatbot.application.user_service import UserService
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.domain.models.user import UserRole
-from chatbot.interfaces.api.main import create_app, refresh_genai_clients_if_needed
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.orm import UserRow
+from evenor.adapters.persistence.user_repository import SqlAlchemyUserRepository
+from evenor.application.remember_me_service import REMEMBER_COOKIE_NAME, RememberMeService
+from evenor.application.user_service import UserService
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.domain.models.user import UserRole
+from evenor.interfaces.api.main import create_app, refresh_genai_clients_if_needed
 
 
 @pytest.fixture
@@ -28,7 +28,7 @@ def remember_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("SESSION_SECRET", "test-session-secret")
     monkeypatch.setenv("DEV_MODE", "true")
     reset_settings_cache_for_tests()
-    from chatbot.config.settings import get_settings
+    from evenor.config.settings import get_settings
 
     settings = get_settings()
     engine = create_db_engine(settings, for_tests=True)
@@ -86,8 +86,8 @@ def test_login_without_remember_clears_remember_cookie(remember_env) -> None:
         follow_redirects=False,
     )
     header = _set_cookie_header(r).lower()
-    assert "chatbot_remember=" in header
-    assert "max-age=0" in header or 'chatbot_remember="";' in header or "expires=" in header
+    assert "evenor_remember=" in header
+    assert "max-age=0" in header or 'evenor_remember="";' in header or "expires=" in header
 
 
 def test_remember_cookie_restores_session(remember_env) -> None:

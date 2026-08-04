@@ -2,16 +2,16 @@ from __future__ import annotations
 
 from sqlalchemy import select
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.orm import PendingReplyEditRow
-from chatbot.adapters.mail.body_format import email_draft_html_from_markdown, sanitize_email_html
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.application.draft_edit_service import draft_edit_text_diff, save_pending_reply_draft
-from chatbot.application.validation_audit_service import ValidationAuditService
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.message import ChatMessage, MessageRole
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.orm import PendingReplyEditRow
+from evenor.adapters.mail.body_format import email_draft_html_from_markdown, sanitize_email_html
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.application.draft_edit_service import draft_edit_text_diff, save_pending_reply_draft
+from evenor.application.validation_audit_service import ValidationAuditService
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.message import ChatMessage, MessageRole
 
 
 def _spurious_diff_pairs(diff: str) -> list[tuple[str, str]]:

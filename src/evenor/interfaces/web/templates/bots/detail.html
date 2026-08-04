@@ -1,0 +1,1897 @@
+{% extends "base.html" %}
+{% from "macros/help_tip.html" import help_tip %}
+{% from "macros/markdown_scripts.html" import markdown_scripts %}
+{% from "macros/channel_icon.html" import channel_icon %}
+{% from "macros/message_bubble.html" import message_bubble %}
+{% from "macros/monitoring_filter.html" import monitoring_filter, monitoring_pagination %}
+{% block body %}
+<div class="page-header">
+  <h1>{{ tenant.name }}</h1>
+  <p class="subtitle"><code>{{ tenant.slug }}</code></p>
+  <div class="badges">
+    {% if tenant.active %}<span class="badge on">Active</span>{% else %}<span class="badge off">Inactive</span>{% endif %}
+    {% if tenant.hooks_enabled %}<span class="badge on">Hooks ON</span>{% else %}<span class="badge off">Hooks OFF</span>{% endif %}
+  </div>
+</div>
+
+{% if not validation_only %}
+<nav class="tabs">
+  <a href="?tab=config" class="{% if tab=='config' %}active{% endif %}">Config</a>
+  <a href="?tab=documents" class="{% if tab=='documents' %}active{% endif %}">Documents</a>
+  <a href="?tab=connectors" class="{% if tab=='connectors' %}active{% endif %}">Connectors</a>
+  <a href="?tab=integrations" class="{% if tab=='integrations' %}active{% endif %}">Integrations</a>
+  {% if has_validation_connectors or pending_count %}
+  <a href="?tab=validation" class="{% if tab=='validation' %}active{% endif %}">Validation{% if pending_count %} <span class="tab-badge">{{ pending_count }}</span>{% endif %}</a>
+  {% endif %}
+  <a href="?tab=history" class="{% if tab=='history' %}active{% endif %}">History</a>
+  <a href="?tab=chat" class="{% if tab=='chat' %}active{% endif %}">Test chat</a>
+  {% if show_email_test_tab %}
+  <a href="?tab=email-test" class="{% if tab=='email-test' %}active{% endif %}">Test email</a>
+  {% endif %}
+  <a href="?tab=hooks" class="{% if tab=='hooks' %}active{% endif %}">Hooks</a>
+  {% if can_edit %}
+  <a href="?tab=monitoring" class="{% if tab=='monitoring' %}active{% endif %}">Monitoring</a>
+  {% endif %}
+</nav>
+{% endif %}
+
+{% if tab == 'config' %}
+  {% if can_edit %}
+  <div class="card">
+    <h2 class="card-title">Bot settings</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/settings">
+      <div class="form-inline-settings">
+        <label>Name<input type="text" name="name" value="{{ tenant.name }}" required></label>
+        <div class="checkbox-row">
+          <input type="checkbox" name="active" id="bot-active" {% if tenant.active %}checked{% endif %}>
+          <label for="bot-active">Active</label>
+        </div>
+      </div>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save settings</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Prompt</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/config">
+      <label>System prompt<textarea name="prompt" rows="12">{{ tenant.prompt }}</textarea></label>
+      <label>Gemini API key override<input type="password" name="gemini_api_key" placeholder="Leave blank to keep"></label>
+      <div class="form-actions">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save prompt</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Automation modules</h2>
+    <p class="text-muted">Choose which actions the bot may trigger via <code>===HOOK===</code> blocks. Each module adds its own instructions to the composed hook prompt below.</p>
+    {% if not tenant.hooks_enabled %}<p class="field-hint"><span class="badge off">Hooks OFF</span> Enable at least one module or add extra hook instructions.</p>{% endif %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/automation-config">
+      <div class="form-section">
+        <h3 class="form-section-title">Modules</h3>
+        <div class="checkbox-panel">
+          <div class="checkbox-grid checkbox-grid--stack">
+            {% for mod in automation_modules_ui %}
+            {% if mod.ui_enabled %}
+            <div class="checkbox-row">
+              <input type="checkbox" name="module_{{ mod.id }}" id="mod-{{ mod.id|replace('.', '-') }}"
+                {% if mod.id in tenant.config.automation_modules %}checked{% endif %}
+                {% if not mod.available %}disabled{% endif %}>
+              <label for="mod-{{ mod.id|replace('.', '-') }}">{{ mod.label }}</label>
+              {% if mod.id == 'erpnext.quote' and not mod.available %}
+              {{ help_tip(mod.description ~ " This checkbox stays disabled until ERPNext is saved and active on the Integrations tab (URL, API key, and secret).") }}
+              {% else %}
+              {{ help_tip(mod.description) }}
+              {% endif %}
+            </div>
+            {% if mod.id == 'erpnext.quote' and mod.id in tenant.config.automation_modules and not erpnext_integration_active %}
+            <p class="field-hint automation-warning">ERPNext quotes require an active ERPNext integration. <a href="?tab=integrations&amp;integration_type=erpnext">Configure integration</a></p>
+            {% endif %}
+            {% else %}
+            <div class="checkbox-row automation-module-disabled">
+              <input type="checkbox" disabled id="mod-{{ mod.id|replace('.', '-') }}">
+              <label for="mod-{{ mod.id|replace('.', '-') }}">{{ mod.label }} <span class="badge off">Soon</span></label>
+              {{ help_tip(mod.description) }}
+            </div>
+            {% endif %}
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+      <details class="automation-advanced">
+        <summary>Advanced hook instructions</summary>
+        <div class="automation-advanced__body">
+          <label>Extra instructions (optional)
+            {{ help_tip("Optional custom rules appended after module instructions. Leave empty unless you need tenant-specific behavior.") }}
+            <textarea name="hook_instructions_extra" rows="6">{{ tenant.config.hook_instructions_extra }}</textarea>
+          </label>
+          <label>Composed hook prompt preview
+            {{ help_tip("This is what the bot receives for hook behavior when hooks are enabled. It updates after you save automation settings.") }}
+            <pre class="hook-preview">{{ composed_hook_instructions }}</pre>
+          </label>
+        </div>
+      </details>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save automation</button>
+      </div>
+    </form>
+    <div class="form-actions--bordered">
+      <form method="post" action="/dashboard/bots/{{ tenant.slug }}/automation-config/reset">
+        <button type="submit" class="btn-secondary">Reset modules to defaults</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">Blocked email senders</h2>
+    <p class="text-muted field-hint">Inbound mail from these addresses is ignored (no LLM, no validation queue). One address per line, compared case-insensitively.</p>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/email-blacklist">
+      <label>Blocked senders (one per line)
+        <textarea name="blocked_senders" rows="5">{{ tenant.config.email_blocked_senders | join("\n") }}</textarea>
+      </label>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-secondary btn-sm">Save blocked senders</button>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h2 class="card-title">RAG settings</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/rag-config">
+      {% set c = tenant.config %}
+      <div class="form-section">
+        <h3 class="form-section-title">Models</h3>
+        <div class="form-grid form-grid--3">
+          <label>Chat model<input type="text" name="chat_model" value="{{ c.chat_model }}"></label>
+          <label>Embedding model<input type="text" name="embedding_model" value="{{ c.embedding_model }}"></label>
+          <label>Rewrite model<input type="text" name="rewrite_model" value="{{ c.rewrite_model }}"></label>
+        </div>
+      </div>
+      <div class="form-section">
+        <h3 class="form-section-title">Retrieval &amp; chunking</h3>
+        <div class="form-grid">
+          <label>Retrieval language<input type="text" name="retrieval_language" value="{{ c.retrieval_language }}"></label>
+          <label>Top K<input type="number" name="rag_top_k" value="{{ c.rag_top_k }}" min="1" max="50"></label>
+          <label>Chunk size<input type="number" name="chunk_size" value="{{ c.chunk_size }}"></label>
+          <label>Chunk overlap<input type="number" name="chunk_overlap" value="{{ c.chunk_overlap }}"></label>
+        </div>
+      </div>
+      <div class="form-section">
+        <h3 class="form-section-title">Options</h3>
+        <div class="checkbox-panel">
+          <div class="checkbox-grid">
+            <div class="checkbox-row"><input type="checkbox" name="rag_enabled" id="rag-en" {% if c.rag_enabled %}checked{% endif %}><label for="rag-en">RAG enabled</label>{{ help_tip("Search the document index and inject the best-matching chunks into the bot prompt before each reply. Requires synced documents. When off, the bot answers from its system prompt only.") }}</div>
+            <div class="checkbox-row"><input type="checkbox" name="rag_rewrite_enabled" id="rag-rw" {% if c.rag_rewrite_enabled %}checked{% endif %}><label for="rag-rw">Rewrite enabled</label>{{ help_tip("Before vector search, calls the rewrite model to turn the user message into a short keyword query (in Retrieval language). Only runs when RAG enabled is on.") }}</div>
+            <div class="checkbox-row"><input type="checkbox" name="rag_rewrite_lang_filter" id="rag-lf" {% if c.rag_rewrite_lang_filter %}checked{% endif %}><label for="rag-lf">Rewrite lang filter</label>{{ help_tip("When ON: LLM rewrite runs only if Mauritian Creole marker words are detected (e.g. mo, eki, ki). Plain French or English uses the raw message for search. When OFF and Rewrite enabled is ON: every message is always rewritten before search — no language gate.") }}</div>
+            <div class="checkbox-row"><input type="checkbox" name="dev_mode" id="dev-mode" {% if c.dev_mode %}checked{% endif %}><label for="dev-mode">Dev mode</label>{{ help_tip("Shows source file paths and chunk IDs in retrieved context; returns detailed API errors on failure; does not instruct the bot to hide source citations from customers.") }}</div>
+          </div>
+        </div>
+      </div>
+      <div class="form-actions form-actions--compact">
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save RAG settings</button>
+      </div>
+    </form>
+  </div>
+
+  {% if can_edit %}
+  <div class="card">
+    <h2 class="card-title">Backup</h2>
+    <p class="text-muted">Export includes prompts, RAG settings, connectors (with secrets), and documents. Store the ZIP securely. After import elsewhere, run <strong>Sync documents</strong>.</p>
+    <div class="form-actions form-actions--compact">
+      <a href="/dashboard/bots/{{ tenant.slug }}/export" class="btn btn-secondary">Export bot (ZIP)</a>
+    </div>
+  </div>
+  {% endif %}
+
+  {% if is_admin %}
+  <div class="card">
+    <h2 class="card-title">API token</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/regenerate-token">
+      <p class="text-muted">Generates a new Bearer token. The previous token stops working immediately.</p>
+      <div class="form-actions">
+        <button type="submit" class="btn-secondary" data-loading="Regenerating…">Regenerate API token</button>
+      </div>
+    </form>
+  </div>
+  <div class="card card-danger">
+    <h2 class="card-title">Danger zone</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/delete" onsubmit="return confirm('Delete bot {{ tenant.slug }}? This cannot be undone.');">
+      <label>Type <code>{{ tenant.slug }}</code> to confirm<input type="text" name="confirm" required placeholder="{{ tenant.slug }}"></label>
+      <div class="form-actions">
+        <button type="submit" class="btn-danger" data-loading="Deleting…">Delete bot</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+  {% else %}
+  <div class="card">
+    <pre>{{ tenant.prompt }}</pre>
+  </div>
+  {% endif %}
+
+{% elif tab == 'documents' %}
+  {% if can_edit %}
+  <div class="card doc-upload-card">
+    <h2 class="card-title">Upload &amp; sync</h2>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/documents" enctype="multipart/form-data" id="doc-upload-form" class="no-loader">
+      <div class="validation-attachments-dropzone" tabindex="0" role="button" aria-label="Upload documents">
+        <input type="file" name="files" class="validation-attachments-input" multiple hidden>
+        <p>Drop files here or <span class="validation-attachments-browse">browse</span></p>
+      </div>
+      <p class="field-hint">Files dropped here are saved and the search index is updated automatically. Same when you delete a file in the table below.</p>
+      <p class="doc-upload-error validation-error" hidden></p>
+    </form>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/sync" id="doc-sync-form" class="form-actions--bordered doc-sync-form">
+      <p class="field-hint doc-sync-intro">
+        <strong>Manual sync</strong> — only needed if you change files outside this page (SSH, bind mount, <code>evenor sync</code>).
+        {{ help_tip("Re-reads every file under data/docs/" ~ tenant.slug ~ "/ and updates the vector index. Upload and delete above already sync for you. Use after editing or copying files on disk, or if search results look stale. Does not delete your document files.") }}
+      </p>
+      <div class="checkbox-row">
+        <input type="checkbox" name="fresh" id="fresh-sync" value="on">
+        <label for="fresh-sync">Fresh sync (clear index first)</label>
+        {{ help_tip("Wipes this bot's document index entries under data/docs/" ~ tenant.slug ~ "/, then re-embeds every file from disk. Use after bulk file replacements, suspected index corruption, or when normal sync still returns old chunks. Slower and uses more embedding API calls. Your files on disk are not deleted.") }}
+      </div>
+      <div class="form-actions form-actions--compact doc-sync-actions">
+        <button type="submit" class="btn-secondary" id="doc-sync-btn" data-loading="Syncing…">Sync documents</button>
+      </div>
+    </form>
+  </div>
+  {% endif %}
+  {% if sync_logs %}
+  <div class="card">
+    <h2 class="card-title">Sync log</h2>
+    <pre class="log">{% for line in sync_logs %}{{ line }}
+{% endfor %}</pre>
+  </div>
+  {% endif %}
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>File</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+      <tbody>
+      {% for doc in documents %}
+      <tr>
+        <td><code>{{ doc }}</code></td>
+        {% if can_edit %}
+        <td>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/documents/delete">
+            <input type="hidden" name="path" value="{{ doc }}">
+            <button type="submit" class="btn-secondary btn-sm">Delete</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="2" class="empty-state">No documents</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+{% elif tab == 'connectors' %}
+  {% if connector_oauth_error %}
+  <div class="card card--alert">
+    <p class="text-danger">{{ connector_oauth_error }}</p>
+  </div>
+  {% endif %}
+
+  {% if can_edit %}
+  <div class="card" id="mail-connections-panel">
+    <h2 class="card-title">Mail connections</h2>
+    <p class="text-muted">One OAuth connection per mailbox (Microsoft 365 or Gmail). Connect once — IMAP and SMTP scopes together — then attach the same connection to inbound and outbound email connectors.</p>
+    {% if platform_microsoft_mail_oauth or platform_google_mail_oauth %}
+    <p class="field-hint">Platform OAuth credentials are configured in <code>.env</code>. Enter label + mailbox email, then <strong>Save &amp; connect</strong>. Register redirect URI in Entra/Google: <code>{{ mail_oauth_callback_url }}</code></p>
+    {% else %}
+    <p class="field-hint">Set platform OAuth in <code>.env</code> (<code>MICROSOFT_MAIL_CLIENT_*</code> / <code>GOOGLE_MAIL_CLIENT_*</code>) or enter client ID and secret below. Then click <strong>Save &amp; connect</strong> to sign in as the mailbox owner.</p>
+    {% endif %}
+    <script type="application/json" id="mail-connections-data">{{ mail_connections_json|safe }}</script>
+    {% if mail_connections %}
+    <div class="table-wrap">
+      <table class="data-table">
+        <thead><tr><th>Label</th><th>Provider</th><th>Mailbox</th><th>OAuth</th><th>Status</th><th></th></tr></thead>
+        <tbody>
+        {% for mc in mail_connections %}
+        <tr data-connection-id="{{ mc.id }}">
+          <td>{{ mc.label }}</td>
+          <td><code>{{ mc.provider }}</code></td>
+          <td>{{ mc.mailbox_email }}</td>
+          <td>{% if mc.oauth_connected %}<span class="badge on">connected</span>{% else %}<span class="badge off">not connected</span>{% endif %}</td>
+          <td>{% if mc.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}</td>
+          <td class="actions">
+            <button type="button" class="btn-secondary btn-sm mail-connection-edit-btn" data-id="{{ mc.id }}">Edit</button>
+            <a class="btn-secondary btn-sm" href="/dashboard/bots/{{ tenant.slug }}/mail-connections/{{ mc.id }}/connect">Connect</a>
+            <button type="button" class="btn-secondary btn-sm mail-connection-test-btn" data-id="{{ mc.id }}" data-test="imap">Test IMAP</button>
+            <button type="button" class="btn-secondary btn-sm mail-connection-test-btn" data-id="{{ mc.id }}" data-test="preview">Preview inbox</button>
+            <button type="button" class="btn-secondary btn-sm mail-connection-test-btn" data-id="{{ mc.id }}" data-test="smtp">Test SMTP</button>
+            <form method="post" action="/dashboard/bots/{{ tenant.slug }}/mail-connections/{{ mc.id }}/delete" class="no-loader">
+              <button type="submit" class="btn-secondary btn-sm">Delete</button>
+            </form>
+          </td>
+        </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  <pre class="connector-test-result integration-test-result mail-connection-test-result" hidden></pre>
+    {% else %}
+    <p class="text-muted">No mail connections yet.</p>
+  <pre class="connector-test-result integration-test-result mail-connection-test-result" hidden></pre>
+    {% endif %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/mail-connections" class="form-grid" id="mail-connection-form">
+      <input type="hidden" name="connection_id" id="mail-connection-id" value="">
+      <label>Label
+        <input type="text" name="label" id="mail-connection-label" required placeholder="Support M365">
+      </label>
+      <label>Provider
+        <select name="provider" id="mail-connection-provider">
+          <option value="microsoft_oauth">Microsoft OAuth</option>
+          <option value="google_oauth">Google OAuth</option>
+        </select>
+      </label>
+      <label>Mailbox email
+        <input type="email" name="mailbox_email" id="mail-connection-mailbox" required placeholder="support@example.com">
+      </label>
+      {% if not platform_microsoft_mail_oauth %}
+      <div class="mail-connection-ms-fields form-grid">
+        <label>Microsoft client ID
+          <input type="text" name="microsoft_client_id" id="mail-connection-ms-id">
+        </label>
+        <label>Microsoft client secret
+          <input type="password" name="microsoft_client_secret" id="mail-connection-ms-secret" autocomplete="new-password">
+        </label>
+      </div>
+      {% endif %}
+      {% if not platform_google_mail_oauth %}
+      <div class="mail-connection-google-fields form-grid" hidden style="display:none">
+        <label>Google client ID
+          <input type="text" name="google_client_id" id="mail-connection-google-id">
+        </label>
+        <label>Google client secret
+          <input type="password" name="google_client_secret" id="mail-connection-google-secret" autocomplete="new-password">
+        </label>
+      </div>
+      {% endif %}
+      <div class="checkbox-row">
+        <input type="checkbox" name="active" id="mail-connection-active" checked>
+        <label for="mail-connection-active">Active</label>
+      </div>
+      <div class="form-actions mail-connection-actions">
+        <button type="submit" class="btn-primary" name="connect_after" value="1" data-loading="Redirecting…" id="mail-connection-save-connect">
+          Save &amp; connect
+        </button>
+        <button type="submit" class="btn-secondary" data-loading="Saving…">Save only</button>
+        <a class="btn-secondary" id="mail-connection-connect-link" href="#" hidden>Connect</a>
+        <button type="button" class="btn-secondary" id="mail-connection-reset">New connection</button>
+      </div>
+      <p class="field-hint" id="mail-connection-oauth-hint" hidden>
+        Connection saved. Use <strong>Save &amp; connect</strong> or <strong>Connect</strong> to open the Microsoft/Google sign-in page (mailbox owner must approve).
+      </p>
+    </form>
+    <script>
+      (function () {
+        const mailConnections = JSON.parse(document.getElementById('mail-connections-data').textContent || '[]');
+        const mcForm = document.getElementById('mail-connection-form');
+        const providerSel = document.getElementById('mail-connection-provider');
+        const msFields = document.querySelector('.mail-connection-ms-fields');
+        const googleFields = document.querySelector('.mail-connection-google-fields');
+        const resultEl = document.querySelector('.mail-connection-test-result');
+
+        const platformMicrosoftOAuth = {{ 'true' if platform_microsoft_mail_oauth else 'false' }};
+        const platformGoogleOAuth = {{ 'true' if platform_google_mail_oauth else 'false' }};
+
+        function updateProviderFields() {
+          const isMs = providerSel.value === 'microsoft_oauth';
+          if (msFields) {
+            const showMs = isMs && !platformMicrosoftOAuth;
+            msFields.hidden = !showMs;
+            msFields.style.display = showMs ? '' : 'none';
+            msFields.querySelectorAll('input').forEach((el) => { el.disabled = !showMs; });
+          }
+          if (googleFields) {
+            const showGoogle = !isMs && !platformGoogleOAuth;
+            googleFields.hidden = !showGoogle;
+            googleFields.style.display = showGoogle ? '' : 'none';
+            googleFields.querySelectorAll('input').forEach((el) => { el.disabled = !showGoogle; });
+          }
+          updateConnectLink();
+        }
+
+        function updateConnectLink() {
+          const connectLink = document.getElementById('mail-connection-connect-link');
+          const hint = document.getElementById('mail-connection-oauth-hint');
+          const saveConnectBtn = document.getElementById('mail-connection-save-connect');
+          const id = document.getElementById('mail-connection-id').value.trim();
+          const slug = '{{ tenant.slug }}';
+          const isMs = providerSel.value === 'microsoft_oauth';
+          if (saveConnectBtn) {
+            saveConnectBtn.textContent = isMs ? 'Save & connect Microsoft' : 'Save & connect Google';
+          }
+          if (!connectLink) return;
+          if (id) {
+            connectLink.hidden = false;
+            connectLink.href = `/dashboard/bots/${slug}/mail-connections/${id}/connect`;
+            connectLink.textContent = isMs ? 'Connect Microsoft' : 'Connect Google';
+            if (hint) hint.hidden = false;
+          } else {
+            connectLink.hidden = true;
+            if (hint) hint.hidden = true;
+          }
+        }
+        providerSel?.addEventListener('change', updateProviderFields);
+        updateProviderFields();
+        updateConnectLink();
+
+        function loadMailConnection(id) {
+          const mc = mailConnections.find((row) => String(row.id) === String(id));
+          if (!mc) return;
+          document.getElementById('mail-connection-id').value = mc.id;
+          document.getElementById('mail-connection-label').value = mc.label || '';
+          providerSel.value = mc.provider || 'microsoft_oauth';
+          document.getElementById('mail-connection-mailbox').value = mc.mailbox_email || '';
+          document.getElementById('mail-connection-active').checked = mc.active !== false;
+          updateProviderFields();
+          const cfg = mc.config || {};
+          if (document.getElementById('mail-connection-ms-id')) {
+            document.getElementById('mail-connection-ms-id').value = cfg.microsoft_client_id || '';
+          }
+          if (document.getElementById('mail-connection-google-id')) {
+            document.getElementById('mail-connection-google-id').value = cfg.google_client_id || '';
+          }
+          if (document.getElementById('mail-connection-ms-secret')) {
+            document.getElementById('mail-connection-ms-secret').value = '';
+          }
+          if (document.getElementById('mail-connection-google-secret')) {
+            document.getElementById('mail-connection-google-secret').value = '';
+          }
+          updateConnectLink();
+          mcForm.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        document.getElementById('mail-connection-id')?.addEventListener('input', updateConnectLink);
+
+        document.getElementById('mail-connection-reset')?.addEventListener('click', () => {
+          document.getElementById('mail-connection-id').value = '';
+          mcForm.reset();
+          document.getElementById('mail-connection-active').checked = true;
+          updateProviderFields();
+          updateConnectLink();
+        });
+
+        document.querySelectorAll('.mail-connection-edit-btn').forEach((btn) => {
+          btn.addEventListener('click', () => loadMailConnection(btn.dataset.id));
+        });
+
+        document.querySelectorAll('.mail-connection-test-btn').forEach((btn) => {
+          btn.addEventListener('click', async () => {
+            if (!resultEl) return;
+            const slug = '{{ tenant.slug }}';
+            const fd = new FormData();
+            fd.append('test', btn.dataset.test || 'imap');
+            btn.disabled = true;
+            resultEl.hidden = false;
+            resultEl.className = 'connector-test-result integration-test-result mail-connection-test-result';
+            resultEl.textContent = 'Testing…';
+            try {
+              const res = await fetch(`/dashboard/bots/${slug}/mail-connections/${btn.dataset.id}/test`, {
+                method: 'POST',
+                body: fd,
+                credentials: 'same-origin',
+              });
+              const data = await res.json();
+              resultEl.classList.add(data.ok ? 'ok' : 'err');
+              if (data.messages && Array.isArray(data.messages)) {
+                const lines = [
+                  data.message || 'Inbox preview',
+                  data.mailbox ? `Mailbox: ${data.mailbox}` : '',
+                  data.process_since_display
+                    ? `Process since (server display): ${data.process_since_display}`
+                    : '',
+                  '',
+                ].filter(Boolean);
+                if (!data.messages.length) {
+                  lines.push('(INBOX empty or no parseable messages)');
+                }
+                data.messages.forEach((msg, index) => {
+                  lines.push(
+                    `${index + 1}. UID ${msg.uid} | ${msg.received_at || 'no date'} | from ${msg.from_addr}`
+                  );
+                  lines.push(`   Subject: ${msg.subject}`);
+                  lines.push(
+                    `   ${msg.eligible ? 'ELIGIBLE' : `SKIP: ${msg.skip_reason}`}`
+                  );
+                });
+                resultEl.textContent = lines.join('\n');
+              } else {
+                resultEl.textContent = data.error && !data.ok
+                  ? `${data.message}\n${data.error}`
+                  : (data.message || 'Done');
+              }
+            } catch (err) {
+              resultEl.classList.add('err');
+              resultEl.textContent = String(err);
+            } finally {
+              btn.disabled = false;
+            }
+          });
+        });
+      })();
+    </script>
+  </div>
+  {% endif %}
+
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>ID</th><th>Direction</th><th>Type</th><th>Provider</th><th>Mode</th><th>Status</th><th>Since</th><th>Webhook</th>{% if can_edit %}<th></th>{% endif %}</tr></thead>
+      <tbody>
+      {% for c in connectors %}
+      <tr>
+        <td>{{ c.id }}</td>
+        <td>{{ c.direction.value }}</td>
+        <td>{{ c.type.value }}</td>
+        <td>
+          {% if c.type.value == 'email' and c.direction.value == 'out' %}
+          <code>{{ c.config.get('outbound_provider', 'smtp') }}</code>
+          {% else %}—{% endif %}
+        </td>
+        <td>{% if c.direction.value == 'out' %}{{ c.mode.value }}{% else %}—{% endif %}</td>
+        <td>{% if c.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}</td>
+        <td>
+          {% if c.type.value == 'email' and c.direction.value == 'in' %}
+          {{ c.config.get('process_since')|process_since_display }}
+          {% else %}—{% endif %}
+        </td>
+        <td>
+          {% if c.type in webhook_channels and c.direction.value == 'in' %}
+          <code>/webhooks/{{ c.type.value }}/{{ tenant.slug }}</code>
+          {% else %}—{% endif %}
+        </td>
+        {% if can_edit %}
+        <td class="actions">
+          <button type="button" class="btn-secondary btn-sm connector-edit-btn"
+                  data-type="{{ c.type.value }}"
+                  data-direction="{{ c.direction.value }}"
+                  data-mode="{{ c.mode.value }}">Edit</button>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/toggle" class="no-loader">
+            <button type="submit" class="btn-secondary btn-sm">{% if c.active %}Deactivate{% else %}Activate{% endif %}</button>
+          </form>
+          <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors/{{ c.id }}/delete" class="no-loader">
+            <button type="submit" class="btn-secondary btn-sm">Delete</button>
+          </form>
+        </td>
+        {% endif %}
+      </tr>
+      {% else %}
+      <tr><td colspan="9" class="empty-state">No connectors</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  {% if can_edit %}
+  <div class="card">
+    <h2 class="card-title">Add / update connector</h2>
+    <p class="text-muted">Use <strong>Edit</strong> on a row to load that connector below, change settings (including <strong>Process emails since</strong> for inbound email), then <strong>Save connector</strong>. Secret fields left blank keep their current value. For Email outbound, pick one send method (SMTP, Mailjet, or Mailgun).</p>
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/connectors" class="connector-form" id="connector-form" data-bot-slug="{{ tenant.slug }}" data-process-since-default="{{ process_since_default }}">
+      <div class="connector-flow" id="connector-flow" aria-hidden="false">
+        <div class="connector-flow__node" id="flow-source">
+          <span class="connector-flow__label">Source</span>
+          <strong id="flow-source-text">Meta webhook</strong>
+          <small class="field-hint" id="flow-source-hint" hidden></small>
+        </div>
+        <div class="connector-flow__arrow connector-flow__arrow--in is-active" id="flow-arrow-in">
+          <span class="connector-flow__arrow-label">IN</span>
+          <span class="connector-flow__arrow-line" aria-hidden="true"></span>
+        </div>
+        <div class="connector-flow__node connector-flow__node--bot">
+          <span class="connector-flow__label">Bot</span>
+          <strong>{{ tenant.name }}</strong>
+        </div>
+        <div class="connector-flow__arrow connector-flow__arrow--out" id="flow-arrow-out">
+          <span class="connector-flow__arrow-label">OUT</span>
+          <span class="connector-flow__arrow-line" aria-hidden="true"></span>
+        </div>
+        <div class="connector-flow__node" id="flow-dest">
+          <span class="connector-flow__label">Destination</span>
+          <strong id="flow-dest-text">WhatsApp customer</strong>
+        </div>
+      </div>
+
+      <input type="hidden" name="direction" id="connector-direction" value="in">
+      <nav class="connector-direction-tabs" role="tablist" aria-label="Connector direction">
+        <button type="button" role="tab" class="active" data-direction="in" id="tab-direction-in" aria-selected="true">
+          <svg class="connector-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M12 3v12m0 0l-4-4m4 4l4-4"/><rect x="4" y="15" width="16" height="6" rx="1"/>
+          </svg>
+          Inbound
+        </button>
+        <button type="button" role="tab" data-direction="out" id="tab-direction-out" aria-selected="false">
+          <svg class="connector-tab-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <path d="M12 21V9m0 0l-4 4m4-4l4 4"/><rect x="4" y="3" width="16" height="6" rx="1"/>
+          </svg>
+          Outbound
+        </button>
+      </nav>
+      <p class="text-muted connector-direction-hint">Inbound: receive messages. Outbound: send replies (and validation queue).</p>
+
+      <div class="form-grid connector-form-meta">
+        <label>Type
+          <select name="connector_type" id="connector-type">
+            {% for t in connector_schemas.keys() %}
+            <option value="{{ t }}">{{ t|capitalize }}</option>
+            {% endfor %}
+          </select>
+        </label>
+        <label id="connector-mode-wrap">
+          Mode
+          <select name="mode" id="connector-mode">
+            <option value="direct">direct — send replies immediately</option>
+            <option value="validation" selected>validation — queue replies for human review</option>
+          </select>
+          <small class="field-hint">Outbound only: use <strong>validation</strong> to review bot replies before they reach customers.</small>
+        </label>
+        <div class="checkbox-row" style="align-self:end">
+          <input type="checkbox" name="active" id="conn-active" checked>
+          <label for="conn-active">Active</label>
+        </div>
+      </div>
+      <div id="connector-fields" class="form-grid connector-fields"></div>
+      <script type="application/json" id="connector-schemas-data">{{ connector_schemas_json|safe }}</script>
+      <script type="application/json" id="connector-configs-data">{{ connector_configs_json|safe }}</script>
+      <script type="application/json" id="connector-mail-connections-data">{{ mail_connections_json|safe }}</script>
+      <div class="form-actions">
+        {% if dev_mode and can_edit %}
+        <button type="button" class="btn-secondary" id="greenmail-autofill" hidden>Fill GreenMail (dev)</button>
+        {% endif %}
+        <button type="submit" class="btn-primary" data-loading="Saving…">Save connector</button>
+      </div>
+      <div id="connector-oauth-panel" class="connector-oauth-panel" hidden>
+        <p class="field-hint text-danger">OAuth is configured on <strong>Mail connections</strong> above. Select a connection below, save, then use Connect on the connection card.</p>
+      </div>
+      <details id="connector-test-panel" class="integration-test connector-test" hidden>
+        <summary>Test connection</summary>
+        <div class="integration-test__body">
+          <button type="button" class="btn-secondary btn-sm" id="connector-test-btn" data-slug="{{ tenant.slug }}">Test connection</button>
+          <pre class="connector-test-result integration-test-result" hidden></pre>
+        </div>
+      </details>
+    </form>
+    <script>
+      (function () {
+        const schemas = JSON.parse(document.getElementById('connector-schemas-data').textContent);
+        const saved = JSON.parse(document.getElementById('connector-configs-data').textContent);
+        const mailConnections = JSON.parse(
+          document.getElementById('connector-mail-connections-data')?.textContent || '[]'
+        );
+        const form = document.getElementById('connector-form');
+        const connActive = document.getElementById('conn-active');
+        const botSlug = form.dataset.botSlug || '';
+        const typeSel = document.getElementById('connector-type');
+        const dirInput = document.getElementById('connector-direction');
+        const dirTabs = document.querySelectorAll('.connector-direction-tabs [data-direction]');
+        const modeWrap = document.getElementById('connector-mode-wrap');
+        const modeSel = document.getElementById('connector-mode');
+        const container = document.getElementById('connector-fields');
+        const flowSourceText = document.getElementById('flow-source-text');
+        const flowSourceHint = document.getElementById('flow-source-hint');
+        const flowDestText = document.getElementById('flow-dest-text');
+        const flowArrowIn = document.getElementById('flow-arrow-in');
+        const flowArrowOut = document.getElementById('flow-arrow-out');
+
+        const WEBHOOK_TYPES = new Set(['whatsapp', 'messenger', 'instagram']);
+        const FLOW_LABELS = {
+          whatsapp: { in: 'Meta webhook', out: 'WhatsApp customer' },
+          messenger: { in: 'Meta webhook', out: 'Messenger user' },
+          instagram: { in: 'Meta webhook', out: 'Instagram user' },
+          email: { in: 'IMAP inbox', out: 'Email recipient (SMTP / Mailjet / Mailgun)' },
+        };
+        const GREENMAIL_IN = {
+          imap_host: 'greenmail',
+          imap_port: '3143',
+          username: 'bot@test.local',
+          password: 'secret',
+        };
+        const MAILPIT_OUT = {
+          outbound_provider: 'smtp',
+          from_addr: 'bot@test.local',
+          default_subject: 'Reply from support',
+          smtp_host: 'mailpit',
+          smtp_port: '1025',
+          smtp_username: '',
+          smtp_password: '',
+          smtp_use_tls: false,
+        };
+        const greenmailBtn = document.getElementById('greenmail-autofill');
+        let selectedAuthType = null;
+
+        function getDirection() {
+          return dirInput.value === 'out' ? 'out' : 'in';
+        }
+
+        function isChecked(value, defaultVal) {
+          if (value === true || value === false) return value;
+          const raw = String(value ?? defaultVal ?? '').toLowerCase();
+          return ['1', 'true', 'on', 'yes'].includes(raw);
+        }
+
+        function setDirection(value) {
+          selectedAuthType = null;
+          dirInput.value = value;
+          dirTabs.forEach((tab) => {
+            const active = tab.dataset.direction === value;
+            tab.classList.toggle('active', active);
+            tab.setAttribute('aria-selected', active ? 'true' : 'false');
+          });
+          updateFlowDiagram(typeSel.value, value);
+          renderFields();
+        }
+
+        function loadConnector(ctype, direction, mode) {
+          selectedAuthType = null;
+          typeSel.value = ctype;
+          setDirection(direction);
+          if (direction === 'out' && mode) {
+            modeSel.value = mode;
+          }
+          form.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+
+        function updateFlowDiagram(ctype, direction) {
+          const labels = FLOW_LABELS[ctype] || { in: 'Source', out: 'Destination' };
+          flowSourceText.textContent = labels.in;
+          flowDestText.textContent = labels.out;
+          flowArrowIn.classList.toggle('is-active', direction === 'in');
+          flowArrowOut.classList.toggle('is-active', direction === 'out');
+          if (WEBHOOK_TYPES.has(ctype) && direction === 'in') {
+            flowSourceHint.hidden = false;
+            flowSourceHint.textContent = '/webhooks/' + ctype + '/' + botSlug;
+          } else {
+            flowSourceHint.hidden = true;
+            flowSourceHint.textContent = '';
+          }
+        }
+
+        function currentProvider() {
+          const existing = container.querySelector('select[name="outbound_provider"]');
+          if (existing) return existing.value;
+          return 'smtp';
+        }
+
+        function currentAuthType() {
+          const existing = container.querySelector('select[name="auth_type"]');
+          if (existing) return existing.value;
+          const rec = recordFor(typeSel.value, getDirection());
+          return selectedAuthType || rec.config?.auth_type || 'password';
+        }
+
+        function usesMailConnection(authType) {
+          return authType === 'microsoft_oauth' || authType === 'google_oauth';
+        }
+
+        function authFieldVisible(fieldKey, authType) {
+          const microsoftKeys = ['microsoft_client_id', 'microsoft_client_secret'];
+          const googleKeys = ['google_client_id', 'google_client_secret'];
+          const imapKeys = ['imap_host', 'imap_port', 'username', 'password'];
+          const smtpKeys = ['smtp_host', 'smtp_port', 'smtp_username', 'smtp_password', 'smtp_use_tls'];
+          if (fieldKey === 'mail_connection_id') return usesMailConnection(authType);
+          if (usesMailConnection(authType)) {
+            if (
+              microsoftKeys.includes(fieldKey)
+              || googleKeys.includes(fieldKey)
+              || imapKeys.includes(fieldKey)
+              || smtpKeys.includes(fieldKey)
+            ) {
+              return false;
+            }
+          } else if (fieldKey === 'mail_connection_id') {
+            return false;
+          }
+          if (microsoftKeys.includes(fieldKey)) return authType === 'microsoft_oauth';
+          if (googleKeys.includes(fieldKey)) return authType === 'google_oauth';
+          if (fieldKey === 'password' || fieldKey === 'smtp_password') return authType === 'password';
+          return true;
+        }
+
+        function fieldVisible(field, direction, provider, authType) {
+          if (!field.directions.includes(direction)) return false;
+          if (typeSel.value === 'email' && !authFieldVisible(field.key, authType)) return false;
+          if (field.providers && field.key !== 'outbound_provider') {
+            return field.providers.includes(provider);
+          }
+          return true;
+        }
+
+        function recordKey(ctype, direction) {
+          return ctype + ':' + direction;
+        }
+
+        function recordFor(ctype, direction) {
+          return saved[recordKey(ctype, direction)] || { active: true, mode: 'validation', config: {} };
+        }
+
+        function applySavedValues(ctype, direction) {
+          const rec = recordFor(ctype, direction);
+          const cfg = rec.config || {};
+          connActive.checked = rec.active !== false;
+          if (direction === 'out' && rec.mode) {
+            modeSel.value = rec.mode;
+          }
+          Object.entries(cfg).forEach(([key, value]) => setFieldValue(key, value));
+        }
+
+        function renderFields() {
+          const ctype = typeSel.value;
+          const direction = getDirection();
+          const outbound = direction === 'out';
+          modeWrap.hidden = !outbound;
+          modeSel.disabled = !outbound;
+          if (outbound) {
+            const savedOut = saved[recordKey(ctype, 'out')];
+            modeSel.value = savedOut?.mode || 'validation';
+          }
+
+          const allFields = schemas[ctype] || [];
+          const provider = ctype === 'email' && outbound ? currentProvider() : 'smtp';
+          const authType =
+            container.querySelector('select[name="auth_type"]')?.value
+            || selectedAuthType
+            || recordFor(ctype, direction).config?.auth_type
+            || 'password';
+          selectedAuthType = authType;
+
+          container.replaceChildren();
+          const fields = allFields.filter((field) => fieldVisible(field, direction, provider, authType));
+
+          for (const field of fields) {
+            const label = document.createElement('label');
+            label.className = 'connector-field';
+            label.appendChild(
+              document.createTextNode(field.label + (field.required ? ' *' : ''))
+            );
+            let control;
+            if (field.input_type === 'checkbox') {
+              const row = document.createElement('div');
+              row.className = 'checkbox-row';
+              control = document.createElement('input');
+              control.type = 'checkbox';
+              control.name = field.key;
+              row.appendChild(control);
+              const hint = document.createElement('span');
+              hint.className = 'field-hint';
+              hint.textContent = field.help || '';
+              row.appendChild(hint);
+              label.appendChild(row);
+            } else if (field.input_type === 'select' && field.options) {
+              control = document.createElement('select');
+              for (const opt of field.options) {
+                const option = document.createElement('option');
+                option.value = opt.value;
+                option.textContent = opt.label;
+                if (field.key === 'outbound_provider' && opt.value === provider) {
+                  option.selected = true;
+                }
+                if (field.key === 'mailgun_region' && opt.value === 'us') {
+                  option.selected = true;
+                }
+                if (field.key === 'auth_type' && opt.value === authType) {
+                  option.selected = true;
+                }
+                control.appendChild(option);
+              }
+            } else if (field.key === 'mail_connection_id') {
+              control = document.createElement('select');
+              control.name = field.key;
+              const empty = document.createElement('option');
+              empty.value = '';
+              empty.textContent = '— Select connection —';
+              control.appendChild(empty);
+              for (const mc of mailConnections) {
+                const option = document.createElement('option');
+                option.value = String(mc.id);
+                option.textContent = `${mc.label} (${mc.mailbox_email})`;
+                control.appendChild(option);
+              }
+            } else {
+              control = document.createElement('input');
+              control.type = field.input_type || 'text';
+              control.placeholder = field.placeholder || '';
+              if (field.input_type === 'datetime-local') {
+                control.step = '60';
+              }
+            }
+            if (field.input_type !== 'checkbox') {
+              control.name = field.key;
+            }
+            control.title = field.help || '';
+            if (field.required) control.required = true;
+            if (field.key === 'outbound_provider') {
+              control.addEventListener('change', renderFields);
+            }
+            if (field.key === 'auth_type') {
+              control.addEventListener('change', () => {
+                selectedAuthType = control.value;
+                renderFields();
+              });
+            }
+            if (field.input_type !== 'checkbox') {
+              label.appendChild(control);
+              const hint = document.createElement('small');
+              hint.className = 'field-hint';
+              hint.textContent = field.help || '';
+              label.appendChild(hint);
+            }
+            container.appendChild(label);
+          }
+          applySavedValues(ctype, direction);
+          for (const field of fields) {
+            if (field.input_type !== 'checkbox') continue;
+            const cfg = recordFor(ctype, direction).config || {};
+            if (!Object.prototype.hasOwnProperty.call(cfg, field.key)) {
+              setFieldValue(field.key, isChecked(null, field.default));
+            }
+          }
+          if (ctype === 'email') {
+            setFieldValue('auth_type', authType);
+          }
+          if (
+            ctype === 'email'
+            && direction === 'in'
+            && !connectorSavedMatchesForm()
+          ) {
+            const sinceEl = form.querySelector('[name="process_since"]');
+            const defaultSince = form.dataset.processSinceDefault || '';
+            if (sinceEl && !sinceEl.value && defaultSince) {
+              sinceEl.value = defaultSince;
+            }
+          }
+          updateGreenmailButton();
+          updateConnectorOAuthUi();
+        }
+
+        function savedAuthType(ctype, direction) {
+          const rec = recordFor(ctype, direction);
+          return rec.config?.auth_type || 'password';
+        }
+
+        function connectorSavedMatchesForm() {
+          const ctype = typeSel.value;
+          const direction = getDirection();
+          const key = recordKey(ctype, direction);
+          if (!Object.prototype.hasOwnProperty.call(saved, key)) return false;
+          return savedAuthType(ctype, direction) === currentAuthType();
+        }
+
+        function updateConnectorOAuthUi() {
+          const panel = document.getElementById('connector-oauth-panel');
+          const testPanel = document.getElementById('connector-test-panel');
+          if (!panel) return;
+          const ctype = typeSel.value;
+          const authType = ctype === 'email' ? currentAuthType() : 'password';
+          const isOauth = usesMailConnection(authType);
+          panel.hidden = ctype !== 'email' || !isOauth;
+          if (testPanel) testPanel.hidden = ctype !== 'email';
+        }
+
+        function setFieldValue(name, value) {
+          const el = form.querySelector('[name="' + name + '"]');
+          if (!el) return;
+          if (el.type === 'checkbox') {
+            el.checked = isChecked(value, '');
+          } else {
+            el.value = value;
+          }
+        }
+
+        function updateGreenmailButton() {
+          if (!greenmailBtn) return;
+          const show = typeSel.value === 'email';
+          greenmailBtn.hidden = !show;
+          const direction = getDirection();
+          greenmailBtn.textContent =
+            direction === 'in' ? 'Fill GreenMail IMAP (dev)' : 'Fill Mailpit SMTP (dev)';
+        }
+
+        function fillGreenmail() {
+          typeSel.value = 'email';
+          const direction = getDirection();
+          if (direction === 'out') {
+            renderFields();
+            setFieldValue('outbound_provider', 'smtp');
+            renderFields();
+            modeSel.value = 'validation';
+          } else {
+            renderFields();
+          }
+          const preset = direction === 'in' ? GREENMAIL_IN : MAILPIT_OUT;
+          Object.entries(preset).forEach(([key, value]) => setFieldValue(key, value));
+          document.getElementById('conn-active').checked = true;
+        }
+
+        if (greenmailBtn) {
+          greenmailBtn.addEventListener('click', fillGreenmail);
+        }
+
+        document.querySelectorAll('.connector-edit-btn').forEach((btn) => {
+          btn.addEventListener('click', () => {
+            loadConnector(btn.dataset.type, btn.dataset.direction, btn.dataset.mode);
+          });
+        });
+
+        dirTabs.forEach((tab) => {
+          tab.addEventListener('click', () => setDirection(tab.dataset.direction));
+        });
+        typeSel.addEventListener('change', () => {
+          selectedAuthType = null;
+          updateFlowDiagram(typeSel.value, getDirection());
+          renderFields();
+        });
+        updateFlowDiagram(typeSel.value, getDirection());
+        renderFields();
+        updateGreenmailButton();
+        window.updateConnectorTestButtons = updateConnectorOAuthUi;
+      })();
+    </script>
+  </div>
+  {% endif %}
+
+{% elif tab == 'integrations' %}
+  <div class="card card--flat">
+    <p class="text-muted integration-intro">Live customer data from external systems. Identity comes from the channel (email, WhatsApp) — not from the LLM.</p>
+    {% if multiple_active_integrations %}
+    <p class="field-hint integration-priority-hint">Multiple integrations are active. ERPNext is used first, then QuickBooks.</p>
+    {% endif %}
+  </div>
+
+  <div class="integration-layout">
+    <aside class="integration-list card">
+      <h3 class="integration-list__title">Configured</h3>
+      <ul class="integration-list__items">
+        {% for i in integrations %}
+        <li>
+          <a href="?tab=integrations&amp;integration_type={{ i.type.value }}"
+             class="integration-list__link{% if selected_integration_type == i.type.value %} is-selected{% endif %}">
+            <span class="integration-list__name">{{ integration_meta.get(i.type.value, {}).get('label', i.type.value) }}</span>
+            <span class="integration-list__meta">
+              {% if i.active %}<span class="badge on">active</span>{% else %}<span class="badge off">inactive</span>{% endif %}
+              <code title="{{ integration_endpoint(i) }}">{{ integration_endpoint(i) }}</code>
+            </span>
+          </a>
+          {% if can_edit %}
+          <div class="integration-list__actions">
+            <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integrations/{{ i.id }}/toggle" class="no-loader">
+              <button type="submit" class="btn-secondary btn-sm">Toggle</button>
+            </form>
+            <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integrations/{{ i.id }}/delete" class="no-loader">
+              <button type="submit" class="btn-secondary btn-sm">Delete</button>
+            </form>
+          </div>
+          {% endif %}
+        </li>
+        {% else %}
+        <li class="text-muted integration-list__empty">No integrations saved yet.</li>
+        {% endfor %}
+      </ul>
+    </aside>
+
+    {% if can_edit %}
+    <div class="integration-editor card">
+      <div class="integration-editor__header">
+        <label>Type
+          <select id="integration-type-select">
+            {% for t in integration_types_list %}
+            <option value="{{ t }}" {% if selected_integration_type == t %}selected{% endif %}>
+              {{ integration_meta.get(t, {}).get('label', t) }}
+            </option>
+            {% endfor %}
+          </select>
+        </label>
+        <div class="integration-editor__badges" id="integration-status-badges"></div>
+      </div>
+      <p class="text-muted integration-editor__desc" id="integration-type-desc"></p>
+
+      <form method="post" action="/dashboard/bots/{{ tenant.slug }}/integrations" class="integration-form no-loader" id="integration-form">
+        <input type="hidden" name="integration_type" id="integration-type-input" value="{{ selected_integration_type }}">
+        <div id="integration-fields" class="form-grid"></div>
+        <div class="form-actions form-actions--compact integration-editor__actions">
+          <button type="submit" class="btn-primary" data-loading="Saving…">Save</button>
+          <span id="integration-qb-connect-wrap"></span>
+        </div>
+      </form>
+      <div id="integration-qb-disconnect-wrap"></div>
+      <p class="field-hint integration-oauth-hint" id="integration-qb-hint" hidden></p>
+
+      <details class="integration-test-group">
+        <summary>Tests</summary>
+        <div class="integration-test-group__body">
+          <details class="integration-test integration-test--nested">
+            <summary>Test connection</summary>
+            <div class="integration-test__body">
+              <div class="form-grid integration-test__inputs">
+                <label>Test email<input type="email" class="integration-test-email" placeholder="customer@example.com"></label>
+                <label>Test phone<input type="text" class="integration-test-phone" placeholder="+33612345678"></label>
+              </div>
+              <button type="button" class="btn-secondary btn-sm integration-test-btn" data-slug="{{ tenant.slug }}">Run test</button>
+              <pre class="integration-test-result" hidden></pre>
+            </div>
+          </details>
+
+          <details class="integration-test integration-test--nested integration-customer-create" id="integration-customer-create-panel" hidden>
+            <summary>Test customer creation</summary>
+            <div class="integration-test__body">
+              <p class="field-hint">Creates a real ERPNext Customer (+ Contact). With a <strong>company name</strong>, the Customer is created as Company and the contact person is linked to it.</p>
+              <div class="form-grid integration-test__inputs">
+                <label>Company name<input type="text" class="integration-customer-company" placeholder="Acme Corp"></label>
+                <label>Contact name (optional)<input type="text" class="integration-customer-name" placeholder="Jane Doe"></label>
+                <label>Test email<input type="email" class="integration-customer-email" placeholder="customer@example.com"></label>
+                <label>Test phone<input type="text" class="integration-customer-phone" placeholder="+33612345678"></label>
+              </div>
+              <button type="button" class="btn-secondary btn-sm integration-customer-create-btn" data-slug="{{ tenant.slug }}">Create customer</button>
+              <pre class="integration-customer-create-result" hidden></pre>
+            </div>
+          </details>
+
+          <details class="integration-test integration-test--nested integration-quotation-create" id="integration-quotation-create-panel" hidden>
+            <summary>Test quotation creation</summary>
+            <div class="integration-test__body">
+              <p class="field-hint">Creates a real ERPNext Quotation (+ PDF). Requires <strong>Allow quotation creation</strong>. Uses test identity to find or create the customer.</p>
+              <div class="form-grid integration-test__inputs">
+                <label>Company name (optional)<input type="text" class="integration-quotation-company" placeholder="Acme Corp"></label>
+                <label>Test email<input type="email" class="integration-quotation-email" placeholder="customer@example.com"></label>
+                <label>Test phone<input type="text" class="integration-quotation-phone" placeholder="+33612345678"></label>
+                <label>Item code or name<input type="text" class="integration-quotation-item" placeholder="OKI Consumables or EP-M C650 (Image Drum)" required></label>
+                <label>Qty<input type="number" class="integration-quotation-qty" value="1" min="1" step="1"></label>
+                <label>Notes (optional)<input type="text" class="integration-quotation-notes" placeholder="Delivery note…"></label>
+              </div>
+              <button type="button" class="btn-secondary btn-sm integration-quotation-create-btn" data-slug="{{ tenant.slug }}">Create quotation</button>
+              <div class="integration-quotation-create-result integration-test-result" hidden>
+                <pre class="integration-quotation-create-log"></pre>
+                <a class="btn-secondary btn-sm integration-quotation-pdf-btn" hidden download>Download PDF</a>
+              </div>
+            </div>
+          </details>
+
+          <details class="integration-test integration-test--nested integration-invoice-price-test" id="integration-invoice-price-test-panel" hidden>
+            <summary>Test catalog prices</summary>
+            <div class="integration-test__body">
+              <p class="field-hint">Checks read access to <strong>Item Price</strong> (catalog price list) and submitted <strong>Sales Invoice</strong> documents — both are used by <strong>Use highest catalog price</strong> and the catalog price inspector. Save the integration first.</p>
+              <button type="button" class="btn-secondary btn-sm integration-invoice-price-test-btn" data-slug="{{ tenant.slug }}">Run price test</button>
+              <pre class="integration-invoice-price-test-result integration-test-result" hidden></pre>
+            </div>
+          </details>
+        </div>
+      </details>
+
+      <details class="integration-test integration-catalog-sync" id="integration-catalog-sync-panel" hidden>
+        <summary>Catalog RAG sync</summary>
+        <div class="integration-test__body">
+          <p class="field-hint">Exports ERPNext items into <code>data/catalog/{{ tenant.slug }}/</code> and updates the RAG index. Scheduled sync runs when <strong>Sync catalog to RAG</strong> is enabled.</p>
+          <dl class="integration-catalog-status">
+            <div><dt>Last sync</dt><dd class="integration-catalog-last-sync">—</dd></div>
+            <div><dt>Items</dt><dd class="integration-catalog-item-count">—</dd></div>
+            <div><dt>Last error</dt><dd class="integration-catalog-last-error">—</dd></div>
+          </dl>
+          <button type="button" class="btn-secondary btn-sm integration-catalog-sync-btn" data-slug="{{ tenant.slug }}">Sync catalog now</button>
+          <a href="/dashboard/bots/{{ tenant.slug }}/integrations/erpnext/catalog"
+             class="btn-secondary btn-sm">Inspect catalog prices</a>
+          <button type="button" class="btn-danger btn-sm integration-catalog-purge-btn" data-slug="{{ tenant.slug }}">Purge catalog files</button>
+          <pre class="integration-catalog-sync-result integration-test-result" hidden></pre>
+        </div>
+      </details>
+    </div>
+
+    <script type="application/json" id="integration-schemas-data">{{ integration_schemas_json|safe }}</script>
+    <script type="application/json" id="integration-configs-data">{{ integrations_config_json|safe }}</script>
+    <script type="application/json" id="integration-meta-data">{{ integration_meta_json|safe }}</script>
+    <script>
+      (function () {
+        const schemas = JSON.parse(document.getElementById('integration-schemas-data').textContent);
+        const saved = JSON.parse(document.getElementById('integration-configs-data').textContent);
+        const meta = JSON.parse(document.getElementById('integration-meta-data').textContent);
+        const typeSel = document.getElementById('integration-type-select');
+        const typeInput = document.getElementById('integration-type-input');
+        const container = document.getElementById('integration-fields');
+        const descEl = document.getElementById('integration-type-desc');
+        const badgesEl = document.getElementById('integration-status-badges');
+        const qbConnectWrap = document.getElementById('integration-qb-connect-wrap');
+        const qbDisconnectWrap = document.getElementById('integration-qb-disconnect-wrap');
+        const qbHint = document.getElementById('integration-qb-hint');
+        const botSlug = {{ tenant.slug|tojson }};
+        const qbRedirectUri = {{ quickbooks_redirect_uri|tojson }};
+
+        function recordFor(type) {
+          return saved[type] || { active: true, connected: false, config: {} };
+        }
+
+        function isChecked(value, defaultVal) {
+          if (value === true || value === false) return value;
+          const raw = String(value ?? defaultVal ?? '').toLowerCase();
+          return ['1', 'true', 'on', 'yes'].includes(raw);
+        }
+
+        function renderFields() {
+          const type = typeSel.value;
+          typeInput.value = type;
+          const fields = schemas[type] || [];
+          const rec = recordFor(type);
+          const cfg = rec.config || {};
+          const hasSaved = Object.prototype.hasOwnProperty.call(saved, type);
+
+          descEl.textContent = (meta[type] && meta[type].description) || '';
+          badgesEl.replaceChildren();
+          if (type === 'quickbooks') {
+            badgesEl.appendChild(makeBadge(rec.connected ? 'Connected' : 'Not connected', rec.connected));
+          }
+          if (hasSaved) {
+            badgesEl.appendChild(makeBadge(rec.active ? 'Active' : 'Inactive', rec.active));
+          }
+
+          container.replaceChildren();
+          fields.forEach((field) => {
+            const label = document.createElement('label');
+            label.textContent = field.label + ' ';
+            let control;
+            if (field.input_type === 'checkbox') {
+              const row = document.createElement('div');
+              row.className = 'checkbox-row';
+              control = document.createElement('input');
+              control.type = 'checkbox';
+              control.name = field.key;
+              control.checked = isChecked(cfg[field.key], field.default);
+              row.appendChild(control);
+              const hint = document.createElement('span');
+              hint.className = 'field-hint';
+              hint.textContent = field.help || '';
+              row.appendChild(hint);
+              label.appendChild(row);
+            } else if (field.input_type === 'select') {
+              control = document.createElement('select');
+              control.name = field.key;
+              (field.options || []).forEach((opt) => {
+                const o = document.createElement('option');
+                o.value = opt.value;
+                o.textContent = opt.label;
+                o.selected = String(cfg[field.key] ?? field.default) === opt.value;
+                control.appendChild(o);
+              });
+              label.appendChild(control);
+              label.appendChild(makeHint(field.help));
+            } else {
+              control = document.createElement('input');
+              control.type = field.input_type || 'text';
+              control.name = field.key;
+              control.placeholder = hasSaved && field.input_type === 'password'
+                ? 'Leave blank to keep'
+                : (field.placeholder || '');
+              if (field.input_type !== 'password') {
+                control.value = cfg[field.key] ?? field.default ?? '';
+              }
+              if (field.required && !hasSaved) control.required = true;
+              label.appendChild(control);
+              label.appendChild(makeHint(field.help));
+            }
+            if (control) control.title = field.help || '';
+            container.appendChild(label);
+          });
+
+          const activeLabel = document.createElement('label');
+          const activeRow = document.createElement('div');
+          activeRow.className = 'checkbox-row';
+          activeRow.style.alignSelf = 'end';
+          const activeInput = document.createElement('input');
+          activeInput.type = 'checkbox';
+          activeInput.name = 'active';
+          activeInput.id = 'integration-active';
+          activeInput.checked = rec.active !== false;
+          activeRow.appendChild(activeInput);
+          const activeText = document.createElement('label');
+          activeText.setAttribute('for', 'integration-active');
+          activeText.textContent = 'Active';
+          activeRow.appendChild(activeText);
+          activeLabel.appendChild(activeRow);
+          container.appendChild(activeLabel);
+
+          qbConnectWrap.replaceChildren();
+          qbDisconnectWrap.replaceChildren();
+          qbHint.replaceChildren();
+          qbHint.hidden = true;
+          if (type === 'quickbooks') {
+            qbHint.hidden = false;
+            qbHint.appendChild(document.createTextNode('Intuit redirect URI: '));
+            const code = document.createElement('code');
+            code.textContent = qbRedirectUri;
+            qbHint.appendChild(code);
+          }
+          if (type === 'quickbooks' && !rec.connected) {
+            const link = document.createElement('a');
+            link.href = '/dashboard/bots/' + botSlug + '/integrations/quickbooks/connect';
+            link.className = 'btn btn-secondary';
+            link.textContent = 'Connect QuickBooks';
+            qbConnectWrap.appendChild(link);
+          }
+          if (type === 'quickbooks' && rec.connected) {
+            const form = document.createElement('form');
+            form.method = 'post';
+            form.action = '/dashboard/bots/' + botSlug + '/integrations/quickbooks/disconnect';
+            form.className = 'form-actions form-actions--compact no-loader';
+            const btn = document.createElement('button');
+            btn.type = 'submit';
+            btn.className = 'btn-secondary';
+            btn.textContent = 'Disconnect QuickBooks';
+            form.appendChild(btn);
+            qbDisconnectWrap.appendChild(form);
+          }
+
+          const url = new URL(window.location.href);
+          url.searchParams.set('tab', 'integrations');
+          url.searchParams.set('integration_type', type);
+          window.history.replaceState({}, '', url);
+          document.querySelectorAll('.integration-list__link').forEach((link) => {
+            link.classList.toggle('is-selected', link.getAttribute('href').includes('integration_type=' + type));
+          });
+          syncCustomerCreatePanel(type);
+          syncQuotationCreatePanel(type);
+          syncCatalogSyncPanel(type);
+          syncInvoicePriceTestPanel(type);
+          container.querySelector('input[name="allow_create_customer"]')?.addEventListener('change', () => {
+            syncCustomerCreatePanel(type);
+          });
+          container.querySelector('input[name="allow_create_quotation"]')?.addEventListener('change', () => {
+            syncQuotationCreatePanel(type);
+          });
+          container.querySelector('input[name="sync_catalog_to_rag"]')?.addEventListener('change', () => {
+            syncCatalogSyncPanel(type);
+          });
+        }
+
+        function syncCatalogSyncPanel(type) {
+          const panel = document.getElementById('integration-catalog-sync-panel');
+          if (!panel) return;
+          panel.hidden = type !== 'erpnext';
+          const rec = recordFor(type);
+          const cfg = rec.config || {};
+          const lastSync = panel.querySelector('.integration-catalog-last-sync');
+          const itemCount = panel.querySelector('.integration-catalog-item-count');
+          const lastError = panel.querySelector('.integration-catalog-last-error');
+          if (lastSync) lastSync.textContent = cfg.catalog_last_sync_at || '—';
+          if (itemCount) itemCount.textContent = cfg.catalog_last_item_count ?? '—';
+          if (lastError) lastError.textContent = cfg.catalog_last_error || '—';
+        }
+
+        function syncInvoicePriceTestPanel(type) {
+          const panel = document.getElementById('integration-invoice-price-test-panel');
+          if (panel) panel.hidden = type !== 'erpnext';
+        }
+
+        function syncCustomerCreatePanel(type) {
+          const panel = document.getElementById('integration-customer-create-panel');
+          if (!panel) return;
+          const checkbox = document.querySelector('#integration-form input[name="allow_create_customer"]');
+          panel.hidden = !(type === 'erpnext' && checkbox && checkbox.checked);
+        }
+
+        function syncQuotationCreatePanel(type) {
+          const panel = document.getElementById('integration-quotation-create-panel');
+          if (!panel) return;
+          const checkbox = document.querySelector('#integration-form input[name="allow_create_quotation"]');
+          panel.hidden = !(type === 'erpnext' && checkbox && checkbox.checked);
+        }
+
+        function makeHint(text) {
+          const hint = document.createElement('small');
+          hint.className = 'field-hint';
+          hint.textContent = text || '';
+          return hint;
+        }
+
+        function makeBadge(text, on) {
+          const span = document.createElement('span');
+          span.className = 'badge ' + (on ? 'on' : 'off');
+          span.textContent = text;
+          return span;
+        }
+
+        typeSel.addEventListener('change', renderFields);
+        renderFields();
+      })();
+    </script>
+    {% endif %}
+  </div>
+
+{% elif tab == 'validation' %}
+<nav class="tabs validation-subtabs">
+  <a href="?tab=validation&amp;vsub=pending" class="{% if validation_subtab == 'pending' %}active{% endif %}">Pending{% if pending_count %} <span class="tab-badge">{{ pending_count }}</span>{% endif %}</a>
+  <a href="?tab=validation&amp;vsub=approved" class="{% if validation_subtab == 'approved' %}active{% endif %}">Approved</a>
+  <a href="?tab=validation&amp;vsub=rejected" class="{% if validation_subtab == 'rejected' %}active{% endif %}">Rejected</a>
+  <a href="?tab=validation&amp;vsub=blacklist" class="{% if validation_subtab == 'blacklist' %}active{% endif %}">Blacklist</a>
+</nav>
+{% if validation_subtab == 'blacklist' %}
+<div class="card">
+  <h2 class="card-title">Blocked senders</h2>
+  <p class="text-muted field-hint">These addresses are rejected at the mail listener. Edit the list on the Config tab.</p>
+</div>
+<div class="table-wrap">
+  <table class="data-table validation-table">
+    <thead><tr><th>Address</th><th></th></tr></thead>
+    <tbody>
+    {% for addr in blocked_senders %}
+    <tr>
+      <td><code>{{ addr }}</code></td>
+      <td>
+        {% if can_edit %}
+        <form method="post" action="/dashboard/bots/{{ tenant.slug }}/email-blacklist/unblock" class="inline-form">
+          <input type="hidden" name="addr" value="{{ addr }}">
+          <button type="submit" class="btn-secondary btn-sm">Unblock</button>
+        </form>
+        {% endif %}
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="2" class="empty-state">No blocked senders</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% else %}
+<div class="card">
+  <h2 class="card-title">
+    {%- if validation_subtab == 'approved' -%}Approved replies
+    {%- elif validation_subtab == 'rejected' -%}Rejected replies
+    {%- else -%}Pending replies
+    {%- endif -%}
+    {% if validation_subtab == 'pending' %}{{ help_tip("Quote replies are held until you approve. ERPNext records are created only when you click Approve. Check product matches before sending.") }}{% endif %}
+  </h2>
+  {% if validation_subtab == 'pending' %}
+  <p class="text-muted">Replies queued because an outbound connector is in <strong>validation</strong> mode, or because the bot emitted a quote hook. Open a row to review, edit, attach files, and approve or reject.{% if dev_mode and mailpit_web_url %} Email replies are sent via Mailpit in dev — <a href="{{ mailpit_web_url }}" target="_blank" rel="noopener">Open Mailpit</a>.{% endif %}</p>
+  {% endif %}
+  {% if request.session.get('validation_error') %}
+  <p class="validation-error">{{ request.session.pop('validation_error') }}</p>
+  {% endif %}
+  {% if request.session.get('validation_success') %}
+  <p class="validation-success">{{ request.session.pop('validation_success') }}</p>
+  {% endif %}
+</div>
+{% if validation_subtab == 'pending' %}
+<form method="post"
+      action="/dashboard/bots/{{ tenant.slug }}/validation/bulk-reject"
+      class="validation-bulk-bar"
+      id="validation-bulk-form"
+      hidden
+      data-confirm-template="Reject {count} selected email(s)? This cannot be undone.">
+  <span class="validation-bulk-count" id="validation-bulk-count">0 selected</span>
+  <button type="submit" class="btn-secondary btn-sm">Reject selected</button>
+</form>
+{% endif %}
+<div class="table-wrap">
+  {% set inbox_colspan = 7 %}
+  <table class="data-table validation-table validation-table--inbox">
+    <colgroup>
+      {% if validation_subtab == 'pending' %}<col class="validation-col-bulk">{% endif %}
+      <col class="validation-col-id">
+      <col class="validation-col-channel">
+      <col class="validation-col-from">
+      <col class="validation-col-subject">
+      {% if validation_subtab in ('approved', 'rejected') %}
+      <col class="validation-col-by">
+      <col class="validation-col-time">
+      {% else %}
+      <col class="validation-col-time">
+      {% endif %}
+      <col class="validation-col-chevron">
+    </colgroup>
+    <thead><tr>
+      {% if validation_subtab == 'pending' %}<th class="validation-bulk-col"><input type="checkbox" id="validation-select-all" aria-label="Select all emails" title="Select all emails"></th>{% endif %}
+      <th class="validation-inbox-id">ID</th><th class="validation-inbox-channel"></th><th class="validation-inbox-from">From</th><th class="validation-inbox-subject">Subject</th>
+      {% if validation_subtab in ('approved', 'rejected') %}<th class="validation-inbox-by">By</th><th class="validation-inbox-time">Time</th>{% else %}<th class="validation-inbox-time">Time</th>{% endif %}
+      <th class="validation-row-chevron" aria-hidden="true"></th>
+    </tr></thead>
+    <tbody data-inbox-colspan="{{ inbox_colspan }}">
+    {% for item in pending_replies_ui %}
+    {% set r = item.reply %}
+    {% if validation_subtab in ('approved', 'rejected') %}
+      {% set row_dt = r.resolved_at %}
+    {% else %}
+      {% set row_dt = r.created_at %}
+    {% endif %}
+    <tr class="validation-row validation-inbox-row"
+        {% if row_dt %}data-utc="{{ row_dt.isoformat() }}"{% endif %}
+        data-href="/dashboard/bots/{{ tenant.slug }}/validation/{{ r.id }}"
+        tabindex="0"
+        role="link">
+      {% if validation_subtab == 'pending' %}
+      <td class="validation-bulk-col">
+        {% if r.channel == 'email' %}
+        <input type="checkbox"
+               class="validation-inbox-select"
+               value="{{ r.id }}"
+               aria-label="Select reply {{ r.id }}">
+        {% endif %}
+      </td>
+      {% endif %}
+      <td class="validation-inbox-id">{{ r.id }}</td>
+      <td class="validation-inbox-channel">
+        {{ channel_icon(r.channel) }}
+        <span class="validation-inbox-flags">
+          {% if item.has_erpnext_quote %}
+          <span class="validation-inbox-flag validation-inbox-flag--quote" title="ERPNext quotation {{ r.quote_external_id }}">Quote</span>
+          {% endif %}
+          {% if item.manual_attachment_count %}
+          <span class="validation-inbox-flag validation-inbox-flag--attach" title="{{ item.manual_attachment_count }} file{% if item.manual_attachment_count != 1 %}s{% endif %} attached">{{ item.manual_attachment_count }} file{% if item.manual_attachment_count != 1 %}s{% endif %}</span>
+          {% endif %}
+          {% if r.channel == 'email' and item.thread_resolution_tooltip %}
+          <span class="validation-inbox-flag validation-inbox-flag--thread-{{ 'llm' if item.thread_resolution_used_llm else 'auto' }}"
+                title="{{ item.thread_resolution_tooltip }}">●</span>
+          {% endif %}
+        </span>
+      </td>
+      {% set from_label = r.session_id | session_label %}
+      <td class="validation-inbox-from" title="{{ from_label }}"><code>{{ from_label }}</code></td>
+      <td class="validation-inbox-subject"{% if item.inbound_subject %} title="{{ item.inbound_subject }}"{% endif %}>
+        {%- if r.channel == 'email' and item.inbound_subject -%}
+        {{ item.inbound_subject }}
+        {%- else -%}
+        <span class="text-muted">—</span>
+        {%- endif -%}
+      </td>
+      {% if validation_subtab in ('approved', 'rejected') %}
+      <td class="text-muted validation-inbox-by" title="{{ r.resolved_by or '' }}">{{ r.resolved_by or '—' }}</td>
+      <td class="text-muted validation-inbox-time">{% if row_dt %}<time class="js-local-time" datetime="{{ row_dt.isoformat() }}">--:--</time>{% else %}—{% endif %}</td>
+      {% else %}
+      <td class="text-muted validation-inbox-time">{% if row_dt %}<time class="js-local-time" datetime="{{ row_dt.isoformat() }}">--:--</time>{% else %}—{% endif %}</td>
+      {% endif %}
+      <td class="validation-row-chevron" aria-hidden="true">▶</td>
+    </tr>
+    {% else %}
+    <tr><td colspan="{% if validation_subtab in ('approved', 'rejected') %}7{% elif validation_subtab == 'pending' %}7{% else %}6{% endif %}" class="empty-state">
+      {%- if validation_subtab == 'approved' -%}No approved replies yet
+      {%- elif validation_subtab == 'rejected' -%}No rejected replies yet
+      {%- else -%}No replies awaiting validation
+      {%- endif -%}
+    </td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<section class="card validation-activity" id="validation-activity">
+  <h2 class="card-title validation-activity-title">Activity</h2>
+  <p class="text-muted field-hint">Who edited, approved, rejected, or changed attachments (since this feature was deployed). Showing the 25 most recent events across all validation replies.</p>
+  <ul class="validation-activity-list validation-activity-list--scroll">
+  {% for entry in validation_activity %}
+    <li class="validation-activity-item">
+      <time class="validation-activity-time js-local-datetime" datetime="{{ entry.created_at.isoformat() }}">{{ entry.created_at.strftime('%Y-%m-%d %H:%M') }}</time>
+      <span class="validation-activity-actor">{{ entry.actor_email }}</span>
+      <span class="validation-activity-summary">{{ entry.summary }}</span>
+      <a class="validation-activity-link" href="/dashboard/bots/{{ tenant.slug }}/validation/{{ entry.pending_reply_id }}">#{{ entry.pending_reply_id }}</a>
+      {% if entry.diff %}
+      <details class="validation-activity-diff">
+        <summary>View diff</summary>
+        <pre>{{ entry.diff }}</pre>
+      </details>
+      {% endif %}
+    </li>
+  {% else %}
+    <li class="text-muted empty-state">No activity yet</li>
+  {% endfor %}
+  </ul>
+</section>
+{% endif %}
+
+{% elif tab == 'history' %}
+<section class="history-layout">
+  <aside>
+    <h2>Sessions</h2>
+    <ul>
+    {% for sid in sessions %}
+      <li><a href="?tab=history&amp;sid={{ sid|urlencode }}" {% if selected_sid == sid %}class="active"{% endif %}>{{ sid | session_label }}</a></li>
+    {% else %}
+      <li class="text-muted">No sessions</li>
+    {% endfor %}
+    </ul>
+  </aside>
+  <div>
+    {% if selected_sid %}
+    <h2 class="card-title">Messages — {{ selected_sid | session_label }}</h2>
+    <div class="chat-thread history-thread">
+    {% for m, bubble in history_bubbles %}
+      {% if bubble %}
+      {{ message_bubble(
+        m.role.value,
+        bubble.content_clean,
+        bubble.content_raw,
+        bubble.token_raw,
+        bubble.token_new,
+        bubble.reduction_pct,
+        m.created_at,
+        role_label=m.role.value,
+        markdown=(m.role.value == 'assistant')
+      ) }}
+      {% if m.context_debug %}
+      <p class="msg-context-debug">{{ m.context_debug | context_debug_label }}</p>
+      {% endif %}
+      {% else %}
+      <div class="msg-turn msg-turn-{{ m.role.value }}">
+        <div class="msg msg-{{ m.role.value }}"><strong>{{ m.role.value }}</strong><div class="msg-body{% if m.role.value == 'user' %} msg-body--plain{% elif m.role.value == 'assistant' %} js-md{% endif %}">{{ m.content }}</div></div>
+        {% if m.context_debug %}
+        <p class="msg-context-debug">{{ m.context_debug | context_debug_label }}</p>
+        {% endif %}
+      </div>
+      {% endif %}
+    {% else %}
+    <p class="text-muted">No messages</p>
+    {% endfor %}
+    </div>
+    {% else %}
+    <p class="text-muted">Select a session from the list</p>
+    {% endif %}
+  </div>
+</section>
+{{ markdown_scripts() }}
+<script src="/static/message-bubbles.js"></script>
+
+{% elif tab == 'chat' %}
+<section class="history-layout chat-test-layout{% if not chat_full_test %} chat-test-layout--simple{% endif %}">
+  {% if chat_full_test %}
+  <aside>
+    <h2>Sessions</h2>
+    <ul>
+    {% for entry in test_chat_sidebar_sessions %}
+      <li>
+        <a href="?{{ entry.session_id | session_test_chat_query }}"{% if entry.session_id == chat_active_sid %} class="active"{% endif %}>
+          <span class="chat-sidebar-session">{{ entry.session_id | session_label }}</span>
+          {% if entry.user_email %}
+          <span class="chat-sidebar-user">{{ entry.user_email }}</span>
+          {% endif %}
+        </a>
+      </li>
+    {% else %}
+      <li class="text-muted">No sessions</li>
+    {% endfor %}
+    </ul>
+  </aside>
+  {% endif %}
+  <div class="chat-panel" id="chat-panel"
+     data-bot-slug="{{ tenant.slug }}"
+     data-send-url="/dashboard/bots/{{ tenant.slug }}/chat-test/send"
+     data-validation-url="{{ chat_validation_url }}"
+     data-require-identity="{{ 'true' if chat_require_identity else 'false' }}"
+     data-dev-mode="{{ 'true' if chat_dev_mode else 'false' }}"
+     data-anonymous-only="{{ 'true' if not chat_full_test else 'false' }}"
+     data-quote-pdf='{{ chat_quote_pdf_json|safe }}'
+     data-chat-test-session="{{ chat_test_session }}">
+  <div class="chat-header">
+    <h2 class="card-title">Test chat</h2>
+    {% if chat_can_clear %}
+    <form method="post" action="/dashboard/bots/{{ tenant.slug }}/chat-test/reset" class="no-loader" id="chat-reset-form" onsubmit="return confirm('Clear this anonymous test conversation?');">
+      <input type="hidden" name="test_email" id="chat-reset-email" value="{{ chat_test_email }}">
+      <input type="hidden" name="test_phone" id="chat-reset-phone" value="{{ chat_test_phone }}">
+      <input type="hidden" name="test_session" id="chat-reset-test-session" value="{{ chat_test_session }}">
+      <button type="submit" class="btn-secondary btn-sm">Clear history</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if chat_full_test %}
+  {% if show_chat_channel_selector %}
+  <div class="form-grid chat-channel-grid">
+    <label>Simulate channel
+      <select id="chat-test-channel">
+        <option value="">Auto (direct)</option>
+        {% for c in chat_outbound_connectors %}
+        <option value="{{ c.type }}">{{ c.type }} — {{ c.mode }}</option>
+        {% endfor %}
+      </select>
+    </label>
+  </div>
+  <p class="text-muted field-hint">Choose a channel to queue replies for validation like production (e.g. email WYSIWYG). Auto keeps direct quote creation.</p>
+  {% endif %}
+  {% if has_customer_integration %}
+  <div class="form-grid chat-identity-grid">
+    <label>Test email<input type="email" id="chat-test-email" value="{{ chat_test_email }}" placeholder="customer@example.com"></label>
+    <label>Test phone<input type="text" id="chat-test-phone" value="{{ chat_test_phone }}" placeholder="+33612345678"></label>
+  </div>
+  <p class="text-muted field-hint">
+    Optional — email and phone are both sent to ERPNext / QuickBooks when filled (better customer match).
+    Required when simulating <strong>email</strong>.
+    <button type="button" class="btn-ghost btn-sm" id="chat-clear-identity">Clear identity (anonymous test)</button>
+  </p>
+  {% elif show_chat_channel_selector %}
+  <div class="form-grid chat-identity-grid">
+    <label>Test email<input type="email" id="chat-test-email" value="{{ chat_test_email }}" placeholder="customer@example.com"></label>
+    <label>Test phone<input type="text" id="chat-test-phone" value="{{ chat_test_phone }}" placeholder="+33612345678"></label>
+  </div>
+  <p class="text-muted field-hint">Test email is required when simulating <strong>email</strong>.</p>
+  {% endif %}
+  {% endif %}
+  <div class="chat-thread" id="chat-thread"></div>
+  <script id="chat-initial" type="application/json">{{ chat_messages_json|safe }}</script>
+  <form id="chat-form" class="no-loader">
+    <label>Message<textarea name="message" id="chat-input" rows="3" placeholder="Type a test message…"></textarea></label>
+    <p class="text-muted chat-hint">Enter to send · Shift+Enter for new line</p>
+    <div class="form-actions form-actions--compact chat-compose-actions">
+      <button type="submit" class="btn-primary" id="chat-send">Send</button>
+      <button type="button" class="btn-danger" id="chat-stop" hidden>Stop</button>
+    </div>
+  </form>
+  <p id="chat-hook-status" class="chat-hook-status" hidden></p>
+  {% if chat_full_test %}
+  <p class="text-muted" style="margin-top:1rem">Session: <code id="chat-session-label">{{ chat_session_id }}</code></p>
+  {% endif %}
+  {{ markdown_scripts() }}
+  <script src="/static/message-bubbles.js"></script>
+  <script src="/static/chat-test.js"></script>
+  </div>
+</section>
+
+{% elif tab == 'email-test' %}
+<div class="card" id="email-test-panel"
+     data-send-url="/dashboard/bots/{{ tenant.slug }}/email-test/send"
+     data-poll-url="/dashboard/bots/{{ tenant.slug }}/email-test/poll"
+     data-validation-url="/dashboard/bots/{{ tenant.slug }}?tab=validation"
+     data-poll-hint="{{ mail_poll_seconds }}">
+  <h2 class="card-title">Test email (dev)</h2>
+  <p class="text-muted">Inject a client email into the bot IMAP inbox via <strong>GreenMail SMTP</strong> (local dev). Unlike Test chat, this flow is asynchronous: the mail worker polls every ~{{ mail_poll_seconds }}s, then replies appear in Validation. After you approve, outbound emails are visible in {% if mailpit_web_url %}<a href="{{ mailpit_web_url }}" target="_blank" rel="noopener">Mailpit</a>{% else %}Mailpit{% endif %}.</p>
+  <form id="email-test-form">
+    <label>From (simulated client)<input type="email" name="from_addr" id="email-test-from" value="client@example.com" required></label>
+    <label>Subject<input type="text" name="subject" id="email-test-subject" value="Test devis"></label>
+    <label>Body<textarea name="body" id="email-test-body" rows="5" placeholder="Bonjour, je voudrais un devis…" required></textarea></label>
+    <div class="form-actions form-actions--compact">
+      <button type="submit" class="btn-primary" id="email-test-send">Send to inbox</button>
+      <button type="button" class="btn-secondary" id="email-test-poll">Process now</button>
+    </div>
+  </form>
+  <p id="email-test-status" class="text-muted" style="margin-top:1rem" hidden></p>
+  <script src="/static/email-test.js"></script>
+</div>
+
+{% elif tab == 'hooks' %}
+<div class="table-wrap">
+  <table class="data-table validation-table">
+    <thead><tr><th>ID</th><th>Type</th><th>Status</th><th>Session</th><th>Error</th><th></th><th></th></tr></thead>
+    <tbody>
+    {% for h in hooks %}
+    <tr class="validation-row hook-{{ status_class(h.status.value) }}" data-panel="hook-panel-{{ h.id }}" tabindex="0" role="button" aria-expanded="false" aria-controls="hook-panel-{{ h.id }}">
+      <td>{{ h.id }}</td>
+      <td><code>{{ h.type }}</code></td>
+      <td><span class="badge">{{ h.status.value }}</span></td>
+      <td><code>{{ h.session_id | session_label }}</code></td>
+      <td class="text-muted">{{ h.error or '—' }}</td>
+      <td>
+        {% if dev_mode and is_admin and h.status.value in ('failed','done') %}
+        <form method="post" action="/dashboard/hooks/{{ h.id }}/replay" class="no-loader" onclick="event.stopPropagation()"><button type="submit" class="btn-secondary btn-sm">Replay</button></form>
+        {% endif %}
+      </td>
+      <td class="validation-row-chevron" aria-hidden="true">▶</td>
+    </tr>
+    <tr id="hook-panel-{{ h.id }}" class="validation-expand-row" hidden>
+      <td colspan="7">
+        <div class="validation-panel">
+          <h4>Hook payload</h4>
+          <pre class="validation-message-body">{{ h.payload_json | pretty_json }}</pre>
+        </div>
+      </td>
+    </tr>
+    {% else %}
+    <tr><td colspan="7" class="empty-state">No hooks yet</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% elif tab == 'monitoring' %}
+<div class="card monitoring-filter-card">
+  {{ monitoring_filter(usage_from, usage_to, monitoring_query_string, 'monitoring', '?tab=monitoring') }}
+</div>
+
+<div class="card" style="margin-bottom:1rem">
+  <h2 class="card-title">API usage ({{ usage_from }} → {{ usage_to }})</h2>
+  <p>
+    <strong class="tabular-nums">{{ format_count(usage_summary.total_tokens) }}</strong> total tokens
+    (<span class="tabular-nums">{{ format_count(usage_summary.prompt_tokens) }}</span> in /
+    <span class="tabular-nums">{{ format_count(usage_summary.output_tokens) }}</span> out),
+    <span class="tabular-nums">{{ format_count(usage_summary.call_count) }}</span> API calls
+  </p>
+  {% if is_admin %}
+  <p>Internal estimate: <strong>{{ format_usd(cost_estimate.total_usd) }}</strong>
+    {% if client_cost_estimate %} · Client billable: <strong>{{ format_usd(client_cost_estimate.total_usd) }}</strong>{% endif %}
+  </p>
+  <p class="monitoring-disclaimer">Internal cost uses Google list prices. <a href="https://ai.google.dev/gemini-api/docs/pricing" target="_blank" rel="noopener">Pricing reference</a>.</p>
+  {% else %}
+  <p>Estimated cost: <strong>{{ format_usd(cost_estimate.total_usd) }}</strong></p>
+  <p class="monitoring-disclaimer">Estimated billable amount for this period. Not an invoice.</p>
+  {% endif %}
+</div>
+
+<div class="monitoring-charts">
+  <div class="card">
+    <h2 class="card-title">Daily tokens</h2>
+    <div class="monitoring-chart-wrap"><canvas id="bot-token-chart"></canvas></div>
+  </div>
+  <div class="card">
+    <h2 class="card-title">Daily disk</h2>
+    <div class="monitoring-chart-wrap"><canvas id="bot-disk-chart"></canvas></div>
+    <p class="monitoring-disclaimer">Disk history from nightly snapshots. Current live total below.</p>
+  </div>
+</div>
+
+<div class="card" style="margin-bottom:1rem">
+  <h2 class="card-title">Disk usage (live)</h2>
+  <p><strong>{{ format_bytes(disk_usage.total_bytes) }}</strong> across <span class="tabular-nums">{{ format_count(disk_usage.total_files) }}</span> files</p>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead><tr><th>Category</th><th>Size</th><th>Files</th></tr></thead>
+      <tbody>
+      {% for cat in disk_usage.categories %}
+      <tr>
+        <td>{{ cat.label }}</td>
+        <td class="tabular-nums">{{ format_bytes(cat.bytes) }}</td>
+        <td class="tabular-nums">{{ format_count(cat.file_count) }}</td>
+      </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% if is_admin %}
+<div class="card" style="margin-bottom:1rem">
+  <h2 class="card-title">Client billing rates ($/M tokens)</h2>
+  <p class="monitoring-disclaimer">Client admins see costs calculated with these rates only. Leave blank to use platform defaults (in {{ client_billing_defaults.input }} / out {{ client_billing_defaults.output }}).</p>
+  <form method="post" action="/dashboard/bots/{{ tenant.slug }}/monitoring/client-billing">
+    <input type="hidden" name="usage_from" value="{{ usage_from.isoformat() }}">
+    <input type="hidden" name="usage_to" value="{{ usage_to.isoformat() }}">
+    {% if usage_page > 1 %}
+    <input type="hidden" name="usage_page" value="{{ usage_page }}">
+    {% endif %}
+    <div class="form-inline-settings">
+      <label>Input $/M<input type="text" name="client_billing_input" value="{{ tenant.client_billing_input_per_million_usd or '' }}" placeholder="{{ client_billing_defaults.input }}"></label>
+      <label>Output $/M<input type="text" name="client_billing_output" value="{{ tenant.client_billing_output_per_million_usd or '' }}" placeholder="{{ client_billing_defaults.output }}"></label>
+    </div>
+    <div class="form-actions form-actions--compact">
+      <button type="submit" class="btn-primary">Save client rates</button>
+    </div>
+  </form>
+</div>
+{% endif %}
+
+<div class="card">
+  <h2 class="card-title">Daily API usage</h2>
+  <p class="text-muted monitoring-table-hint">One row per date, operation, and model.</p>
+  <div class="table-wrap">
+    <table class="data-table">
+      <thead>
+        <tr><th>Date</th><th>Operation</th><th>Model</th><th>In</th><th>Out</th><th>Total</th><th>Calls</th><th>Est. cost</th></tr>
+      </thead>
+      <tbody>
+      {% for row in usage_rows %}
+      <tr>
+        <td>{{ row.entry.usage_date }}</td>
+        <td><code>{{ row.entry.operation }}</code></td>
+        <td><code>{{ row.entry.model or '—' }}</code></td>
+        <td class="tabular-nums">{{ format_count(row.entry.prompt_tokens) }}</td>
+        <td class="tabular-nums">{{ format_count(row.entry.output_tokens) }}</td>
+        <td class="tabular-nums">{{ format_count(row.entry.total_tokens) }}</td>
+        <td class="tabular-nums">{{ format_count(row.entry.call_count) }}</td>
+        <td class="tabular-nums">{{ format_usd(row.cost_usd) }}{% if is_admin and row.unknown_model %} <span class="badge">unknown model</span>{% endif %}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" class="empty-state">No API usage recorded yet</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {{ monitoring_pagination(usage_from, usage_to, usage_page, usage_page_count, usage_row_total, usage_row_start, usage_row_end, monitoring_query_string, 'monitoring') }}
+</div>
+
+<script
+  src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
+  integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
+  crossorigin="anonymous"
+></script>
+<script src="/static/monitoring.js"></script>
+<script>
+(function () {
+  MonitoringCharts.initTokenChart("bot-token-chart", {{ usage_chart_json | safe }});
+  MonitoringCharts.initDiskChart("bot-disk-chart", {{ disk_chart_json | safe }});
+})();
+</script>
+{% endif %}
+{% endblock %}

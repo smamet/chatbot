@@ -13,8 +13,8 @@ from pathlib import Path
 
 import pytest
 
-from chatbot.adapters.rag.creole_script_heuristic import creole_markers_hit
-from chatbot.adapters.rag.fasttext_language_gate import CreoleMarkersRewriteLanguageGate
+from evenor.adapters.rag.creole_script_heuristic import creole_markers_hit
+from evenor.adapters.rag.fasttext_language_gate import CreoleMarkersRewriteLanguageGate
 from tests.conftest import TestSettings as SettingsForTests
 
 # --- Edit this list to try new sentences ---

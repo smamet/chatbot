@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from chatbot.adapters.oauth_state import (
+from evenor.adapters.oauth_state import (
     sign_connector_oauth_state,
     sign_mail_connection_oauth_state,
     verify_connector_oauth_state,
@@ -49,7 +49,7 @@ def test_verify_connector_oauth_state_rejects_tampered() -> None:
 
 
 def test_verify_connector_oauth_state_expired() -> None:
-    with patch("chatbot.adapters.oauth_state.time") as mock_time:
+    with patch("evenor.adapters.oauth_state.time") as mock_time:
         mock_time.time.return_value = 1000
         state = sign_connector_oauth_state(
             slug="bot",

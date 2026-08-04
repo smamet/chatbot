@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.automation.modules.registry import module_for_hook_type
+from evenor.automation.modules.registry import module_for_hook_type
 
 
 def test_module_for_order_hook() -> None:

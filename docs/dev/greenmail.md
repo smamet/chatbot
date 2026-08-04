@@ -101,7 +101,7 @@ with smtplib.SMTP('127.0.0.1', 3025) as s:
 ## Manual worker poll
 
 ```bash
-./sail exec worker-mail python -m chatbot.interfaces.worker_mail --once
+./sail exec worker-mail python -m evenor.interfaces.worker_mail --once
 ```
 
 ## Production

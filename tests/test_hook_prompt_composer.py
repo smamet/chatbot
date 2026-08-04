@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from chatbot.application.hook_prompt_composer import compose_hook_instructions, hooks_enabled_for_tenant
-from chatbot.automation.modules.registry import enabled_modules_for_tenant
-from chatbot.domain.models.tenant import Tenant, TenantConfig
+from evenor.application.hook_prompt_composer import compose_hook_instructions, hooks_enabled_for_tenant
+from evenor.automation.modules.registry import enabled_modules_for_tenant
+from evenor.domain.models.tenant import Tenant, TenantConfig
 
 
 def test_compose_hook_includes_orders_module() -> None:

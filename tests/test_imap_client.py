@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.adapters.mail.imap_client import (
+from evenor.adapters.mail.imap_client import (
     IncomingMail,
     ImapMailClient,
     _body_text_from_message,
@@ -18,8 +18,8 @@ from chatbot.adapters.mail.imap_client import (
     _imap_use_ssl,
     imap_client,
 )
-from chatbot.adapters.mail.smtp_sender import SmtpEmailSender, _parse_use_tls
-from chatbot.adapters.mail.types import EmailMessage
+from evenor.adapters.mail.smtp_sender import SmtpEmailSender, _parse_use_tls
+from evenor.adapters.mail.types import EmailMessage
 
 
 def test_parse_use_tls_defaults() -> None:
@@ -30,7 +30,7 @@ def test_parse_use_tls_defaults() -> None:
     assert _parse_use_tls("on") is True
 
 
-@patch("chatbot.adapters.mail.smtp_sender.smtplib.SMTP")
+@patch("evenor.adapters.mail.smtp_sender.smtplib.SMTP")
 def test_smtp_sender_no_tls(mock_smtp_cls) -> None:
     mock_smtp = MagicMock()
     mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
@@ -70,9 +70,9 @@ def test_smtp_sender_no_tls(mock_smtp_cls) -> None:
     assert payloads["text/html"].strip() == "<p>HTML body</p>"
 
 
-@patch("chatbot.adapters.mail.smtp_sender.smtplib.SMTP")
+@patch("evenor.adapters.mail.smtp_sender.smtplib.SMTP")
 def test_smtp_sender_xoauth2(mock_smtp_cls) -> None:
-    from chatbot.adapters.mail.xoauth2 import build_xoauth2_string
+    from evenor.adapters.mail.xoauth2 import build_xoauth2_string
 
     mock_smtp = MagicMock()
     mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
@@ -91,7 +91,7 @@ def test_smtp_sender_xoauth2(mock_smtp_cls) -> None:
     mock_smtp.login.assert_not_called()
 
 
-@patch("chatbot.adapters.mail.smtp_sender.smtplib.SMTP")
+@patch("evenor.adapters.mail.smtp_sender.smtplib.SMTP")
 def test_smtp_sender_with_tls(mock_smtp_cls) -> None:
     mock_smtp = MagicMock()
     mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
@@ -119,7 +119,7 @@ def test_smtp_sender_with_tls(mock_smtp_cls) -> None:
     )
 
 
-@patch("chatbot.adapters.mail.smtp_sender.smtplib.SMTP")
+@patch("evenor.adapters.mail.smtp_sender.smtplib.SMTP")
 def test_smtp_sender_utf8_accents_use_base64(mock_smtp_cls) -> None:
     mock_smtp = MagicMock()
     mock_smtp_cls.return_value.__enter__.return_value = mock_smtp
@@ -284,11 +284,11 @@ def test_imap_client_mark_seen_uses_parenthesized_flags(mock_close, mock_connect
     client._conn.uid.assert_called_once_with("store", "1", "+FLAGS", "(\\Seen)")
 
 
-@patch("chatbot.adapters.mail.imap_client.imaplib.IMAP4_SSL")
+@patch("evenor.adapters.mail.imap_client.imaplib.IMAP4_SSL")
 def test_imap_client_xoauth2_connect(mock_imap_ssl) -> None:
     import base64
 
-    from chatbot.adapters.mail.xoauth2 import build_xoauth2_string
+    from evenor.adapters.mail.xoauth2 import build_xoauth2_string
 
     mock_conn = MagicMock()
     mock_conn.authenticate.return_value = ("OK", [b"Success"])
@@ -311,7 +311,7 @@ def test_imap_client_xoauth2_connect(mock_imap_ssl) -> None:
     mock_conn.login.assert_not_called()
 
 
-@patch("chatbot.adapters.mail.imap_client.ImapMailClient")
+@patch("evenor.adapters.mail.imap_client.ImapMailClient")
 def test_imap_client_context_manager(mock_cls) -> None:
     instance = MagicMock()
     mock_cls.return_value = instance
@@ -322,7 +322,7 @@ def test_imap_client_context_manager(mock_cls) -> None:
 
 
 def test_parse_message_ids_from_references() -> None:
-    from chatbot.adapters.mail.imap_client import _parse_message_ids
+    from evenor.adapters.mail.imap_client import _parse_message_ids
 
     refs = _parse_message_ids("<a@x.com> <b@x.com>")
     assert refs == ("<a@x.com>", "<b@x.com>")
@@ -331,8 +331,8 @@ def test_parse_message_ids_from_references() -> None:
 def test_smtp_build_mime_includes_thread_headers() -> None:
     import email
 
-    from chatbot.adapters.mail.smtp_sender import SmtpEmailSender
-    from chatbot.adapters.mail.types import EmailMessage
+    from evenor.adapters.mail.smtp_sender import SmtpEmailSender
+    from evenor.adapters.mail.types import EmailMessage
 
     sender = SmtpEmailSender(
         host="smtp.example.com",

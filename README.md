@@ -1,4 +1,4 @@
-# Multi-tenant chatbot platform
+# Multi-tenant evenor platform
 
 Python 3.12, FastAPI + Gemini, per-tenant RAG (LanceDB), **HTMX dashboard**, generic **hooks** + automation worker, optional Meta webhooks. Each bot has its own **slug**, **token**, **prompt**, **connectors**, and **vector index**.
 
@@ -10,8 +10,8 @@ Python 3.12, FastAPI + Gemini, per-tenant RAG (LanceDB), **HTMX dashboard**, gen
 cp .env.example .env
 # Set GEMINI_API_KEY, ADMIN_TOKEN, APP_SECRET_KEY (see below)
 ./sail up -d
-./sail chatbot user-create admin@example.com -p 'your-password' --role admin
-./sail chatbot tenant-create "My Bot" --slug my-bot
+./sail evenor user-create admin@example.com -p 'your-password' --role admin
+./sail evenor tenant-create "My Bot" --slug my-bot
 # Save the tenant token printed once → TENANT_SLUG / TENANT_TOKEN in .env for Streamlit dev
 ```
 
@@ -31,7 +31,7 @@ cp .env.example .env
 | `client_admin` | Bot manager | Assigned bots — config, connectors, validation, **monitoring** (tokens, disk, **client billable cost only**) |
 | `client_operator` | Validation operator | Assigned bots — validation inbox/detail/history only |
 
-Create an operator: `./sail chatbot user-create op@example.com -p '…' --role client_operator`, then an admin assigns bot access under **Users**. On login, a single-bot operator lands on the validation inbox; multiple bots show a picker where **Open** goes straight to validation.
+Create an operator: `./sail evenor user-create op@example.com -p '…' --role client_operator`, then an admin assigns bot access under **Users**. On login, a single-bot operator lands on the validation inbox; multiple bots show a picker where **Open** goes straight to validation.
 
 **Sail commands**
 
@@ -42,7 +42,7 @@ Create an operator: `./sail chatbot user-create op@example.com -p '…' --role c
 ./sail logs           # follow logs
 ./sail shell          # bash in API container
 ./sail mysql          # MySQL CLI
-./sail chatbot …      # CLI (tenant-create, sync, catalog-rag, bot-flush, bot-restore, user-create, …)
+./sail evenor …      # CLI (tenant-create, sync, catalog-rag, bot-flush, bot-restore, user-create, …)
 ./sail migrate        # alembic upgrade head
 ./sail test           # pytest in container
 ./sail worker-logs    # automation worker logs
@@ -59,12 +59,12 @@ Run any Compose command: `./sail ps`, `./sail restart api`, etc.
 
 ```bash
 mkdir -p ./data
-docker compose run --rm -v chatbot_app_data:/from:ro -v "$(pwd)/data":/to alpine \
+docker compose run --rm -v evenor_app_data:/from:ro -v "$(pwd)/data":/to alpine \
   sh -c "cp -a /from/. /to/"
 ./sail up -d
 ```
 
-(Volume name may be `chatbot_app_data` or `<project>_app_data` — check with `docker volume ls`.)
+(Volume name may be `evenor_app_data` or `<project>_app_data` — check with `docker volume ls`.)
 
 **First-time secrets in `.env`**
 
@@ -82,9 +82,9 @@ Generate Fernet key:
 python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 ```
 
-**Automation worker** processes `hook_events` (orders, etc.). Compose starts `worker-automation` automatically; locally: `python -m chatbot.interfaces.worker_automation`.
+**Automation worker** processes `hook_events` (orders, etc.). Compose starts `worker-automation` automatically; locally: `python -m evenor.interfaces.worker_automation`.
 
-**Mail worker** polls IMAP inboxes (`worker-mail`). **Catalog worker** syncs ERPNext item snapshots into RAG when enabled per bot (`worker-catalog`) and records **daily disk usage snapshots** (per tenant + host) once per UTC day. Locally: `python -m chatbot.interfaces.worker_mail` / `python -m chatbot.interfaces.worker_catalog --once`.
+**Mail worker** polls IMAP inboxes (`worker-mail`). **Catalog worker** syncs ERPNext item snapshots into RAG when enabled per bot (`worker-catalog`) and records **daily disk usage snapshots** (per tenant + host) once per UTC day. Locally: `python -m evenor.interfaces.worker_mail` / `python -m evenor.interfaces.worker_catalog --once`.
 
 **Email testing (dev)** — GreenMail (inbound IMAP) + Mailpit (outbound SMTP UI):
 
@@ -115,15 +115,15 @@ See [docs/dev/greenmail.md](docs/dev/greenmail.md) for connector presets (IN: Gr
 
 ```bash
 pyenv install 3.12.8
-pyenv virtualenv 3.12.8 chatbot && pyenv local chatbot
+pyenv virtualenv 3.12.8 evenor && pyenv local evenor
 pip install -e ".[dev]"
 cp .env.example .env
 mkdir -p data
-uvicorn chatbot.interfaces.api.main:app --reload
+uvicorn evenor.interfaces.api.main:app --reload
 ```
 
-- Dashboard: http://127.0.0.1:8000/auth/login — `chatbot user-create admin@example.com`
-- Workers (separate terminals): `python -m chatbot.interfaces.worker_automation`, `worker_mail`, `worker_catalog`
+- Dashboard: http://127.0.0.1:8000/auth/login — `evenor user-create admin@example.com`
+- Workers (separate terminals): `python -m evenor.interfaces.worker_automation`, `worker_mail`, `worker_catalog`
 - Migrations (MySQL only): `alembic upgrade head` — tests use SQLite `create_all`, no Alembic
 
 **`.env` hot reload:** most vars reload when `.env` is saved (mtime). **`DATABASE_URL`** still needs an API restart.
@@ -141,9 +141,9 @@ Use the dashboard **Test chat** tab on a bot detail page (server-side `ChatServi
 Wipe all chats and operational logs for a bot **without** recreating it — same slug, token, prompt, connectors, integrations, and full RAG index (`data/docs/`, `data/catalog/`, `data/lancedb/{slug}/`).
 
 ```bash
-./sail chatbot bot-flush my-bot --yes
+./sail evenor bot-flush my-bot --yes
 # Local (no Docker):
-chatbot bot-flush my-bot --yes
+evenor bot-flush my-bot --yes
 ```
 
 Without `--yes`, an interactive terminal prompts you to type the slug to confirm. In non-TTY environments (e.g. `./sail`), `--yes` is required.
@@ -153,7 +153,7 @@ By default, a backup is saved under `data/backups/{slug}/{timestamp}/` (JSON + `
 **Rollback:**
 
 ```bash
-./sail chatbot bot-restore my-bot data/backups/my-bot/20260615T143022Z --yes
+./sail evenor bot-restore my-bot data/backups/my-bot/20260615T143022Z --yes
 ```
 
 **Removed:** messages, hook events, validation queue (replies + edits + audit), orders, mail drafts, email threads, outbound email messages, test chat sessions, `data/attachments/{slug}/`, `data/quotes/{slug}/`.
@@ -165,15 +165,15 @@ By default, a backup is saved under `data/backups/{slug}/{timestamp}/` (JSON + `
 ## Sync documents (RAG)
 
 ```bash
-chatbot sync TENANT_SLUG path/to/docs
-chatbot sync TENANT_SLUG --fresh
+evenor sync TENANT_SLUG path/to/docs
+evenor sync TENANT_SLUG --fresh
 # Docker:
-./sail chatbot sync TENANT_SLUG /app/data/docs
+./sail evenor sync TENANT_SLUG /app/data/docs
 ```
 
 Supported: `.md`, `.docx`, `.pdf`, `.csv`, `.xlsx`, `.xls`. Enable RAG per tenant in dashboard or `RAG_ENABLED` default in `.env`.
 
-Uploaded files live under `data/docs/{slug}/`. The dashboard **Sync** button and `chatbot sync` only touch that folder — not the ERPNext catalog (see below).
+Uploaded files live under `data/docs/{slug}/`. The dashboard **Sync** button and `evenor sync` only touch that folder — not the ERPNext catalog (see below).
 
 **Creole rewrite gate:** `RAG_REWRITE_LANG_FILTER=true` limits query rewrite to messages matching Creole markers (`creole_script_heuristic.py`). Set `RAG_VERBOSE=true` for logs.
 
@@ -192,10 +192,10 @@ Each active item becomes one markdown file under `data/catalog/{slug}/{item_code
 **Resume a partial index** (after 429/503 or interrupted rebuild) — same pipeline as dashboard/worker, with progress bar:
 
 ```bash
-./sail chatbot catalog-rag rebuild my-bot              # missing/changed files only
-./sail chatbot catalog-rag rebuild my-bot --dry-run    # show counts, no API calls
-./sail chatbot catalog-rag rebuild my-bot --all        # scan all catalog .md (unchanged skip embed)
-./sail chatbot catalog-rag sync my-bot                 # ERPNext fetch + RAG (dashboard equivalent)
+./sail evenor catalog-rag rebuild my-bot              # missing/changed files only
+./sail evenor catalog-rag rebuild my-bot --dry-run    # show counts, no API calls
+./sail evenor catalog-rag rebuild my-bot --all        # scan all catalog .md (unchanged skip embed)
+./sail evenor catalog-rag sync my-bot                 # ERPNext fetch + RAG (dashboard equivalent)
 ```
 
 **Embedding rate limits:** all RAG paths share `GeminiEmbedder` — max speed until Google returns 429/503, then adaptive backoff (`Retry-After` header or exponential). Optional env: `EMBED_RETRY_MAX` (default 5), `EMBED_RETRY_BASE_429_SECONDS` (30), `EMBED_RETRY_BASE_503_SECONDS` (5).
@@ -215,7 +215,7 @@ Optional env: `CATALOG_POLL_SECONDS` — catalog worker poll interval (not the p
 
 ```bash
 # One-off sync for all due tenants (inside container):
-python -m chatbot.interfaces.worker_catalog --once
+python -m evenor.interfaces.worker_catalog --once
 ```
 
 ---

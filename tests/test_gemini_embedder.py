@@ -5,8 +5,8 @@ from unittest.mock import MagicMock
 import pytest
 from google.genai import errors
 
-from chatbot.adapters.embeddings import gemini_embedder as embedder_mod
-from chatbot.adapters.embeddings.gemini_embedder import GeminiEmbedder
+from evenor.adapters.embeddings import gemini_embedder as embedder_mod
+from evenor.adapters.embeddings.gemini_embedder import GeminiEmbedder
 from tests.conftest import TestSettings
 
 

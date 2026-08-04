@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from chatbot.application.validation_message_ui import bubble_from_content, bubble_from_draft
-from chatbot.domain.models.mail_draft import MailDraft, MailDraftStatus
-from chatbot.domain.models.message import MessageRole
+from evenor.application.validation_message_ui import bubble_from_content, bubble_from_draft
+from evenor.domain.models.mail_draft import MailDraft, MailDraftStatus
+from evenor.domain.models.message import MessageRole
 
 _NOW = datetime.now(tz=UTC)
 
@@ -52,7 +52,7 @@ def test_bubble_from_content_converts_html_legacy_message() -> None:
 
 
 def test_email_from_addr_from_session() -> None:
-    from chatbot.application.validation_message_ui import email_from_addr_from_session
+    from evenor.application.validation_message_ui import email_from_addr_from_session
 
     assert email_from_addr_from_session("email:client@example.com~abc123") == "client@example.com"
     assert email_from_addr_from_session("whatsapp:+123") is None

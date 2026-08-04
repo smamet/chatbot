@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.config.settings import get_settings, reset_settings_cache_for_tests
+from evenor.config.settings import get_settings, reset_settings_cache_for_tests
 
 
 def test_email_thread_llm_disabled_by_default(monkeypatch) -> None:

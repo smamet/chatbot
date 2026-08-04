@@ -6,15 +6,15 @@ import pytest
 from sqlalchemy import func, select
 from typer.testing import CliRunner
 
-from chatbot.__main__ import app
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
-from chatbot.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
-from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-from chatbot.adapters.persistence.mail_imap_uid_repository import SqlAlchemyMailImapUidRepository
-from chatbot.adapters.persistence.orm import (
+from evenor.__main__ import app
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.hook_event_repository import SqlAlchemyHookEventRepository
+from evenor.adapters.persistence.integration_repository import SqlAlchemyIntegrationRepository
+from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from evenor.adapters.persistence.mail_imap_uid_repository import SqlAlchemyMailImapUidRepository
+from evenor.adapters.persistence.orm import (
     ApiUsageDailyRow,
     DiskUsageDailyRow,
     HookEventRow,
@@ -29,21 +29,21 @@ from chatbot.adapters.persistence.orm import (
     TenantRow,
     TestChatSessionRow,
 )
-from chatbot.adapters.persistence.order_repository import SqlAlchemyOrderRepository
-from chatbot.adapters.persistence.pending_reply_audit_repository import (
+from evenor.adapters.persistence.order_repository import SqlAlchemyOrderRepository
+from evenor.adapters.persistence.pending_reply_audit_repository import (
     SqlAlchemyPendingReplyAuditRepository,
 )
-from chatbot.adapters.persistence.pending_reply_edit_repository import (
+from evenor.adapters.persistence.pending_reply_edit_repository import (
     SqlAlchemyPendingReplyEditRepository,
 )
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.adapters.persistence.test_chat_session_repository import TestChatSessionRepository
-from chatbot.application.tenant_flush_service import TenantFlushError, TenantFlushService
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.integration import IntegrationType
-from chatbot.domain.models.message import ChatMessage, MessageRole
-from chatbot.domain.models.order import OrderAction, OrderCommand, OrderItem
-from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.adapters.persistence.test_chat_session_repository import TestChatSessionRepository
+from evenor.application.tenant_flush_service import TenantFlushError, TenantFlushService
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.integration import IntegrationType
+from evenor.domain.models.message import ChatMessage, MessageRole
+from evenor.domain.models.order import OrderAction, OrderCommand, OrderItem
+from evenor.domain.models.pending_reply_audit import ValidationAuditAction
 
 runner = CliRunner()
 
@@ -317,7 +317,7 @@ def test_flush_keep_monitoring_preserves_usage_rows(test_settings, test_tenant) 
 def test_bot_flush_cli_requires_yes_without_tty(test_settings, test_tenant) -> None:
     tenant, _ = test_tenant
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("chatbot.__main__.get_settings", lambda: test_settings)
+        mp.setattr("evenor.__main__.get_settings", lambda: test_settings)
         result = runner.invoke(app, ["bot-flush", tenant.slug])
     assert result.exit_code == 1
     assert "--yes" in result.output
@@ -333,7 +333,7 @@ def test_bot_restore_cli_with_yes(test_settings, test_tenant) -> None:
         session.commit()
 
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("chatbot.__main__.get_settings", lambda: test_settings)
+        mp.setattr("evenor.__main__.get_settings", lambda: test_settings)
         result = runner.invoke(
             app,
             ["bot-restore", tenant.slug, str(backup_path), "--yes"],
@@ -349,7 +349,7 @@ def test_bot_flush_cli_with_yes(test_settings, test_tenant) -> None:
     tenant, _ = test_tenant
     _seed_operational_data(test_settings, tenant)
     with pytest.MonkeyPatch.context() as mp:
-        mp.setattr("chatbot.__main__.get_settings", lambda: test_settings)
+        mp.setattr("evenor.__main__.get_settings", lambda: test_settings)
         result = runner.invoke(app, ["bot-flush", tenant.slug, "--yes"])
     assert result.exit_code == 0, result.output
     assert "backup saved:" in result.output

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from chatbot.application.quote_pdf_storage import (
+from evenor.application.quote_pdf_storage import (
     AttachmentValidationError,
     cleanup_pending_reply_attachments,
     delete_attachment_files,
@@ -19,8 +19,8 @@ from chatbot.application.quote_pdf_storage import (
     store_quote_pdf,
     validate_outbound_attachment_upload,
 )
-from chatbot.config.settings import get_settings
-from chatbot.domain.models.pending_reply import PendingReply, PendingReplyStatus
+from evenor.config.settings import get_settings
+from evenor.domain.models.pending_reply import PendingReply, PendingReplyStatus
 
 
 def test_safe_quote_filename() -> None:
@@ -86,7 +86,7 @@ def test_store_schedules_ttl_deletion(tmp_path, monkeypatch) -> None:
         def start(self) -> None:
             self._fn()
 
-    monkeypatch.setattr("chatbot.application.quote_pdf_storage.threading.Timer", FakeTimer)
+    monkeypatch.setattr("evenor.application.quote_pdf_storage.threading.Timer", FakeTimer)
     path = store_quote_pdf(settings, "bot", "QTN-0001", b"%PDF", ttl_seconds=120)
     assert scheduled == [120]
     assert not path.is_file()

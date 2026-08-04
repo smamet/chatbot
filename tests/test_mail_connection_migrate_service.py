@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.application.connector_service import ConnectorService
-from chatbot.application.mail_connection_migrate_service import MailConnectionMigrateService
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.application.connector_service import ConnectorService
+from evenor.application.mail_connection_migrate_service import MailConnectionMigrateService
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
 
 
 def test_mail_connection_migrate_groups_in_and_out(test_settings, test_tenant) -> None:

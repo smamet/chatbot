@@ -1,19 +1,19 @@
 from __future__ import annotations
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-from chatbot.application.channel_outbound import queue_pending_reply
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from evenor.application.channel_outbound import queue_pending_reply
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
 
 
 def test_queue_pending_reply_prefills_re_subject(test_settings) -> None:
     engine = create_db_engine(test_settings, for_tests=True)
     factory = session_factory(engine)
     with factory() as session:
-        from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-        from chatbot.application.tenant_service import TenantService
-        from chatbot.domain.models.tenant import TenantConfig
+        from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+        from evenor.application.tenant_service import TenantService
+        from evenor.domain.models.tenant import TenantConfig
 
         result = TenantService(SqlAlchemyTenantRepository(session)).create_tenant(
             name="Subject Bot",

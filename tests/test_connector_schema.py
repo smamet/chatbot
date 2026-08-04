@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorType
-from chatbot.domain.models.connector_schema import (
+from evenor.domain.models.connector import ConnectorDirection, ConnectorType
+from evenor.domain.models.connector_schema import (
     CONNECTOR_SCHEMAS,
     EmailOutboundProvider,
     fields_for,

@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from chatbot.application.disk_usage_service import DiskUsageService, format_bytes
-from chatbot.config.settings import Settings
+from evenor.application.disk_usage_service import DiskUsageService, format_bytes
+from evenor.config.settings import Settings
 
 
 def test_format_bytes() -> None:

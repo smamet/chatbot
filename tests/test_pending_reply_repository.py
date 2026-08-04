@@ -1,9 +1,9 @@
 from __future__ import annotations
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
 
 
 def test_update_quote_fields_clears_fulfillment_error(test_settings, test_tenant) -> None:

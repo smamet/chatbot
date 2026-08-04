@@ -4,14 +4,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.application.email_test_service import (
+from evenor.application.email_test_service import (
     EmailTestError,
     build_dev_inject_smtp_config,
     get_email_test_connectors,
     inject_test_email,
 )
-from chatbot.config.settings import get_settings, reset_settings_cache_for_tests
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.config.settings import get_settings, reset_settings_cache_for_tests
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
 
 
 @pytest.fixture
@@ -25,10 +25,10 @@ def email_test_env(tmp_path, monkeypatch):
     monkeypatch.setenv("APP_SECRET_KEY", Fernet.generate_key().decode())
     reset_settings_cache_for_tests()
     settings = get_settings()
-    from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-    from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-    from chatbot.application.tenant_service import TenantService
+    from evenor.adapters.persistence.engine import create_db_engine, session_factory
+    from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+    from evenor.application.tenant_service import TenantService
 
     engine = create_db_engine(settings, for_tests=True)
     factory = session_factory(engine)
@@ -65,7 +65,7 @@ def test_build_dev_inject_smtp_config_defaults() -> None:
     assert cfg["smtp_use_tls"] is False
 
 
-@patch("chatbot.application.email_test_service.build_email_sender")
+@patch("evenor.application.email_test_service.build_email_sender")
 def test_inject_test_email_uses_greenmail_not_out_connector(mock_build, email_test_env) -> None:
     factory, settings, tenant_id = email_test_env
     with factory() as session:
@@ -101,7 +101,7 @@ def test_get_email_test_connectors_requires_only_in(email_test_env) -> None:
 def test_get_email_test_connectors_missing_in(email_test_env) -> None:
     factory, _settings, tenant_id = email_test_env
     with factory() as session:
-        from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+        from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
 
         repo = SqlAlchemyConnectorRepository(session)
         row = repo.find_by_tenant_direction_type(

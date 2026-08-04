@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from chatbot.adapters.erpnext.client import ErpNextClient
+from evenor.adapters.erpnext.client import ErpNextClient
 
 
 def test_search_items_by_name() -> None:

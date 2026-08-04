@@ -106,7 +106,7 @@ Env `WHATSAPP_*` / `MESSENGER_*` / `INSTAGRAM_*` are optional fallbacks only.
 
 ## RAG
 
-Unchanged core: `RagPipeline`, `LanceVectorStore`, `IngestSyncService`, CLI `chatbot sync {slug} path`.
+Unchanged core: `RagPipeline`, `LanceVectorStore`, `IngestSyncService`, CLI `evenor sync {slug} path`.
 
 Per-tenant: `config_json.rag_enabled`, models; index path `LANCEDB_ROOT/{slug}/`.
 

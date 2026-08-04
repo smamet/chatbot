@@ -3,9 +3,9 @@ requires = ["setuptools>=75", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "chatbot"
+name = "evenor"
 version = "0.2.0"
-description = "Multi-tenant Gemini chatbot with RAG and admin dashboard"
+description = "Multi-tenant Evenor platform with RAG and admin dashboard"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
@@ -42,7 +42,7 @@ dependencies = [
 dev = ["pytest>=8.3.0", "pytest-asyncio>=0.24.0"]
 
 [project.scripts]
-chatbot = "chatbot.__main__:app"
+evenor = "evenor.__main__:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from chatbot.application.customer_access_gate import parse_session_identity, session_display_label
-from chatbot.application.email_session_id import (
+from evenor.application.customer_access_gate import parse_session_identity, session_display_label
+from evenor.application.email_session_id import (
     build_email_thread_session_id,
     parse_email_thread_session_id,
 )

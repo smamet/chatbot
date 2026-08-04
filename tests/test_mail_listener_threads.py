@@ -6,15 +6,15 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from chatbot.adapters.mail.imap_client import IncomingMail
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.tenant_service import TenantService
-from chatbot.config.settings import get_settings, reset_settings_cache_for_tests
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.mail import listener as mail_listener
+from evenor.adapters.mail.imap_client import IncomingMail
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.mail_draft_repository import SqlAlchemyMailDraftRepository
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.tenant_service import TenantService
+from evenor.config.settings import get_settings, reset_settings_cache_for_tests
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.mail import listener as mail_listener
 
 
 @pytest.fixture
@@ -62,9 +62,9 @@ def listener_env(tmp_path, monkeypatch):
     reset_settings_cache_for_tests()
 
 
-@patch("chatbot.mail.listener.queue_after_chat")
-@patch("chatbot.mail.listener.build_chat_service_for_worker")
-@patch("chatbot.mail.listener.imap_client")
+@patch("evenor.mail.listener.queue_after_chat")
+@patch("evenor.mail.listener.build_chat_service_for_worker")
+@patch("evenor.mail.listener.imap_client")
 def test_listener_uses_thread_session_and_body_new(
     mock_imap_ctx, mock_build_chat, mock_queue, listener_env
 ) -> None:

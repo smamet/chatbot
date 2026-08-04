@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from chatbot.application.email_reply_parser import parse_reply_body
+from evenor.application.email_reply_parser import parse_reply_body
 
 
 def test_parse_reply_body_gmail_quote() -> None:

@@ -8,17 +8,17 @@ from types import SimpleNamespace
 import pytest
 from fastapi.testclient import TestClient
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.application.connector_service import ConnectorService
-from chatbot.application.tenant_service import TenantService
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.pending_reply import PendingReplyStatus
-from chatbot.interfaces.api.deps import get_webhook_chat_service, get_webhook_tenant
-from chatbot.interfaces.api.main import create_app
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.application.connector_service import ConnectorService
+from evenor.application.tenant_service import TenantService
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.pending_reply import PendingReplyStatus
+from evenor.interfaces.api.deps import get_webhook_chat_service, get_webhook_tenant
+from evenor.interfaces.api.main import create_app
 
 WEBHOOK_SLUG = "validation-bot"
 
@@ -53,7 +53,7 @@ def validation_webhook_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setenv("DATA_ROOT", str(tmp_path / "data"))
     monkeypatch.setenv("LANCEDB_ROOT", str(tmp_path / "lancedb"))
     reset_settings_cache_for_tests()
-    from chatbot.config.settings import get_settings
+    from evenor.config.settings import get_settings
 
     settings = get_settings()
     engine = create_db_engine(settings, for_tests=True)
@@ -108,7 +108,7 @@ def test_whatsapp_validation_mode_queues_reply(validation_webhook_env, monkeypat
     client, factory, tenant_id = validation_webhook_env
     sent: list[str] = []
     monkeypatch.setattr(
-        "chatbot.interfaces.api.routers.whatsapp_webhook.whatsapp_meta.send_whatsapp_text",
+        "evenor.interfaces.api.routers.whatsapp_webhook.whatsapp_meta.send_whatsapp_text",
         lambda **kwargs: sent.append(kwargs["text"]),
     )
     payload = _wa_payload()
@@ -143,7 +143,7 @@ def test_whatsapp_direct_mode_sends_reply(validation_webhook_env, monkeypatch) -
         session.commit()
     sent: list[str] = []
     monkeypatch.setattr(
-        "chatbot.interfaces.api.routers.whatsapp_webhook.whatsapp_meta.send_whatsapp_text",
+        "evenor.interfaces.api.routers.whatsapp_webhook.whatsapp_meta.send_whatsapp_text",
         lambda **kwargs: sent.append(kwargs["text"]),
     )
     payload = _wa_payload(text="direct")

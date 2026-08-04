@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-from chatbot.adapters.embeddings.metered_embedder import MeteredEmbedder
-from chatbot.adapters.llm.metered_llm_client import MeteredLlmClient
-from chatbot.application.usage_recorder_service import UsageRecorderService
-from chatbot.domain.contracts.llm_client import LlmResult, LlmUsage
-from chatbot.domain.models.message import ChatMessage, MessageRole
+from evenor.adapters.embeddings.metered_embedder import MeteredEmbedder
+from evenor.adapters.llm.metered_llm_client import MeteredLlmClient
+from evenor.application.usage_recorder_service import UsageRecorderService
+from evenor.domain.contracts.llm_client import LlmResult, LlmUsage
+from evenor.domain.models.message import ChatMessage, MessageRole
 
 
 class _FakeLlm:

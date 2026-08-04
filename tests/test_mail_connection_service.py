@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from chatbot.application.mail_connection_service import MailConnectionService
-from chatbot.domain.models.mail_connection import MailConnection, MailConnectionProvider
-from chatbot.domain.models.mail_connection_presets import build_runtime_mail_config
+from evenor.application.mail_connection_service import MailConnectionService
+from evenor.domain.models.mail_connection import MailConnection, MailConnectionProvider
+from evenor.domain.models.mail_connection_presets import build_runtime_mail_config
 
 
 def _connection(**overrides) -> MailConnection:
@@ -51,10 +51,10 @@ def test_build_runtime_mail_config_out_google() -> None:
 def test_resolve_for_connector_merges_connector_overlay(test_settings, test_tenant) -> None:
     from unittest.mock import patch
 
-    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-    from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-    from chatbot.application.connector_service import ConnectorService
-    from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+    from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from evenor.adapters.persistence.engine import create_db_engine, session_factory
+    from evenor.application.connector_service import ConnectorService
+    from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
 
     tenant, _slug = test_tenant
     engine = create_db_engine(test_settings, for_tests=True)
@@ -102,10 +102,10 @@ def test_resolve_for_connector_ignores_stale_runtime_token_on_connector(
 ) -> None:
     from unittest.mock import patch
 
-    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-    from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-    from chatbot.application.connector_service import ConnectorService
-    from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+    from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from evenor.adapters.persistence.engine import create_db_engine, session_factory
+    from evenor.application.connector_service import ConnectorService
+    from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
 
     tenant, _slug = test_tenant
     engine = create_db_engine(test_settings, for_tests=True)
@@ -149,11 +149,11 @@ def test_resolve_for_connector_ignores_stale_runtime_token_on_connector(
 def test_mail_connection_service_upsert_and_delete_guard(test_settings, test_tenant) -> None:
     import pytest
 
-    from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-    from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-    from chatbot.application.connector_service import ConnectorService
-    from chatbot.application.mail_connection_service import MailConnectionError
-    from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+    from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+    from evenor.adapters.persistence.engine import create_db_engine, session_factory
+    from evenor.application.connector_service import ConnectorService
+    from evenor.application.mail_connection_service import MailConnectionError
+    from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
 
     tenant, _slug = test_tenant
     engine = create_db_engine(test_settings, for_tests=True)

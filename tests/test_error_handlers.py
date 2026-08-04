@@ -5,8 +5,8 @@ from cryptography.fernet import Fernet
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
-from chatbot.config.settings import reset_settings_cache_for_tests
-from chatbot.interfaces.api.main import create_app, refresh_genai_clients_if_needed
+from evenor.config.settings import reset_settings_cache_for_tests
+from evenor.interfaces.api.main import create_app, refresh_genai_clients_if_needed
 
 
 @pytest.fixture

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from chatbot.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
-from chatbot.application.validation_audit_service import ValidationAuditService
-from chatbot.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
-from chatbot.domain.models.pending_reply import PendingReplyStatus
-from chatbot.domain.models.pending_reply_audit import ValidationAuditAction
+from evenor.adapters.persistence.connector_repository import SqlAlchemyConnectorRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.pending_reply_repository import SqlAlchemyPendingReplyRepository
+from evenor.application.validation_audit_service import ValidationAuditService
+from evenor.domain.models.connector import ConnectorDirection, ConnectorMode, ConnectorType
+from evenor.domain.models.pending_reply import PendingReplyStatus
+from evenor.domain.models.pending_reply_audit import ValidationAuditAction
 
 
 def test_resolve_reply_logs_audit_and_sets_resolved_fields(test_settings, test_tenant) -> None:

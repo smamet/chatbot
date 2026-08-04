@@ -5,7 +5,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from unittest.mock import patch
 
-from chatbot.application.fx_rate_service import (
+from evenor.application.fx_rate_service import (
     FxRateService,
     read_fx_cache,
     write_fx_cache,
@@ -50,7 +50,7 @@ def test_fx_rate_service_convert_unknown_currency(tmp_path: Path) -> None:
 def test_fx_rate_service_fetches_live_when_cache_missing(tmp_path: Path) -> None:
     fx = FxRateService(tmp_path)
     with patch(
-        "chatbot.application.fx_rate_service._fetch_live_rates",
+        "evenor.application.fx_rate_service._fetch_live_rates",
         return_value={"USD": 1.0, "MUR": 45.0},
     ):
         rates = fx.get_rates_usd_pivot()

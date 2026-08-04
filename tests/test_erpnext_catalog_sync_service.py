@@ -3,10 +3,10 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, patch
 
-from chatbot.adapters.erpnext.client import ErpNextClient
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.tenant_paths import safe_catalog_filename, tenant_catalog_dir
-from chatbot.application.erpnext_catalog_sync_service import (
+from evenor.adapters.erpnext.client import ErpNextClient
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.tenant_paths import safe_catalog_filename, tenant_catalog_dir
+from evenor.application.erpnext_catalog_sync_service import (
     build_catalog_price_map,
     catalog_invoice_price_fallback,
     catalog_price_list,
@@ -20,7 +20,7 @@ from chatbot.application.erpnext_catalog_sync_service import (
     sync_catalog_files,
     sync_erpnext_catalog_for_tenant,
 )
-from chatbot.application.sync_service import IngestSyncService
+from evenor.application.sync_service import IngestSyncService
 from tests.conftest import TestSettings as SettingsForTests
 
 
@@ -571,8 +571,8 @@ def test_sync_erpnext_catalog_for_tenant_batches_rag(
         return [f"ingested:{len(paths)}"]
 
     with patch.object(IngestSyncService, "ingest_paths_batched", fake_batched), patch(
-        "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
-    ), patch("chatbot.application.erpnext_catalog_sync_service.LanceVectorStore"):
+        "evenor.application.erpnext_catalog_sync_service.GeminiEmbedder"
+    ), patch("evenor.application.erpnext_catalog_sync_service.LanceVectorStore"):
         engine = create_db_engine(test_settings, for_tests=True)
         factory = session_factory(engine)
         with factory() as session:
@@ -617,8 +617,8 @@ def test_sync_erpnext_catalog_skips_rag_when_no_file_changes(
     with patch.object(IngestSyncService, "ingest_paths_batched") as mock_ingest, patch.object(
         IngestSyncService, "maybe_optimize", return_value=[]
     ), patch(
-        "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
-    ), patch("chatbot.application.erpnext_catalog_sync_service.LanceVectorStore"):
+        "evenor.application.erpnext_catalog_sync_service.GeminiEmbedder"
+    ), patch("evenor.application.erpnext_catalog_sync_service.LanceVectorStore"):
         engine = create_db_engine(test_settings, for_tests=True)
         factory = session_factory(engine)
         with factory() as session:
@@ -662,8 +662,8 @@ def test_sync_uses_standard_selling_when_price_list_blank(
     client.fetch_latest_invoice_rates.return_value = {}
 
     with patch.object(IngestSyncService, "ingest_paths_batched", return_value=[]), patch(
-        "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
-    ), patch("chatbot.application.erpnext_catalog_sync_service.LanceVectorStore"):
+        "evenor.application.erpnext_catalog_sync_service.GeminiEmbedder"
+    ), patch("evenor.application.erpnext_catalog_sync_service.LanceVectorStore"):
         engine = create_db_engine(test_settings, for_tests=True)
         factory = session_factory(engine)
         with factory() as session:
@@ -694,8 +694,8 @@ def test_reconcile_catalog_rag_skips_ingest_when_no_paths(
         "ingest_paths_batched",
         return_value=["should-not-run"],
     ) as mock_ingest, patch(
-        "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
-    ), patch("chatbot.application.erpnext_catalog_sync_service.LanceVectorStore"):
+        "evenor.application.erpnext_catalog_sync_service.GeminiEmbedder"
+    ), patch("evenor.application.erpnext_catalog_sync_service.LanceVectorStore"):
         engine = create_db_engine(test_settings, for_tests=True)
         factory = session_factory(engine)
         with factory() as session:
@@ -730,8 +730,8 @@ def test_reconcile_catalog_rag_calls_optimize(
         "maybe_optimize",
         return_value=["optimized LanceDB table (stats)"],
     ) as mock_optimize, patch(
-        "chatbot.application.erpnext_catalog_sync_service.GeminiEmbedder"
-    ), patch("chatbot.application.erpnext_catalog_sync_service.LanceVectorStore"):
+        "evenor.application.erpnext_catalog_sync_service.GeminiEmbedder"
+    ), patch("evenor.application.erpnext_catalog_sync_service.LanceVectorStore"):
         engine = create_db_engine(test_settings, for_tests=True)
         factory = session_factory(engine)
         with factory() as session:
@@ -752,8 +752,8 @@ def test_catalog_rag_index_plan_splits_missing_and_indexed(
     test_settings: SettingsForTests,
     test_tenant,
 ) -> None:
-    from chatbot.adapters.persistence.orm import IngestedFileRow
-    from chatbot.application.ingest_service import file_content_hash
+    from evenor.adapters.persistence.orm import IngestedFileRow
+    from evenor.application.ingest_service import file_content_hash
 
     tenant, _ = test_tenant
     catalog_dir = tenant_catalog_dir(test_settings, tenant.slug)
@@ -791,7 +791,7 @@ def test_apply_catalog_rag_transition_purges_on_disable(test_settings, test_tena
     md_path.write_text("# item", encoding="utf-8")
 
     with factory() as session:
-        from chatbot.adapters.persistence.orm import IngestedFileRow
+        from evenor.adapters.persistence.orm import IngestedFileRow
 
         session.add(
             IngestedFileRow(
@@ -812,10 +812,10 @@ def test_apply_catalog_rag_transition_purges_on_disable(test_settings, test_tena
                 deleted.append(prefix)
 
         with patch(
-            "chatbot.application.erpnext_catalog_sync_service.LanceVectorStore",
+            "evenor.application.erpnext_catalog_sync_service.LanceVectorStore",
             return_value=FakeStore(),
         ):
-            from chatbot.application.erpnext_catalog_sync_service import apply_catalog_rag_transition
+            from evenor.application.erpnext_catalog_sync_service import apply_catalog_rag_transition
 
             apply_catalog_rag_transition(
                 session,
@@ -844,7 +844,7 @@ def test_apply_catalog_rag_transition_starts_import_on_enable(test_settings, tes
         started.append((settings, kwargs))
 
     with factory() as session:
-        from chatbot.application.erpnext_catalog_sync_service import apply_catalog_rag_transition
+        from evenor.application.erpnext_catalog_sync_service import apply_catalog_rag_transition
 
         apply_catalog_rag_transition(
             session,

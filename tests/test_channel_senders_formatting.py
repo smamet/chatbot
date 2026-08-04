@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from chatbot.adapters.channels import instagram_meta, messenger_meta, whatsapp_meta
+from evenor.adapters.channels import instagram_meta, messenger_meta, whatsapp_meta
 
 
 class _Resp:

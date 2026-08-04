@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
-from chatbot.adapters.quickbooks.oauth import (
+from evenor.adapters.quickbooks.oauth import (
     OAuthTokens,
     build_authorize_url,
     exchange_code,
@@ -39,7 +39,7 @@ def test_exchange_code_parses_tokens() -> None:
                 "expires_in": 3600,
             }
 
-    with patch("chatbot.adapters.quickbooks.oauth.httpx.Client") as client_cls:
+    with patch("evenor.adapters.quickbooks.oauth.httpx.Client") as client_cls:
         client_cls.return_value.__enter__.return_value.post.return_value = FakeResponse()
         tokens = exchange_code(
             code="abc",

@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from chatbot.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
-from chatbot.adapters.persistence.engine import create_db_engine, session_factory
-from chatbot.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
-from chatbot.adapters.rag.lance_vector_store import LanceVectorStore
-from chatbot.application.tenant_service import TenantService
-from chatbot.domain.contracts.vector_store import VectorRecord
-from chatbot.domain.models.message import ChatMessage, MessageRole
+from evenor.adapters.persistence.conversation_repository import SqlAlchemyConversationRepository
+from evenor.adapters.persistence.engine import create_db_engine, session_factory
+from evenor.adapters.persistence.tenant_repository import SqlAlchemyTenantRepository
+from evenor.adapters.rag.lance_vector_store import LanceVectorStore
+from evenor.application.tenant_service import TenantService
+from evenor.domain.contracts.vector_store import VectorRecord
+from evenor.domain.models.message import ChatMessage, MessageRole
 
 
 def test_messages_isolated_by_tenant(test_settings) -> None:

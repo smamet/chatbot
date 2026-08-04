@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from chatbot.application.email_outbound import coalesce_stored_email_subject, resolve_email_subject
+from evenor.application.email_outbound import coalesce_stored_email_subject, resolve_email_subject
 
 
 @pytest.mark.parametrize(
